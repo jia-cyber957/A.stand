@@ -174,7 +174,7 @@ server.registerTool(
   {
     title: "Delegate task to persistent external subagent",
     description:
-      "Send a task to a persistent external AI subagent ('oracle' read-only advisor/reviewer — supports parallel slots; 'hephaestus' workspace-write engineer — write-mutex guarded). Respects the master switch, concurrency cap, and priority fallback queue. Uses zero-token heartbeats and non-interrupting check-ins (never auto-kills). Async replies include a ready-to-run `node wait-job.mjs --data-dir <dataDir> <jobId>` doorbell for zero-token background wakeups.",
+      "Send a task to a persistent external AI subagent ('oracle' read-only advisor/reviewer — supports parallel slots; 'hephaestus' workspace-write engineer — write-mutex guarded by default, or parallel Git worktree writers via worktree=true when allowWorktreeParallelWrite is ON). Respects the master switch, concurrency cap, and priority fallback queue. Uses zero-token heartbeats and non-interrupting check-ins (never auto-kills). Async replies include a ready-to-run `node wait-job.mjs --data-dir <dataDir> <jobId>` doorbell for zero-token background wakeups.",
     inputSchema: {
       role: z.enum(["oracle", "hephaestus"]).default("oracle"),
       cwd: z.string().describe("Absolute workspace directory path."),
@@ -211,7 +211,7 @@ server.registerTool(
         ),
       forceNew: z.boolean().optional(),
       worktree: z.boolean().optional().describe(
-        "Request an isolated Git worktree for hephaestus when allowWorktreeParallelWrite is enabled. A busy Git checkout automatically triggers isolation."
+        "Request an isolated Git worktree (branch astand/<jobId>) for hephaestus when allowWorktreeParallelWrite is enabled. Use with waitSec=0 to proactively split large independent multi-module work across 2-3 parallel hephaestus jobs on non-overlapping file sets; a busy Git checkout also auto-triggers isolation."
       ),
     },
   },
