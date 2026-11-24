@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./plugin/assets/logo.png" width="112" alt="A.stand" />
+  <img src="./plugin/assets/logo.png?v=2" width="112" alt="A.stand" />
 </p>
 
 <h1 align="center">A.stand</h1>
