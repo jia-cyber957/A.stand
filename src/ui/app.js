@@ -63,10 +63,13 @@ const I18N = {
     win7d: "7 天窗口",
     remaining: "剩余",
     resetsIn: "重置",
-    oracleTitle: "Oracle",
+    // Display-only mythological pair (internal role ids stay "oracle" / "hephaestus").
+    oracleTitle: "白泽",
+    oracleSub: "独立审查 · Oracle",
     oracleBadge: "只读 · 可并行",
     oracleDesc: "架构权衡、卡壳诊断、独立 Code Review（严禁改文件）",
-    hephTitle: "Hephaestus",
+    hephTitle: "祝融",
+    hephSub: "代码执行 · Hephaestus",
     hephBadge: "可写 · 写互斥",
     hephDesc: "复杂重构、核心逻辑、长循环单测排错（同目录互斥写）",
     primaryAi: "首选 AI 与顺延队列",
@@ -265,9 +268,11 @@ const I18N = {
     remaining: "left",
     resetsIn: "Resets",
     oracleTitle: "Oracle",
+    oracleSub: "",
     oracleBadge: "Read-Only · Parallel",
     oracleDesc: "Architecture tradeoffs, 2-strike debugging, independent code review",
     hephTitle: "Hephaestus",
+    hephSub: "",
     hephBadge: "Write · Mutex",
     hephDesc: "Multi-file refactors, core logic, long test loops (workspace write-mutex)",
     primaryAi: "Primary AI & Priority Queue",
@@ -1207,6 +1212,19 @@ function modelLabel(model) {
   return model.name || model.modelName || model.id;
 }
 
+// Display-only role naming. Internal ids ("oracle" / "hephaestus") never change; in Chinese the
+// team reads 白泽 (Oracle, independent review) and 祝融 (Hephaestus, code execution).
+function roleDisplayName(role) {
+  const isOracle = role !== "hephaestus";
+  const en = state?.settings?.lang === "en";
+  if (isOracle) return en ? "Oracle" : "白泽";
+  return en ? "Hephaestus" : "祝融";
+}
+
+function roleBadgeLabel(role, slot) {
+  return `${roleDisplayName(role)}${slot && slot !== "default" ? `:${slot}` : ""}`;
+}
+
 function recentSessionsForRole(role, limit = 3) {
   return (state?.sessions || []).filter((s) => s.role === role).slice(0, limit);
 }
@@ -1419,7 +1437,7 @@ function renderInterruptedJobsBanner() {
           (j) => `
         <div class="interrupted-row" data-job="${esc(j.jobId)}" data-action="open-job-detail" role="button" tabindex="0">
           <div class="interrupted-line">
-            <span class="role-badge ${j.role === "hephaestus" ? "write" : "readonly"}">${esc(j.role)}${j.slot && j.slot !== "default" ? `:${esc(j.slot)}` : ""}</span>
+            <span class="role-badge ${j.role === "hephaestus" ? "write" : "readonly"}">${esc(roleBadgeLabel(j.role, j.slot))}</span>
             <span class="interrupted-title-btn truncate" title="${esc(j.title || j.jobId)}">${esc(j.title || j.jobId)}</span>
           </div>
           <div class="interrupted-line muted truncate" title="${esc(j.lastSummary || j.error || "")}">
@@ -1447,7 +1465,7 @@ function renderJobDetailView() {
   const error = ui.detailError || j?.error || "";
   const steps = timelineStepsHtml(j?.activities, { finalBody: final.body, error });
   const promptOpen = ui.expandedStepIds.has("__lead_prompt");
-  const roleLabel = j?.role === "hephaestus" ? "Hephaestus" : "Oracle";
+  const roleLabel = roleDisplayName(j?.role);
 
   return `
     <section class="job-detail">
@@ -1500,7 +1518,7 @@ function renderRecentJobsStrip() {
           return `
         <button class="recent-job" data-action="open-job-detail" data-job="${esc(j.jobId)}">
           <span class="dot" style="color:${meta.dot}"></span>
-          <span class="role-badge ${j.role === "hephaestus" ? "write" : "readonly"}">${esc(j.role)}</span>
+          <span class="role-badge ${j.role === "hephaestus" ? "write" : "readonly"}">${esc(roleBadgeLabel(j.role, j.slot))}</span>
           <span class="truncate recent-job-title">${esc(j.title || j.jobId)}</span>
           <span class="mono nums recent-job-meta">${esc(elapsedLabel(j.elapsedSec))}</span>
           ${j.hitRate != null ? `<span class="log-hit ${hitClass(j.hitRate)}">${esc(j.hitRate)}%</span>` : ""}
@@ -1530,7 +1548,7 @@ function renderLiveActivityPanel() {
         <div class="live-job" data-action="open-job-detail" data-job="${esc(j.jobId)}" role="button" tabindex="0">
           <div class="live-job-head">
             <div style="display:flex;align-items:center;gap:7px;min-width:0">
-              <span class="role-badge ${j.role === "oracle" ? "readonly" : "write"}">${esc(j.role)}${j.slot && j.slot !== "default" ? `:${esc(j.slot)}` : ""}</span>
+              <span class="role-badge ${j.role === "oracle" ? "readonly" : "write"}">${esc(roleBadgeLabel(j.role, j.slot))}</span>
               <span class="truncate" style="font-weight:500">${esc(j.title || j.modelDisplayName || j.engine)}</span>
             </div>
             <div style="display:flex;align-items:center;gap:8px">
@@ -1760,6 +1778,7 @@ function renderRoleCard(role) {
         <div class="role-title">
           ${iconSvg(role)}
           <span>${isOracle ? t("oracleTitle") : t("hephTitle")}</span>
+          ${t(isOracle ? "oracleSub" : "hephSub") ? `<span class="role-sub">${esc(t(isOracle ? "oracleSub" : "hephSub"))}</span>` : ""}
         </div>
         <span class="role-badge ${isOracle ? "readonly" : "write"}">${isOracle ? t("oracleBadge") : t("hephBadge")}</span>
       </div>
@@ -2100,10 +2119,10 @@ function renderCacheTab() {
               ${pts
                 .map((p) => {
                   if (!p.cacheReported || p.hitRate == null) {
-                    return `<div class="bar-col" title="${esc(p.role)} · ${t("unreported")}"><div class="bar na"></div></div>`;
+                    return `<div class="bar-col" title="${esc(roleDisplayName(p.role))} · ${t("unreported")}"><div class="bar na"></div></div>`;
                   }
                   const cls = p.hitRate >= 80 ? "" : p.hitRate >= 40 ? "mid" : "low";
-                  return `<div class="bar-col" title="${esc(p.role)} · ${p.hitRate}%"><div class="bar ${cls}" style="height:${Math.max(8, p.hitRate)}%"></div></div>`;
+                  return `<div class="bar-col" title="${esc(roleDisplayName(p.role))} · ${p.hitRate}%"><div class="bar ${cls}" style="height:${Math.max(8, p.hitRate)}%"></div></div>`;
                 })
                 .join("")}
             </div>`
@@ -2127,7 +2146,7 @@ function renderCacheTab() {
                   return `
                   <div class="log-row ${r.jobId ? "clickable" : ""}" ${r.jobId ? `data-action="open-job-detail" data-job="${esc(r.jobId)}" role="button" tabindex="0"` : ""}>
                     <span class="mono" style="color:var(--ar-text-3)">${fmtTime(r.ts)}</span>
-                    <span class="engine-tag" style="text-align:center">${esc(r.role)}</span>
+                    <span class="engine-tag" style="text-align:center">${esc(roleDisplayName(r.role))}</span>
                     <span class="truncate">${esc(r.modelName || r.engine)} · <span style="color:var(--ar-text-3)">${modeTag} · ${((r.elapsedMs || 0) / 1000).toFixed(1)}s</span></span>
                     <span class="log-hit ${hitC}" title="${r.cachedInputTokens ?? 0} / ${r.totalInputTokens ?? 0}">${hitLabel}</span>
                   </div>`;

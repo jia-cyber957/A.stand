@@ -39,7 +39,7 @@ export const API_PROVIDERS = [
     nameZh: "谷歌 Gemini",
     nameEn: "Google Gemini",
     baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
-    placeholderModel: "gemini-3.5-pro",
+    placeholderModel: "gemini-4-pro",
     badge: "GM",
   },
   {
@@ -101,7 +101,8 @@ export const CLI_ENGINES_META = {
     downloadUrl: "https://github.com/openai/codex",
     installCmd: "npm install -g @openai/codex",
     loginCmd: "codex login",
-    placeholderModel: "gpt-6.2-sol",
+    // Neutral mainstream fallback only; live Codex auto-discovers real models via `model/list`.
+    placeholderModel: "gpt-5-codex",
   },
   "claude-code": {
     id: "claude-code",
@@ -174,6 +175,20 @@ export const CLI_DEFAULT_MODELS_MAP = {
       displayName: "Gemini (CLI Default)",
       displayNameZh: "Gemini（CLI 默认）",
       isDefault: true,
+      engine: "antigravity",
+    },
+    {
+      id: "cli:antigravity:gemini-4-pro",
+      modelName: "gemini-4-pro",
+      displayName: "gemini-4-pro",
+      isDefault: false,
+      engine: "antigravity",
+    },
+    {
+      id: "cli:antigravity:gemini-4-flash",
+      modelName: "gemini-4-flash",
+      displayName: "gemini-4-flash",
+      isDefault: false,
       engine: "antigravity",
     },
   ],
