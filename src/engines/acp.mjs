@@ -647,7 +647,7 @@ export class AcpEngine {
           const options = msg.params?.options || [];
           const allowOpt = options.find((o) => o.kind === "allow_once" || o.kind === "allow_always");
           const rejectOpt = options.find((o) => o.kind === "reject_once" || o.kind === "reject_always");
-          const chosen = role === "hephaestus" ? allowOpt || options[0] : rejectOpt || options[0];
+          const chosen = role === "hephaestus" ? allowOpt || options[0] : rejectOpt || null;
           sendRaw({
             jsonrpc: "2.0",
             id: msg.id,

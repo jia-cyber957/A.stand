@@ -2,7 +2,7 @@
 
 This document describes how A.stand is built: the moving parts, why they are separated the way they are, how data and processes flow between them, and the rules each layer must uphold. It is the canonical reference for contributors and for AI agents that need to extend or debug the system.
 
-- [1. What A.stand Is](#1-what-a-stand-is)
+- [1. What A.stand Is](#1-what-astand-is)
 - [2. High-Level Architecture](#2-high-level-architecture)
 - [3. Repository Layout](#3-repository-layout)
 - [4. Request Lifecycle](#4-request-lifecycle)
@@ -13,7 +13,7 @@ This document describes how A.stand is built: the moving parts, why they are sep
 - [9. Sandbox & Safety Boundaries](#9-sandbox--safety-boundaries)
 - [10. Git Worktree Isolation](#10-git-worktree-isolation)
 - [11. Build, Install & Test](#11-build-install--test)
-- [12. Extending A.stand](#12-extending-a-stand)
+- [12. Extending A.stand](#12-extending-astand)
 
 ---
 
@@ -310,12 +310,12 @@ Full threat model and disclosure process: [SECURITY.md](../SECURITY.md).
 
 A.stand enforces six independent layers:
 
-1. **Zero-mutation guarantee** — `~/.codex/config.toml`, `~/.dsh/*`, `~/.claude/*`, and `~/.gemini/antigravity-cli/*` are never written. Isolation uses ephemeral env vars, ephemeral CLI flags, and overlay files inside the plugin data directory.
-2. **Master hard switch** — enforced inside the MCP server, not in the UI. OFF means zero external calls.
-3. **Read-only `Oracle`** — not configurable to a higher privilege level; safe to fan out in parallel.
-4. **Workspace-write `Hephaestus`** — confined to the target workspace, serialized by a write mutex. `danger-full-access` exists only behind an explicit, default-off setting.
+1. **Zero-mutation guarantee** — `~/.codex/config.toml`, `~/.dsh/` configs, `~/.claude/` configs, and `~/.gemini/antigravity-cli/settings.json` are never modified by A.stand (upstream CLIs still manage their own normal session logs). Isolation uses ephemeral env vars, ephemeral CLI flags, and overlay files inside the plugin data directory.
+2. **Master hard switch** — enforced inside the MCP server, not in the UI. OFF blocks all new subagent delegation (`ask` / `review`); manual UI checks (Test Connection, Fetch Models, Codex status) remain available when clicked.
+3. **Read-only `Oracle`** — not configurable to a higher privilege level; enforced natively on Codex (`read-only`), fail-closed permission denial on ACP (`dsh`), read-only tool allowlist on Claude Code, and prompt-level only on experimental `agy`.
+4. **Workspace-write `Hephaestus`** — serialized by a per-workspace write mutex by default (with native `workspace-write` sandbox on Codex; `danger-full-access` exists only behind an explicit, default-off setting).
 5. **Secret isolation** — see [§8](#8-data--secrets-model).
-6. **Worktree boundary** — optional parallel writers are confined to isolated worktrees, see [§10](#10-git-worktree-isolation).
+6. **Worktree boundary** — optional parallel writers get isolated Git checkouts/branches (not OS containers), see [§10](#10-git-worktree-isolation).
 
 Practical note for contributors: when `Hephaestus` runs against A.stand's own repository inside a `workspace-write` sandbox on Windows, some toolchains (piped `esbuild` spawns, headless browser tests, writes into the host plugin directory) are blocked by the sandbox. Finish code changes and syntax checks inside the subagent, then run `npm run install:antigravity` and `npm run test:e2e` on the host.
 

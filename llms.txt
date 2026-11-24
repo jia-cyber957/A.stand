@@ -2,12 +2,12 @@
 
 > Zero-mutation multi-AI persistent subagent broker for Antigravity. Keeps the Antigravity Lead Agent focused on architecture, planning, and final verification while delegating heavy multi-file implementation (`Hephaestus`) and parallel read-only research/review (`Oracle`) to native external AI harnesses, with a side-panel console and real upstream Prompt Cache telemetry.
 
-A.stand is an MCP plugin (5 concise MCP tools + orchestration skill + rules) that brokers persistent subagents across **OpenAI Codex CLI**, **DeepSeek Harness (`dsh` / ACP)** for DeepSeek, Gemini 4 and any OpenAI-compatible API or proxy, **Anthropic Claude Code CLI**, and the **Google Antigravity CLI (`agy`)**. Subagent context never floods the Lead chat: the Lead Agent receives only a concise 1–3K character final report.
+A.stand is an MCP plugin (5 concise MCP tools + orchestration skill + rules) that brokers persistent subagents across **OpenAI Codex CLI**, **DeepSeek Harness (`dsh` / ACP)** for DeepSeek, Gemini 4 and any OpenAI-compatible API or proxy, **Anthropic Claude Code CLI**, and the **Google Antigravity CLI (`agy`)**. Subagent context never floods the Lead chat: the Lead Agent receives a concise final report (typically 1–3K chars; replies above 24K chars are truncated with the full copy saved on disk).
 
 - License: Apache License 2.0
 - Runtime: Node.js >= 20 (Node.js >= 24.9.0 if using DeepSeek Harness `dsh`)
 - Repository: https://github.com/jia-cyber957/A.stand
-- Install: `git clone https://github.com/jia-cyber957/A.stand.git` then `npm install && npm run install:antigravity`, restart Antigravity once.
+- Install: `git clone https://github.com/jia-cyber957/A.stand.git A.stand && cd A.stand && npm install && npm run install:antigravity`, then restart Antigravity once.
 
 ## Key capabilities
 

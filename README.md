@@ -65,10 +65,10 @@ A.stand lets your Antigravity Lead Agent stay focused on architecture, planning,
    - **Accidental-Close Recovery**: job state & `sessionId` persist atomically to disk; if Antigravity closes mid-run, restarting displays an **`⚠ Interrupted`** banner with one-click **Copy Resume Prompt**.
 
 6. **Zero-Mutation Purity & Hard Safety Guardrails**
-   - **Never touches** `~/.codex/config.toml`, `~/.dsh/*`, `~/.claude/*`, or `~/.gemini/antigravity-cli/*`.
-   - **Master Hard Switch**: OFF = hard-blocked inside MCP server (0 external calls).
+   - **Never modifies** your external CLI configs (`~/.codex/config.toml`, `~/.dsh/` configs, `~/.claude/` configs, or `~/.gemini/antigravity-cli/settings.json`).
+   - **Master Hard Switch**: OFF = hard-blocks all new subagent delegation inside the MCP server.
    - **Secret Isolation**: API keys live solely in private `secrets.json` (cross-origin endpoint edits require re-entering the key).
-   - **Two-Layer Sandbox**: `Oracle` is strictly read-only (parallel slots). `Hephaestus` defaults to `workspace-write` with a per-workspace write mutex. Settings can enable parallel Git worktree writers or allow full access.
+   - **Per-Engine Sandbox & Worktree Isolation**: `Oracle` is read-only (native sandbox on Codex, fail-closed permission denial on ACP, read-only tool allowlist on Claude Code, prompt-level on experimental `agy`). `Hephaestus` uses a per-workspace write mutex by default (plus native `workspace-write` on Codex); settings can enable opt-in Git worktree checkouts or full access.
    - Full details: [SECURITY.md](./SECURITY.md).
 
 7. **Two-Level API Channels, Live Codex Quotas & Automatic Failover**

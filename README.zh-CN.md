@@ -68,10 +68,10 @@ A.stand 让你的 Antigravity 主 Agent 专注于架构决策、任务拆解与�
    - **防误关兜底**：任务状态与 `sessionId` 实时原子落盘；万一中途关掉 Antigravity，重开后团队页顶部自动弹出 **`⚠ 意外中断`** 提醒条，带 **一键复制续跑提示词**。
 
 6. **零侵入纯净性 & 强安全边界**
-   - **绝不修改**你的 `~/.codex/config.toml`、`~/.dsh/*`、`~/.claude/*`、`~/.gemini/antigravity-cli/*` 等任何外部软件配置；
-   - 右上角 **总硬开关**（关闭即代码层硬拦截，0 外部调用）；
+   - **绝不修改**你本机已有的外部 CLI 配置文件（`~/.codex/config.toml`、`~/.dsh/` 配置、`~/.claude/` 配置、`~/.gemini/antigravity-cli/settings.json`）；
+   - 右上角 **总硬开关**（关闭即在 MCP 服务端彻底拦截所有新任务派发）；
    - API Key 独立存放于插件私有 `secrets.json`，改跨域名地址强制重填 Key 防泄密；
-   - `Oracle`（白泽）始终只读，`Hephaestus`（祝融）默认 `workspace-write` 沙箱隔离（全权限需在设置里显式手动开启）；
+   - **按引擎落实隔离**：`白泽（Oracle）` 按引擎能力落实只读边界（Codex 原生只读沙箱、ACP 拒绝写权限 fail-closed、Claude Code 只读工具白名单、`agy` 实验版为提示词约束）；`祝融（Hephaestus）` 默认按工作区互斥写（Codex 原生 `workspace-write`，Git Worktree 并行写与全权限均需在设置里显式开启）；
    - 完整说明见 [SECURITY.md](./SECURITY.md)。
 
 7. **API 渠道两级管理 + Codex 额度追踪 + 全自动 E2E 测试**

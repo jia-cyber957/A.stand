@@ -28,7 +28,7 @@ const OUT_DIR = path.join(ROOT, "docs", "screenshots");
 const MIN_PNG_BYTES = 15 * 1024;
 const FRAME_WIDTH = 480; // CSS px — matches the Antigravity inline/side panel width
 const DEVICE_SCALE = 2; // 2x DPR -> 960 px wide QR-ready PNGs
-const VIEWPORT = { width: FRAME_WIDTH + 40, height: 3600 };
+const VIEWPORT = { width: FRAME_WIDTH, height: 3600 };
 const DEMO_CWD = "/projects/demo-web-app";
 
 // ---------------------------------------------------------------------------------------------
@@ -118,6 +118,7 @@ function buildTelemetry() {
   });
   const summary = logger.getSummary(30);
   fs.rmSync(dir, { recursive: true, force: true });
+  summary.logPath = "~/.gemini/antigravity/plugin_data/agent-relay/telemetry.jsonl";
   if (Math.abs(summary.cumulativeHitRate - 98.6) > 0.06) {
     throw new Error(`Synthetic telemetry drifted from 98.6% (got ${summary.cumulativeHitRate}%)`);
   }
@@ -335,6 +336,21 @@ function buildDashboardState() {
 
   const recentJobs = [
     {
+      jobId: "job_demo_checkout",
+      role: "hephaestus",
+      slot: "default",
+      title: "Checkout retry + idempotency key",
+      cwd: DEMO_CWD,
+      engine: "codex",
+      modelDisplayName: "gpt-5-codex",
+      status: "completed",
+      elapsedSec: 86.4,
+      hitRate: 98.9,
+      contextPct: 71,
+      finishedAt: agoIso(4 * MIN),
+      activityCount: 7,
+    },
+    {
       jobId: "job_demo_cache",
       role: "oracle",
       slot: "default",
@@ -507,8 +523,9 @@ function hostHtml({ uiHtml, state, jobDetail }) {
     } else if (msg.method === "tools/call") {
       let result = TOOL_RESULT;
       const name = msg.params && msg.params.name;
-      if (name === "agent_relay_ui_get_job_detail") result = JOB_DETAIL;
-      else if (name === "agent_relay_ui_get_state") result = TOOL_RESULT;
+      if (name === "agent_relay_ui_get_job_detail") {
+        result = { content: [{ type: "text", text: "ok" }], structuredContent: JOB_DETAIL };
+      } else if (name === "agent_relay_ui_get_state") result = TOOL_RESULT;
       src.postMessage({ jsonrpc: "2.0", id: msg.id, result }, "*");
     } else if (msg.id !== undefined) {
       src.postMessage({ jsonrpc: "2.0", id: msg.id, result: {} }, "*");
@@ -554,14 +571,18 @@ function hostHtml({ uiHtml, state, jobDetail }) {
         await waitFor(() => doc().querySelector(".recent-job"));
         doc().querySelector('[data-action="open-job-detail"][data-job="job_demo_checkout"]').click();
         const gotDetail = await waitFor(() => doc().querySelector('[data-step-id="demo_thought_1"]'));
-        for (const id of ["demo_thought_1", "demo_edit_1", "demo_cmd_1"]) {
-          doc().querySelector('[data-step-id="' + id + '"]').click();
+        for (const id of ["demo_thought_1", "demo_edit_1"]) {
+          const el = doc().querySelector('[data-step-id="' + id + '"]');
+          if (el) el.click();
         }
         await waitFor(() => doc().querySelector(".job-final"));
         await settle(frame);
-        // Place the X-ray conversation at its top so the whole timeline is in frame.
         const scroller = doc().querySelector('[data-scroll="job-detail"]');
-        if (scroller) scroller.scrollTop = 0;
+        if (scroller) {
+          scroller.style.maxHeight = "none";
+          scroller.style.overflow = "visible";
+          scroller.scrollTop = 0;
+        }
         if (!gotDetail) throw new Error("job detail never rendered");
       }
       await new Promise((r) => setTimeout(r, 400));
@@ -703,6 +724,7 @@ async function captureWithCdp({ browser, url, mode, outFile }) {
     `--window-size=${VIEWPORT.width},${VIEWPORT.height}`,
     `--user-data-dir=${profile}`,
     "--remote-debugging-port=0",
+    "--remote-allow-origins=*",
     "about:blank",
   ];
   if (process.env.AGENT_RELAY_E2E_NO_BROWSER_SANDBOX === "1") flags.unshift("--no-sandbox");
@@ -720,10 +742,12 @@ async function captureWithCdp({ browser, url, mode, outFile }) {
             const started = Date.now();
             const poll = setInterval(() => {
               try {
-                const port = Number(fs.readFileSync(path.join(profile, "DevToolsActivePort"), "utf8").split(/\r?\n/)[0]);
-                if (port > 0) {
+                const lines = fs.readFileSync(path.join(profile, "DevToolsActivePort"), "utf8").split(/\r?\n/);
+                const port = Number(lines[0]);
+                const wsPath = (lines[1] || "").trim();
+                if (port > 0 && wsPath) {
                   clearInterval(poll);
-                  resolve(port);
+                  resolve({ port, wsPath });
                 }
               } catch {}
               if (Date.now() - started > 12_000) {
@@ -736,7 +760,7 @@ async function captureWithCdp({ browser, url, mode, outFile }) {
             throw new Error(r.err ? `browser spawn failed: ${r.err.message}` : `browser exited early (code ${r.code})`);
           }),
         ]);
-        return openCdp(`ws://127.0.0.1:${seen}/devtools/browser`);
+        return openCdp(`ws://127.0.0.1:${seen.port}${seen.wsPath}`);
       })(),
       15_000,
       "Browser/CDP startup timed out"
@@ -863,7 +887,8 @@ async function main() {
 
   const page = hostHtml({ uiHtml, state, jobDetail });
   const server = http.createServer((req, res) => {
-    if (req.url === "/host" || req.url === "/") {
+    const pathname = new URL(req.url || "/", "http://127.0.0.1").pathname;
+    if (pathname === "/host" || pathname === "/") {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
       res.end(page);
       return;
