@@ -348,6 +348,20 @@ button {
   gap: 8px;
   font-weight: 600;
   font-size: 13.5px;
+  min-width: 0;
+}
+
+.role-title > svg {
+  flex-shrink: 0;
+}
+
+.role-sub {
+  font-weight: 400;
+  font-size: 11.5px;
+  color: var(--ar-text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .role-badge {
