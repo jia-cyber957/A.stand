@@ -145,7 +145,7 @@ export class RelayStore {
     return {
       modelId: queue[0],
       queue,
-      effort: ["low", "medium", "high"].includes(merged.effort) ? merged.effort : "medium",
+      effort: ["off", "low", "medium", "high"].includes(merged.effort) ? merged.effort : "medium",
     };
   }
 
@@ -542,7 +542,7 @@ export class RelayStore {
           this.settings.roles[role].queue = [rp.modelId, ...rest];
           this.settings.roles[role].modelId = rp.modelId;
         }
-        if (["low", "medium", "high"].includes(rp.effort)) {
+        if (["off", "low", "medium", "high"].includes(rp.effort)) {
           this.settings.roles[role].effort = rp.effort;
         }
       }

@@ -539,8 +539,17 @@ export class AcpEngine {
               "        apiKeyEnv: AGENT_RELAY_API_KEY",
               "        api: openai-completions",
               `        baseURL: ${JSON.stringify(model.baseUrl)}`,
+              "        compat:",
+              "          supportsDeveloperRole: false",
+              "          supportsReasoningEffort: true",
+              "          thinkingFormat: openai",
               "        models:",
               `          - id: ${JSON.stringify(model.modelName)}`,
+              "            reasoningEfforts:",
+              "              off: null",
+              "              low: low",
+              "              medium: medium",
+              "              high: high",
               "- id: acp",
               "  config:",
               "    provider: agent-relay",
@@ -690,8 +699,9 @@ export class AcpEngine {
     }
   }
 
-  async runTurn({ cwd, role, model, prompt, sandbox, existingSessionId, onActivity, onSessionReady }) {
+  async runTurn({ cwd, role, model, effort = "medium", sandbox, prompt, existingSessionId, onActivity, onSessionReady }) {
     const t0 = Date.now();
+    const effectiveEffort = ["off", "low", "medium", "high"].includes(effort) ? effort : "medium";
     const permissionMode =
       role === "oracle"
         ? "read-only"
@@ -735,6 +745,13 @@ export class AcpEngine {
         } catch {}
       }
     }
+    try {
+      await state.request("session/set_config_option", {
+        sessionId,
+        configId: "reasoning_effort",
+        value: effectiveEffort,
+      });
+    } catch {}
     state.sessionRoles.set(sessionId, role);
     onSessionReady?.(sessionId);
 

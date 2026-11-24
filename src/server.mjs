@@ -34,7 +34,7 @@ const isCodexPlugin = Boolean(process.env.AGENT_RELAY_CODEX_PLUGIN_ID);
 const roleSettings = z.object({
   modelId: z.string().optional(),
   queue: z.array(z.string()).optional(),
-  effort: z.enum(["low", "medium", "high"]).optional(),
+  effort: z.enum(["off", "low", "medium", "high"]).optional(),
 });
 const chatSettings = {
   enabled: z.boolean().optional(),
@@ -202,7 +202,7 @@ server.registerTool(
         .describe(
           "Optional check-in wait in seconds. Pass 0 to launch asynchronously and return jobId immediately (use for true parallel launches), or omit/set 5-120 to wait (capped at 120s). When the user enables Async Background Mode and this is omitted, the launch is automatically async and the reply includes a zero-token `wait-job.mjs` doorbell command."
         ),
-      effort: z.enum(["low", "medium", "high"]).optional(),
+      effort: z.enum(["off", "low", "medium", "high"]).optional(),
       sandbox: z
         .enum(["workspace-write", "danger-full-access"])
         .optional()

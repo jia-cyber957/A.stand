@@ -77,6 +77,7 @@ const I18N = {
     promote: "设为首选",
     remove: "移除",
     effort: "推理档位",
+    effortOff: "关闭",
     low: "低",
     medium: "中",
     high: "高",
@@ -280,6 +281,7 @@ const I18N = {
     promote: "Make primary",
     remove: "Remove",
     effort: "Reasoning Effort",
+    effortOff: "Off",
     low: "Low",
     medium: "Medium",
     high: "High",
@@ -1857,11 +1859,11 @@ function renderRoleCard(role) {
       <div class="field">
         <div class="field-label"><span>${t("effort")}</span></div>
         <div class="seg" style="width:100%">
-          ${["low", "medium", "high"]
+          ${["off", "low", "medium", "high"]
             .map(
               (lv) => `
             <button class="seg-btn ${cfg.effort === lv ? "active" : ""}" style="flex:1" data-action="set-effort" data-role="${role}" data-effort="${lv}">
-              ${t(lv)}
+              ${t(lv === "off" ? "effortOff" : lv)}
             </button>`
             )
             .join("")}

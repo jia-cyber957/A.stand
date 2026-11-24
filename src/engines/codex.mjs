@@ -568,9 +568,10 @@ export class CodexEngine {
     try {
       // CRITICAL CACHE RULE: never pass per-turn disabledPluginIds here;
       // desktop plugins are disabled cleanly once via startup -c flags.
+      const codexEffort = ["low", "medium", "high"].includes(effort) ? effort : "low";
       const startRes = await this.#request("turn/start", {
         threadId,
-        effort,
+        effort: codexEffort,
         input: [{ type: "text", text: prompt }],
       });
       turnId = startRes?.turn?.id || "";

@@ -757,13 +757,18 @@ async function testAcpActivity() {
   const listeners = new Map();
   const sessionId = "fixture-acp";
   const profile = `default::custom::::::${crypto.createHash("sha256").update("").digest("hex").slice(0, 16)}::read-only`;
+  let seenReasoningEffort = "";
   engine.clients.set(profile, {
     proc: { killed: false, exitCode: 0 },
     initialized: true,
     loadedSessions: new Set([sessionId]),
     sessionRoles: new Map(),
     listeners,
-    async request(method) {
+    async request(method, params) {
+      if (method === "session/set_config_option") {
+        if (params?.configId === "reasoning_effort") seenReasoningEffort = params.value;
+        return [];
+      }
       assert.equal(method, "session/prompt");
       const emit = (sessionUpdate, fields) => listeners.get(sessionId)({
         method: "session/update", params: { update: { sessionUpdate, ...fields } },
@@ -781,8 +786,9 @@ async function testAcpActivity() {
     },
   });
   const events = [];
-  const result = await engine.runTurn({ cwd: ROOT, role: "oracle", prompt: "Check gateway", existingSessionId: sessionId,
+  const result = await engine.runTurn({ cwd: ROOT, role: "oracle", effort: "high", prompt: "Check gateway", existingSessionId: sessionId,
     onActivity: (ev) => events.push(ev) });
+  assert.equal(seenReasoningEffort, "high");
   const final = events.filter((event) => event.kind === "output").at(-1);
   assert.equal(final.title, "One assertion failed.");
   assert.equal(final.detail, "The check finished.\n\nOne assertion failed.");
