@@ -6,7 +6,13 @@
 
 <p align="center">
   <strong>Zero-mutation multi-AI persistent subagent broker for Antigravity.</strong><br/>
-  <a href="./README.zh-CN.md">中文说明</a> · <a href="./AGENT_INSTALL.md">🤖 AI Agent Install & Setup Guide (<code>AGENT_INSTALL.md</code>)</a>
+  <a href="./README.zh-CN.md">中文说明</a> · <a href="./AGENT_INSTALL.md">🤖 AI Agent Install &amp; Setup Guide (<code>AGENT_INSTALL.md</code>)</a> · <a href="./docs/ARCHITECTURE.md">Architecture</a> · <a href="./SECURITY.md">Security</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/jia-cyber957/A.stand/actions/workflows/ci.yml"><img src="https://github.com/jia-cyber957/A.stand/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0" /></a>
+  <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg" alt="Node >= 20" />
 </p>
 
 > **🤖 Fastest way to install — let your AI Agent do it for you!**
@@ -16,6 +22,18 @@
 > ```
 
 A.stand lets your Antigravity Lead Agent stay focused on architecture, planning, and final verification while delegating heavy multi-file implementation (**Hephaestus**) and parallel read-only research/review (**Oracle**) to native external AI harnesses (**OpenAI Codex CLI**, **DeepSeek Harness / OpenAI-compatible APIs & proxies**, **Claude Code**, and **Antigravity CLI**) — with a clean bilingual side-panel console and real upstream Prompt Cache telemetry.
+
+---
+
+## Screenshots
+
+### Team panel — live subagent timeline & Prompt Cache
+
+![A.stand Team panel: live subagent jobs with the collapsible X-ray timeline and real Prompt Cache hit rates](./docs/screenshots/console-team.png)
+
+### Cache analytics — cumulative hit rate from real upstream billing counters
+
+![A.stand Cache panel: cumulative Prompt Cache hit rate, input/cached/output token totals and recent turn chart](./docs/screenshots/console-cache.png)
 
 ---
 
@@ -51,10 +69,26 @@ A.stand lets your Antigravity Lead Agent stay focused on architecture, planning,
    - **Master Hard Switch**: OFF = hard-blocked inside MCP server (0 external calls).
    - **Secret Isolation**: API keys live solely in private `secrets.json` (cross-origin endpoint edits require re-entering the key).
    - **Two-Layer Sandbox**: `Oracle` is strictly read-only (parallel slots). `Hephaestus` defaults to `workspace-write` with a per-workspace write mutex. Settings can enable parallel Git worktree writers or allow full access.
+   - Full details: [SECURITY.md](./SECURITY.md).
 
 7. **Two-Level API Channels, Live Codex Quotas & Automatic Failover**
    - Add an OpenAI-compatible API Channel once (DeepSeek, OpenRouter, self-hosted gateway, etc.) and click **Fetch Models** (`GET /models`) to batch-import models.
    - Live **Codex 5h / 7d quota tracking**, per-role ordered priority queues with cooldown/auto-restore, bilingual Chinese/English UI, and a 9-section automated E2E test suite (including headless strict-CSP browser checks).
+
+---
+
+## Engine Support Matrix
+
+Honest, per-engine maturity — what actually works today:
+
+| Engine | Maturity | What you get |
+| :--- | :--- | :--- |
+| **OpenAI Codex CLI** (`codex app-server`) | ✅ **Full Native Support** | Structured X-ray timeline · Real Prompt Cache · Live 5h / 7d quota · Mid-turn steer |
+| **DeepSeek Harness** (`dsh` / ACP) — *DeepSeek, Gemini 4 & OpenAI-compatible APIs / proxies* | ✅ **Full Native Support** | Structured X-ray timeline · Real Prompt Cache · Two-level API channels & **Fetch Models** |
+| **Anthropic Claude Code CLI** (`claude stream-json`) | 🟦 **Standard Support** | `stream-json` events · Session resume · Prompt Cache telemetry |
+| **Google Antigravity CLI** (`agy` / Gemini 4) | 🟨 **Experimental / Basic** | Headless CLI delegation · Basic text output (no X-ray timeline or upstream cache counters yet) |
+
+> Only the first two engines expose the full structured timeline and upstream cache counters. Claude Code and Antigravity CLI are fully usable but report less structure — the README will be updated as their adapters mature.
 
 ---
 
@@ -64,7 +98,7 @@ A.stand lets your Antigravity Lead Agent stay focused on architecture, planning,
 - **Node.js `>= 20`** (`>= 24.9.0` if using DeepSeek Harness `dsh` for API-key / proxy models)
 - At least one external harness:
   - **OpenAI Codex CLI**: `npm install -g @openai/codex` → `codex login`
-  - **DeepSeek Harness (`dsh`)** *(for DeepSeek & OpenAI-compatible APIs/proxies)*: `npm install -g @deepseek-ai/dsh@latest`
+  - **DeepSeek Harness (`dsh`)** *(for DeepSeek, Gemini 4 & OpenAI-compatible APIs/proxies)*: `npm install -g @deepseek-ai/dsh@latest`
   - **Claude Code CLI**: `npm install -g @anthropic-ai/claude-code` → `claude`
   - **Antigravity CLI**: `agy`
 
@@ -88,7 +122,7 @@ npm run uninstall:antigravity # Clean removal (zero external configs touched)
 
 ```text
 Antigravity Lead Agent (5 concise MCP tools + Skill + Rules)
-   └── A.stand Plugin (~/.gemini/config/plugins/agent-relay/)
+   └── A.stand Plugin (<Antigravity plugins dir>/agent-relay/)
          ├── Side-Panel Console (Team · Models/Channels · Cache · Settings · 中/EN)
          ├── Core Broker (Hard Switch · Concurrency · Doorbell · Gatekeeper · Crash Recovery)
          └── Isolated Engine Adapters (1 file = 1 engine)
@@ -98,7 +132,26 @@ Antigravity Lead Agent (5 concise MCP tools + Skill + Rules)
                └── src/engines/antigravity.mjs  (agy headless CLI)
 ```
 
+- [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) — System architecture, request lifecycle, engine adapters, data model, sandbox layers, Git worktree isolation & test commands
+- [SECURITY.md](./SECURITY.md) — Zero-mutation guarantee, API key isolation, sandbox boundaries & private vulnerability reporting
 - [AGENT_INSTALL.md](./AGENT_INSTALL.md) — AI-Agent executable install, engine setup & model pairing guide
-- [HANDOVER.md](./HANDOVER.md) — Current implementation state & engineering handover
 - [UPGRADING_ENGINES.md](./UPGRADING_ENGINES.md) — Adapting to upstream CLI updates
-- [docs/ROADMAP_WORKTREE.md](./docs/ROADMAP_WORKTREE.md) — Opt-in parallel writers via Git worktrees
+- [llms.txt](./llms.txt) — Machine-readable project map for AI crawlers and coding agents
+
+---
+
+## Acknowledgments
+
+- **Oh-My-OpenAgent / Oh-My-OpenCode** — inspiration for the dual-role design: a read-only **Oracle** advisor/reviewer paired with a workspace-write **Hephaestus** engineer.
+- **OpenAI Codex CLI** — `codex app-server` JSON-RPC, structured events and mid-turn steering.
+- **Anthropic Claude Code** — the `stream-json` CLI protocol and session resume.
+- **DeepSeek Harness / Agent Client Protocol (ACP)** — a standard, model-agnostic agent protocol.
+- **Google Antigravity & Model Context Protocol (MCP)** — the host platform, MCP App UI convention, and the tool protocol A.stand is built on.
+
+And to every user who reports a bug or a broken engine adapter.
+
+---
+
+## License
+
+Released under the [Apache License 2.0](./LICENSE). Copyright 2026 A.stand Contributors.

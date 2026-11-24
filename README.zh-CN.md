@@ -7,7 +7,13 @@
 <p align="center">
   <strong>面向 Antigravity 的零侵入、多 AI 持久化子 Agent 插件（替身使者）</strong><br/>
   实时折叠对话流 · 99% 缓存监控 · 后台零轮询门铃 · Git Worktree 并行改代码<br/>
-  <a href="./README.md">English</a> · <a href="./AGENT_INSTALL.md">🤖 AI Agent 安装与配置手册 (<code>AGENT_INSTALL.md</code>)</a>
+  <a href="./README.md">English</a> · <a href="./AGENT_INSTALL.md">🤖 AI Agent 安装与配置手册 (<code>AGENT_INSTALL.md</code>)</a> · <a href="./docs/ARCHITECTURE.md">架构文档</a> · <a href="./SECURITY.md">安全策略</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/jia-cyber957/A.stand/actions/workflows/ci.yml"><img src="https://github.com/jia-cyber957/A.stand/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0" /></a>
+  <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg" alt="Node >= 20" />
 </p>
 
 > **🤖 最省事安装法：直接让你的 Antigravity 帮你装！**
@@ -17,8 +23,20 @@
 > ```
 
 A.stand 让你的 Antigravity 主 Agent 专注于架构决策、任务拆解与最终验收，把耗时耗额度的重活外包给本机原版外部 AI 引擎（**OpenAI Codex CLI**、**DeepSeek Harness / 任意 OpenAI 兼容 API 与中转站**、**Claude Code**、**Antigravity CLI**）：
-- **`Oracle`（严格只读 · 多路并行）**：并行深挖代码库、架构权衡、连续排错破局、独立 Code Review；
-- **`Hephaestus`（工作区可写 · 默认写互斥）**：多文件开发、核心重构、单测排错闭环。可在设置中开启 Git Worktree 并行改代码。
+- **白泽（Oracle · 独立审查）** —— 严格只读、多路并行：并行深挖代码库、架构权衡、连续排错破局、独立 Code Review；在 A.stand 工具与日志中保持英文名 `Oracle`；
+- **祝融（Hephaestus · 代码执行）** —— 工作区可写、默认写互斥：多文件开发、核心重构、单测排错闭环；可在设置中开启 Git Worktree 并行改代码。在 A.stand 工具与日志中保持英文名 `Hephaestus`。
+
+---
+
+## 界面预览
+
+### 团队面板 — 子 Agent 实时折叠对话流与 Prompt Cache
+
+![A.stand 团队面板：子 Agent 实时任务、可折叠透视时间线与真实 Prompt Cache 命中率](./docs/screenshots/console-team.png)
+
+### 缓存分析 — 读取上游真实计费的累计命中率
+
+![A.stand 缓存面板：累计 Prompt Cache 命中率、输入/缓存/输出 Token 总量与最近轮次曲线](./docs/screenshots/console-cache.png)
 
 ---
 
@@ -50,14 +68,30 @@ A.stand 让你的 Antigravity 主 Agent 专注于架构决策、任务拆解与�
    - **防误关兜底**：任务状态与 `sessionId` 实时原子落盘；万一中途关掉 Antigravity，重开后团队页顶部自动弹出 **`⚠ 意外中断`** 提醒条，带 **一键复制续跑提示词**。
 
 6. **零侵入纯净性 & 强安全边界**
-   - **绝不修改**你的 `~/.codex/config.toml`、`~/.dsh/*`、`~/.claude/*` 等任何外部软件配置；
+   - **绝不修改**你的 `~/.codex/config.toml`、`~/.dsh/*`、`~/.claude/*`、`~/.gemini/antigravity-cli/*` 等任何外部软件配置；
    - 右上角 **总硬开关**（关闭即代码层硬拦截，0 外部调用）；
    - API Key 独立存放于插件私有 `secrets.json`，改跨域名地址强制重填 Key 防泄密；
-   - `Oracle` 始终只读，`Hephaestus` 默认 `workspace-write` 沙箱隔离（全权限需在设置里显式手动开启）。
+   - `Oracle`（白泽）始终只读，`Hephaestus`（祝融）默认 `workspace-write` 沙箱隔离（全权限需在设置里显式手动开启）；
+   - 完整说明见 [SECURITY.md](./SECURITY.md)。
 
 7. **API 渠道两级管理 + Codex 额度追踪 + 全自动 E2E 测试**
    - 添加一次 API 渠道（支持 DeepSeek、OpenRouter 及任意自建 OpenAI 兼容反代网关），点「拉取模型」批量导入；
    - 实时读取 Codex 5 小时 / 7 天配额与重置倒计时，支持按角色配置多 AI 顺延队列与自动回切；中英双语界面，内置 9 组全自动端到端测试（含无头浏览器严格 CSP 校验）。
+
+---
+
+## 引擎支持矩阵
+
+诚实地标注每个引擎当前的成熟度（今天实际可用的能力）：
+
+| 引擎 | 成熟度 | 实际能力 |
+| :--- | :--- | :--- |
+| **OpenAI Codex CLI**（`codex app-server`） | ✅ **完整原生支持** | 结构化 X-ray 时间线 · 真实 Prompt Cache · 实时 5 小时 / 7 天配额 · 任务中途 steer |
+| **DeepSeek Harness**（`dsh` / ACP）—— *DeepSeek、Gemini 4 及任意 OpenAI 兼容 API / 中转站* | ✅ **完整原生支持** | 结构化 X-ray 时间线 · 真实 Prompt Cache · 两级 API 渠道与「拉取模型」 |
+| **Anthropic Claude Code CLI**（`claude stream-json`） | 🟦 **标准支持** | `stream-json` 事件 · 会话续接 · Prompt Cache 遥测 |
+| **Google Antigravity CLI**（`agy` / Gemini 4） | 🟨 **实验性 / 基础支持** | 无头 CLI 委托 · 基础文本输出（暂不支持 X-ray 时间线与上游缓存计数） |
+
+> 目前只有前两个引擎提供完整的结构化时间线与上游真实缓存计数。Claude Code 与 Antigravity CLI 均可正常使用，但返回的结构信息较少——随着适配器完善，本表会持续更新。
 
 ---
 
@@ -67,7 +101,7 @@ A.stand 让你的 Antigravity 主 Agent 专注于架构决策、任务拆解与�
 - **Node.js `>= 20`**（若要通过 DeepSeek Harness `dsh` 接入 API Key / 中转站模型，需 **Node.js `>= 24.9.0`**）
 - 本机至少安装一个外部引擎（不懂怎么选可以直接问你的 Antigravity，它会参考 [AGENT_INSTALL.md](./AGENT_INSTALL.md) 给你推荐）：
   - **OpenAI Codex CLI**：`npm install -g @openai/codex` → `codex login`
-  - **DeepSeek Harness（`dsh`）** *(支持官方 DeepSeek 及所有 OpenAI 兼容 API/中转站)*：`npm install -g @deepseek-ai/dsh@latest`（必须带 `@latest`）
+  - **DeepSeek Harness（`dsh`）** *(支持官方 DeepSeek、Gemini 4 及所有 OpenAI 兼容 API/中转站)*：`npm install -g @deepseek-ai/dsh@latest`（必须带 `@latest`）
   - **Claude Code CLI**：`npm install -g @anthropic-ai/claude-code` → `claude`
   - **Antigravity CLI**：`agy`
 
@@ -89,7 +123,38 @@ npm run uninstall:antigravity # 一键干净卸载（零残留、绝不改外部
 
 ## 文档导航
 
+```text
+Antigravity 主 Agent（5 个精简 MCP 工具 + Skill + Rules）
+   └── A.stand 插件（<Antigravity 插件目录>/agent-relay/）
+         ├── 侧边面板控制台（团队 · 模型/渠道 · 缓存 · 设置 · 中/EN）
+         ├── 核心调度器（总硬开关 · 并发 · 门铃 · 守门员 · 崩溃恢复）
+         └── 隔离的引擎适配器（1 个文件 = 1 个引擎）
+               ├── src/engines/codex.mjs        （原生 codex app-server）
+               ├── src/engines/acp.mjs          （标准 ACP -> dsh --profile acp）
+               ├── src/engines/claude-code.mjs  （claude stream-json --resume）
+               └── src/engines/antigravity.mjs  （agy 无头 CLI）
+```
+
+- [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) — 系统架构、请求生命周期、引擎适配器、数据模型、沙箱分层、Git Worktree 隔离与测试命令
+- [SECURITY.md](./SECURITY.md) — 零侵入保证、API Key 隔离、沙箱边界与私密漏洞报告
 - [AGENT_INSTALL.md](./AGENT_INSTALL.md) — 写给 AI Agent 的自动化安装、引擎排坑与模型选型手册
-- [HANDOVER.md](./HANDOVER.md) — 完整技术交接文档与后续 Roadmap（含独立轻量 `.exe` 多宿主规划）
 - [UPGRADING_ENGINES.md](./UPGRADING_ENGINES.md) — 上游 CLI 升级适配指南
-- [docs/ROADMAP_WORKTREE.md](./docs/ROADMAP_WORKTREE.md) — 可选的 Git Worktree 并行写入
+- [llms.txt](./llms.txt) — 面向 AI 爬虫与编程 Agent 的机器可读项目索引
+
+---
+
+## 致谢
+
+- **Oh-My-OpenAgent / Oh-My-OpenCode** —— 双角色设计（只读的 **Oracle** 顾问/审查者 + 可写的 **Hephaestus** 工程师）的灵感来源。
+- **OpenAI Codex CLI** —— `codex app-server` JSON-RPC、结构化事件与任务中途 steer。
+- **Anthropic Claude Code** —— `stream-json` CLI 协议与会话续接。
+- **DeepSeek Harness / Agent Client Protocol（ACP）** —— 标准化的、模型无关的 Agent 协议。
+- **Google Antigravity 与 Model Context Protocol（MCP）** —— 宿主平台、MCP App UI 约定，以及 A.stand 赖以构建的工具协议。
+
+以及每一位提交 Bug 报告或引擎适配反馈的用户。
+
+---
+
+## 开源协议
+
+本项目基于 [Apache License 2.0](./LICENSE) 开源。Copyright 2026 A.stand Contributors。

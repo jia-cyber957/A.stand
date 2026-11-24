@@ -3,7 +3,28 @@
   "version": "1.0.0",
   "description": "Zero-mutation multi-AI persistent subagent broker for Antigravity — native Codex, Claude Code, Antigravity CLI, and DeepSeek Harness (ACP) with a real-time Prompt Cache console.",
   "type": "module",
-  "license": "MIT",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/jia-cyber957/A.stand",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jia-cyber957/A.stand.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jia-cyber957/A.stand/issues"
+  },
+  "keywords": [
+    "antigravity",
+    "mcp",
+    "ai-agents",
+    "multi-agent",
+    "subagent",
+    "codex",
+    "claude-code",
+    "deepseek",
+    "gemini",
+    "git-worktree",
+    "prompt-cache"
+  ],
   "engines": {
     "node": ">=20.0.0"
   },

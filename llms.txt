@@ -1,0 +1,45 @@
+# A.stand
+
+> Zero-mutation multi-AI persistent subagent broker for Antigravity. Keeps the Antigravity Lead Agent focused on architecture, planning, and final verification while delegating heavy multi-file implementation (`Hephaestus`) and parallel read-only research/review (`Oracle`) to native external AI harnesses, with a side-panel console and real upstream Prompt Cache telemetry.
+
+A.stand is an MCP plugin (5 concise MCP tools + orchestration skill + rules) that brokers persistent subagents across **OpenAI Codex CLI**, **DeepSeek Harness (`dsh` / ACP)** for DeepSeek, Gemini 4 and any OpenAI-compatible API or proxy, **Anthropic Claude Code CLI**, and the **Google Antigravity CLI (`agy`)**. Subagent context never floods the Lead chat: the Lead Agent receives only a concise 1–3K character final report.
+
+- License: Apache License 2.0
+- Runtime: Node.js >= 20 (Node.js >= 24.9.0 if using DeepSeek Harness `dsh`)
+- Repository: https://github.com/jia-cyber957/A.stand
+- Install: `git clone https://github.com/jia-cyber957/A.stand.git` then `npm install && npm run install:antigravity`, restart Antigravity once.
+
+## Key capabilities
+
+- **Real Lead-quota savings**: subagent context (often 200K+ tokens) stays isolated inside the subagent process; only a concise final report (full copy saved to `outputs/<jobId>.txt`) returns to the Lead.
+- **Real upstream Prompt Cache**: 95%–99.8% hit rates read from genuine billing counters (Codex, DeepSeek, Anthropic, `dsh` zstd session logs), never estimated.
+- **Explicit session lifecycle**: omitting `sessionId` starts a clean fresh session; passing the footer `sessionId` resumes context and cache across restarts.
+- **Structured X-ray timeline**: collapsible per-job conversation view (`Thought for Ns`, `Analyzed file #L10-50`, `Edited file +13 -4`, `Ran command · exit code` with terminal output, Markdown final response).
+- **Two-level API channels**: add one API channel (Base URL + API key), click **Fetch Models** (`GET /models`) to batch-import models; keys live only in a private `secrets.json`.
+- **Opt-in async background mode**: 1-second chat unlock plus a zero-token doorbell (`wait-job.mjs`) that wakes the Lead Agent only when a job finishes, stalls, or fails.
+- **Opt-in stall gatekeeper AI**: 2-choice `CONTINUE` / `ALERT` judgment on silence timeouts without reading the full history.
+- **Crash recovery**: atomic job snapshots; an interrupted job is flagged with a one-click copy-resume prompt.
+- **Zero-mutation guarantee**: never touches `~/.codex/config.toml`, `~/.dsh/*`, `~/.claude/*`, or `~/.gemini/antigravity-cli/*`.
+- **Two-layer sandbox**: `Oracle` is always read-only; `Hephaestus` defaults to `workspace-write` with a per-workspace write mutex.
+- **Opt-in Git worktree parallelism**: independent writers run in isolated `astand/<jobId>` worktrees.
+- **Live Codex 5h/7d quota tracking** and per-role ordered priority queues with cooldown and auto-restore.
+
+## Engine support
+
+- **OpenAI Codex CLI** — full native support (`codex app-server`): structured X-ray timeline, real Prompt Cache, live 5h/7d quota, mid-turn steer.
+- **DeepSeek Harness (`dsh` / ACP)** — full native support for DeepSeek, Gemini 4 and OpenAI-compatible APIs/proxies: structured X-ray timeline, real Prompt Cache, two-level API channels with Fetch Models.
+- **Anthropic Claude Code CLI** — standard support: `stream-json`, session resume, Prompt Cache telemetry.
+- **Google Antigravity CLI (`agy`, Gemini 4)** — experimental / basic: headless CLI delegation with basic text output; no X-ray timeline or upstream cache counters yet.
+
+## Docs
+
+- [README.md](https://github.com/jia-cyber957/A.stand/blob/main/README.md): overview, installation, engine support matrix, screenshots.
+- [README.zh-CN.md](https://github.com/jia-cyber957/A.stand/blob/main/README.zh-CN.md): Chinese overview, installation, engine support matrix and role guide (`白泽` is the read-only Oracle reviewer, `祝融` is the workspace-write Hephaestus engineer).
+- [AGENT_INSTALL.md](https://github.com/jia-cyber957/A.stand/blob/main/AGENT_INSTALL.md): executable, step-by-step install, engine setup and model-pairing guide written for AI agents.
+- [docs/ARCHITECTURE.md](https://github.com/jia-cyber957/A.stand/blob/main/docs/ARCHITECTURE.md): system architecture, data flow, sandbox model, Git worktree isolation, repository layout and test commands.
+- [SECURITY.md](https://github.com/jia-cyber957/A.stand/blob/main/SECURITY.md): security policy, zero-mutation guarantee, API key isolation, sandbox boundaries, private vulnerability reporting.
+- [UPGRADING_ENGINES.md](https://github.com/jia-cyber957/A.stand/blob/main/UPGRADING_ENGINES.md): how to adapt an engine adapter when an upstream CLI changes.
+
+## Optional
+
+- [LICENSE](https://github.com/jia-cyber957/A.stand/blob/main/LICENSE): Apache License 2.0.
