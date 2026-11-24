@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -18,6 +18,61 @@ const THOUGHT_GROWTH_CHARS = 80;
 const SLOW_TOOL_MS = 2000;
 const MAX_THOUGHT_TAIL = 140;
 const MAX_RESULT_TAIL = 120;
+
+function toLongFsPath(rawPath) {
+  if (process.platform !== "win32" || !rawPath) return rawPath;
+  const resolved = path.resolve(rawPath);
+  if (resolved.length < 200 || resolved.startsWith("\\\\?\\") || resolved.startsWith("\\\\.\\")) return resolved;
+  if (resolved.startsWith("\\\\")) return `\\\\?\\UNC\\${resolved.slice(2)}`;
+  return `\\\\?\\${resolved}`;
+}
+
+function decompressZstdFile(filePath, dataDir) {
+  const fsPath = toLongFsPath(filePath);
+  if (!filePath.endsWith(".zstd")) return fs.readFileSync(fsPath, "utf8");
+  if (typeof zlib.zstdDecompressSync === "function") {
+    return zlib.zstdDecompressSync(fs.readFileSync(fsPath)).toString("utf8");
+  }
+  // Fallback when the host MCP runtime is Node < 24: reuse dsh's Node 24 runtime to decompress.
+  try {
+    const bin = resolveDshBinary(dataDir);
+    const nodeExe = bin?.nodeExe || (bin?.prefixArgs?.length ? bin.command : "");
+    if (!nodeExe) return "";
+    return execFileSync(
+      nodeExe,
+      ["-e", "const fs=require('fs'),z=require('zlib');process.stdout.write(z.zstdDecompressSync(fs.readFileSync(process.argv[1])))", fsPath],
+      { encoding: "utf8", windowsHide: true, timeout: 4000, maxBuffer: 32 * 1024 * 1024 }
+    );
+  } catch {
+    return "";
+  }
+}
+
+// Strip dsh's Windows ConstrainedLanguage boilerplate injected by its UTF8Encoding preamble.
+// When that boilerplate was the ONLY reason exitCode became 1 (real command stdout succeeded),
+// downgrade the false-positive exitCode 1 to 0 so the timeline isn't flooded with fake errors.
+const CONSTRAINED_BLOCK_RE =
+  /(?:^|\r?\n)(?:\[stderr\]\s*)?(?:Cannot create type\. Only core types are supported in this language mode\.|无法创建类型。仅在此语言模式下支持核心类型。)[\s\S]*?CannotCreateTypeConstrainedLanguage\s*/g;
+const REAL_ERROR_RE =
+  /\b(CategoryInfo|FullyQualifiedErrorId|CommandNotFoundException|Permission denied|Access is denied|syntax error|SyntaxError|Traceback|fatal:|ERROR:)\b/i;
+
+export function sanitizeConstrainedLangOutput(output, exitCode) {
+  const raw = String(output ?? "");
+  if (!raw.includes("CannotCreateTypeConstrainedLanguage") || !/UTF8Encoding/i.test(raw)) {
+    return { output: raw, exitCode, falsePositiveCleared: false };
+  }
+  const stripped = raw
+    .replace(CONSTRAINED_BLOCK_RE, "\n")
+    .replace(/\n\[stderr\]\s*$/g, "")
+    .replace(/^\s*\[stderr\]\s*\r?\n/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  const hasRealError = REAL_ERROR_RE.test(stripped);
+  if (exitCode === 1 && !hasRealError && stripped.length > 0) {
+    return { output: stripped, exitCode: 0, falsePositiveCleared: true };
+  }
+  return { output: stripped || raw, exitCode, falsePositiveCleared: false };
+}
 
 function oneLine(text, max) {
   const clean = String(text ?? "").replace(/\s+/g, " ").trim();
@@ -380,37 +435,41 @@ export class AcpEngine {
   }
 
   async #readDshSessionCacheUsage(dshHome, sessionId, prevTurnCount = 0) {
-    if (!dshHome || !sessionId || typeof zlib.zstdDecompressSync !== "function") return null;
+    if (!dshHome || !sessionId) return null;
     const readOnce = () => {
       try {
         const sessionsRoot = path.join(dshHome, "sessions");
-        if (!fs.existsSync(sessionsRoot)) return null;
+        if (!fs.existsSync(toLongFsPath(sessionsRoot))) return null;
         let targetFile = "";
-        for (const wsEntry of fs.readdirSync(sessionsRoot)) {
+        for (const wsEntry of fs.readdirSync(toLongFsPath(sessionsRoot))) {
           const candZstd = path.join(sessionsRoot, wsEntry, sessionId, "session.v4.jsonl.zstd");
-          if (fs.existsSync(candZstd)) {
+          if (fs.existsSync(toLongFsPath(candZstd))) {
             targetFile = candZstd;
             break;
           }
           const candPlain = path.join(sessionsRoot, wsEntry, sessionId, "session.v4.jsonl");
-          if (fs.existsSync(candPlain)) {
+          if (fs.existsSync(toLongFsPath(candPlain))) {
             targetFile = candPlain;
             break;
           }
         }
         if (!targetFile) return null;
-        const rawBuf = fs.readFileSync(targetFile);
-        const text = targetFile.endsWith(".zstd")
-          ? zlib.zstdDecompressSync(rawBuf).toString("utf8")
-          : rawBuf.toString("utf8");
+        const text = decompressZstdFile(targetFile, this.dataDir);
+        if (!text) return null;
         const lines = text.split(/\r?\n/);
         let turnEnds = 0;
+        let lastStopReason = "";
         let lastUsage = null;
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i].trim();
           if (!line) continue;
           if (line.includes('"turn/end"')) {
             turnEnds++;
+            try {
+              const obj = JSON.parse(line);
+              const kind = obj?.data?.reason?.kind || obj?.data?.stopReason || "";
+              if (kind) lastStopReason = String(kind);
+            } catch {}
           } else if (line.includes('"assistant/message"')) {
             try {
               const obj = JSON.parse(line);
@@ -421,7 +480,7 @@ export class AcpEngine {
             } catch {}
           }
         }
-        if (!lastUsage) return { turnEnds, usage: null };
+        if (!lastUsage) return { turnEnds, lastStopReason, usage: null };
         const uncached = typeof lastUsage.inputTokens === "number" ? lastUsage.inputTokens : 0;
         const hasCache = typeof lastUsage.cacheReadTokens === "number";
         const cached = hasCache ? lastUsage.cacheReadTokens : null;
@@ -429,6 +488,7 @@ export class AcpEngine {
         const totalInput = uncached + (cached || 0) + cacheWrite;
         return {
           turnEnds,
+          lastStopReason,
           usage: {
             inputTokens: totalInput > 0 ? totalInput : null,
             ...(hasCache ? { cachedInputTokens: cached } : {}),
@@ -445,24 +505,24 @@ export class AcpEngine {
     let best = null;
     for (let attempt = 0; attempt < 10; attempt++) {
       const snap = readOnce();
-      if (snap?.usage) best = snap.usage;
-      if (snap && snap.turnEnds > prevTurnCount && snap.usage) return snap.usage;
+      if (snap && (snap.usage || snap.lastStopReason)) best = snap;
+      if (snap && snap.turnEnds > prevTurnCount && (snap.usage || snap.lastStopReason)) return snap;
       await new Promise((r) => setTimeout(r, 60));
     }
     return best;
   }
 
   #countDshTurnEnds(dshHome, sessionId) {
-    if (!dshHome || !sessionId || typeof zlib.zstdDecompressSync !== "function") return 0;
+    if (!dshHome || !sessionId) return 0;
     try {
       const sessionsRoot = path.join(dshHome, "sessions");
-      if (!fs.existsSync(sessionsRoot)) return 0;
-      for (const wsEntry of fs.readdirSync(sessionsRoot)) {
+      if (!fs.existsSync(toLongFsPath(sessionsRoot))) return 0;
+      for (const wsEntry of fs.readdirSync(toLongFsPath(sessionsRoot))) {
         for (const fname of ["session.v4.jsonl.zstd", "session.v4.jsonl"]) {
           const fp = path.join(sessionsRoot, wsEntry, sessionId, fname);
-          if (!fs.existsSync(fp)) continue;
-          const rawBuf = fs.readFileSync(fp);
-          const text = fname.endsWith(".zstd") ? zlib.zstdDecompressSync(rawBuf).toString("utf8") : rawBuf.toString("utf8");
+          if (!fs.existsSync(toLongFsPath(fp))) continue;
+          const text = decompressZstdFile(fp, this.dataDir);
+          if (!text) continue;
           return (text.match(/"turn\/end"/g) || []).length;
         }
       }
@@ -527,7 +587,15 @@ export class AcpEngine {
         if (this.dataDir && model?.baseUrl && model?.modelName) {
           try {
             const safeId = String(model?.id || "default").replace(/[^a-zA-Z0-9_-]/g, "_");
-            const profileDir = path.join(this.dataDir, "dsh-profiles", safeId);
+            const legacyDir = path.join(this.dataDir, "dsh-profiles", safeId);
+            // Keep existing legacy profile dir to preserve sessions; use compact 12-char id for new long UUID models
+            // so Windows paths stay safely under 260-char MAX_PATH even with Chinese-encoded workspace dirs.
+            const shortId = safeId.length > 16
+              ? `p_${createHash("sha256").update(safeId).digest("hex").slice(0, 10)}`
+              : safeId;
+            const profileDir = fs.existsSync(legacyDir)
+              ? legacyDir
+              : path.join(this.dataDir, "dsh-profiles", shortId);
             fs.mkdirSync(profileDir, { recursive: true });
             patchPath = path.join(profileDir, "agent-relay-overlay.yml");
             const overlayYaml = [
@@ -772,6 +840,8 @@ export class AcpEngine {
     // pushing 30 duplicate rows for one thought / tool call / streamed answer.
     const toolCalls = new Map(); // toolCallId -> { kind, title, meta, added, removed, summary, detail, startedAt }
     const thought = { open: false, id: "", full: "", startedAt: 0, emitAt: 0, emittedLen: 0, seq: 0 };
+    // Anchor timestamp for measuring real thinking duration even when dsh flushes a thought block in one burst.
+    let stepAnchorAt = t0;
     const msgKey = String(t0);
 
     // 400ms+ -> at least 1s; otherwise a 1-decimal value (0.3s) or an exact integer (12.0 -> 12).
@@ -803,12 +873,14 @@ export class AcpEngine {
     // Close the open reasoning block with its exact final duration (idempotent).
     const finalizeThought = () => {
       if (!thought.open) return;
-      const durationSec = formatDuration(Date.now() - thought.startedAt);
+      const now = Date.now();
+      const durationSec = formatDuration(Math.max(100, now - thought.startedAt));
       const text = thought.full.slice(0, 4000);
       const id = thought.id;
       thought.open = false;
       thought.id = "";
       thought.full = "";
+      stepAnchorAt = now;
       onActivity?.({
         id,
         type: "thought",
@@ -823,11 +895,13 @@ export class AcpEngine {
 
     const ensureThought = (messageId) => {
       if (thought.open) return;
+      const now = Date.now();
       thought.seq += 1;
       thought.open = true;
       thought.id = `thought_${messageId || thought.seq}`;
       thought.full = "";
-      thought.startedAt = Date.now();
+      // Anchor at the prior step completion (capped at 120s) so burst-flushed reasoning shows real wait time, not 0s.
+      thought.startedAt = stepAnchorAt > 0 && now - stepAnchorAt <= 120_000 ? stepAnchorAt : now;
       thought.emitAt = 0;
       thought.emittedLen = 0;
     };
@@ -923,10 +997,18 @@ export class AcpEngine {
         }
         const terminal = status === "completed" || status === "failed";
         if (terminal || cleanOutput || exitCode !== null) {
-          const failed = terminal && (status === "failed" || (exitCode !== null && exitCode !== 0));
+          const rawCaptured = tc?.output || cleanOutput;
+          const sanitized = terminal
+            ? sanitizeConstrainedLangOutput(rawCaptured, exitCode)
+            : { output: rawCaptured, exitCode, falsePositiveCleared: false };
+          const effectiveExitCode = sanitized.exitCode;
+          const captured = sanitized.output;
+          const failed = terminal && (
+            (status === "failed" && !sanitized.falsePositiveCleared) ||
+            (effectiveExitCode !== null && effectiveExitCode !== 0)
+          );
           const durationSec = tc ? Number(((Date.now() - tc.startedAt) / 1000).toFixed(1)) : 0;
           const label = tc?.summary || "tool call";
-          const captured = tc?.output || cleanOutput;
           const excerpt = oneLine(captured, MAX_RESULT_TAIL);
           onActivity?.({
             id: update.toolCallId || "",
@@ -937,14 +1019,17 @@ export class AcpEngine {
             added: tc?.added || 0,
             removed: tc?.removed || 0,
             durationSec,
-            exitCode,
+            exitCode: effectiveExitCode,
             status: terminal ? (failed ? "error" : "done") : "running",
             summary: terminal
               ? `${failed ? "✗" : "✓"} ${label} (${Math.round(durationSec)}s)${excerpt ? ` → ${excerpt}` : ""}`
               : label,
             detail: [tc?.detail, captured].filter(Boolean).join("\n\n"),
           });
-          if (terminal) toolCalls.delete(update.toolCallId);
+          if (terminal) {
+            toolCalls.delete(update.toolCallId);
+            stepAnchorAt = Date.now();
+          }
         } else {
           onActivity?.({ type: "touch" });
         }
@@ -974,22 +1059,45 @@ export class AcpEngine {
       if (res?.usage || res?._meta?.usage) {
         rawUsage = { ...(rawUsage || {}), ...(res.usage || res._meta.usage) };
       }
+      let diskSnap = null;
       if (rawUsage?.cachedInputTokens === undefined && rawUsage?.cached_input_tokens === undefined) {
-        const diskUsage = await this.#readDshSessionCacheUsage(state.dshHome, sessionId, prevTurnEnds);
-        if (diskUsage) {
-          rawUsage = { ...(rawUsage || {}), ...diskUsage };
+        diskSnap = await this.#readDshSessionCacheUsage(state.dshHome, sessionId, prevTurnEnds);
+        if (diskSnap?.usage) {
+          rawUsage = { ...(rawUsage || {}), ...diskSnap.usage };
         }
+      } else if (!res?.stopReason && !res?.stop_reason) {
+        diskSnap = await this.#readDshSessionCacheUsage(state.dshHome, sessionId, prevTurnEnds);
       }
       const usage = normalizeUsage(model?.providerId === "deepseek" ? "deepseek" : "openai", rawUsage);
+      const stopReason = String(res?.stopReason || res?.stop_reason || diskSnap?.lastStopReason || "").toLowerCase();
+      const truncatedByMaxTokens =
+        stopReason === "max_tokens" || stopReason === "max-tokens" || stopReason === "length";
       finalizeThought();
       finishMessage();
+      let finalText = Array.from(messages.values()).at(-1)?.text.trim() || "(no response text)";
+      if (truncatedByMaxTokens) {
+        const notice =
+          `⚠️ [Output truncated: model hit its max_tokens output limit (${stopReason}). Resume with the same sessionId (e.g. "continue") to finish the remaining output.]`;
+        finalText = `${finalText}\n\n${notice}`;
+        onActivity?.({
+          id: `trunc_${msgKey}`,
+          type: "output",
+          kind: "output",
+          title: "⚠️ 输出已达模型上限 (max_tokens) 被截断",
+          status: "error",
+          detail: notice,
+          summary: "⚠️ 输出已达模型上限 (max_tokens) 被截断",
+        });
+      }
       return {
         sessionId,
         turnId: "",
         reused,
         resumedFromDisk,
         resolvedModel: model?.modelName || "deepseek-harness",
-        text: Array.from(messages.values()).at(-1)?.text.trim() || "(no response text)",
+        text: finalText,
+        stopReason: stopReason || undefined,
+        truncated: truncatedByMaxTokens,
         usage,
         actions,
         elapsedMs: Date.now() - t0,

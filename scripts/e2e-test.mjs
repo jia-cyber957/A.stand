@@ -11,7 +11,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { RelayStore } from "../src/core/store.mjs";
 import { createJobWorktree, detectGitRepo, finalizeJobWorktree } from "../src/core/worktree.mjs";
-import { AcpEngine, parseToolActivity, summarizeToolInput } from "../src/engines/acp.mjs";
+import { AcpEngine, parseToolActivity, sanitizeConstrainedLangOutput, summarizeToolInput } from "../src/engines/acp.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -799,7 +799,38 @@ async function testAcpActivity() {
   assert.equal(cmd.exitCode, 1);
   assert.equal(cmd.status, "error");
   assert.equal(cmd.detail, "$ npm run check\n\nfixture stdout\nfixture stderr");
-  console.log("ACP streamed prose and command exit status PASSED.");
+
+  // Verify Windows ConstrainedLanguage false-positive exitCode 1 sanitization
+  const fakeErr =
+    "HOSTNAME=debian\n[stderr] Cannot create type. Only core types are supported in this language mode.\n" +
+    "At line:1 char:1\n+ [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n" +
+    "    + FullyQualifiedErrorId : CannotCreateTypeConstrainedLanguage\n";
+  const cleaned = sanitizeConstrainedLangOutput(fakeErr, 1);
+  assert.equal(cleaned.exitCode, 0);
+  assert.equal(cleaned.falsePositiveCleared, true);
+  assert.equal(cleaned.output, "HOSTNAME=debian");
+  const realErr = `${fakeErr}\nCommandNotFoundException: badcmd\n`;
+  assert.equal(sanitizeConstrainedLangOutput(realErr, 1).exitCode, 1);
+
+  // Verify max_tokens truncation warning + non-zero thought duration
+  const truncEvents = [];
+  engine.clients.get(profile).request = async (method) => {
+    if (method === "session/set_config_option") return [];
+    const emit = (sessionUpdate, fields) => listeners.get(sessionId)({
+      method: "session/update", params: { update: { sessionUpdate, ...fields } },
+    });
+    emit("agent_thought_chunk", { messageId: "t1", content: { text: "Checking limits..." } });
+    emit("agent_message_chunk", { messageId: "m1", content: { text: "Partial report line 1" } });
+    return { stopReason: "max_tokens", usage: { inputTokens: 100, cachedInputTokens: 90, outputTokens: 16384 } };
+  };
+  const truncRes = await engine.runTurn({ cwd: ROOT, role: "oracle", effort: "high", prompt: "Long report", existingSessionId: sessionId,
+    onActivity: (ev) => truncEvents.push(ev) });
+  assert.equal(truncRes.truncated, true);
+  assert.ok(truncRes.text.includes("Output truncated"), "Missing max_tokens truncation notice");
+  const thoughtDone = truncEvents.findLast((ev) => ev.kind === "thought" && ev.status === "done");
+  assert.ok(thoughtDone && thoughtDone.durationSec > 0, `Expected non-zero thought duration, got ${thoughtDone?.durationSec}`);
+
+  console.log("ACP streamed prose, ConstrainedLanguage sanitizer, max_tokens guard and command exit status PASSED.");
 }
 
 function seedLegacyLibrary(dataDir) {
