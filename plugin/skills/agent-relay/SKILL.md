@@ -60,7 +60,7 @@ Doorbell (zero-token background wakeup): node "<distDir>/wait-job.mjs" --data-di
 **Steps for the Lead Agent**
 
 1. Call `agent_relay_ask` (or `agent_relay_review`) **without `waitSec`** and keep the returned `jobId` + doorbell line.
-2. Immediately launch that exact doorbell line as a **background command** in your host shell (`WaitMsBeforeAsync=500` so it detaches; it costs **0 tokens** and ~0% CPU — it only stats `<dataDir>/jobs/<jobId>.status.json` every 1.5s).
+2. Immediately launch that exact doorbell line as a **background daemon command** in your host shell (`IsDaemon: true`, `WaitMsBeforeAsync=500`, without `NotificationTimeoutSeconds` — it costs **0 tokens** and ~0% CPU, only statting `<dataDir>/jobs/<jobId>.status.json` every 1.5s, and still wakes you immediately on exit).
 3. End the turn with `⏳ 后台运行中... 请勿关闭 Antigravity` (the doorbell dies if the host exits).
 4. When the doorbell wakes you:
    - **User is idle** -> read `<dataDir>/outputs/<jobId>.txt`, auto-verify (run the tests / `git diff`), and report the result.

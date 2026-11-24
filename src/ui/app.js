@@ -1930,7 +1930,6 @@ function renderTeamTab() {
 
     ${renderInterruptedJobsBanner()}
     ${renderLiveActivityPanel() || renderRecentJobsStrip()}
-    ${renderQuotaCard()}
 
     <div class="card-grid two">
       ${renderRoleCard("oracle")}

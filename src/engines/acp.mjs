@@ -374,9 +374,9 @@ export class AcpEngine {
     this.connecting = new Map(); // profileKey -> Promise<client state>
   }
 
-  #profileKey(model) {
+  #profileKey(model, permissionMode = "workspace-write") {
     const keyHash = createHash("sha256").update(model?.apiKey || "").digest("hex").slice(0, 16);
-    return `${model?.id || "default"}::${model?.source || "custom"}::${model?.baseUrl || ""}::${model?.modelName || ""}::${keyHash}`;
+    return `${model?.id || "default"}::${model?.source || "custom"}::${model?.baseUrl || ""}::${model?.modelName || ""}::${keyHash}::${permissionMode}`;
   }
 
   async #readDshSessionCacheUsage(dshHome, sessionId, prevTurnCount = 0) {
@@ -470,8 +470,8 @@ export class AcpEngine {
     return 0;
   }
 
-  async #getClient(model) {
-    const key = this.#profileKey(model);
+  async #getClient(model, permissionMode = "workspace-write") {
+    const key = this.#profileKey(model, permissionMode);
     const existing = this.clients.get(key);
     if (existing && existing.proc && !existing.proc.killed && existing.initialized) {
       return existing;
@@ -502,7 +502,9 @@ export class AcpEngine {
         );
       }
 
-      const extraEnv = {};
+      const extraEnv = {
+        DSH_PERMISSION_MODE: permissionMode,
+      };
       let patchPath = "";
       let effectiveDshHome = process.env.DSH_HOME || path.join(os.homedir(), ".dsh");
       if (model?.source === "dsh") {
@@ -688,9 +690,15 @@ export class AcpEngine {
     }
   }
 
-  async runTurn({ cwd, role, model, prompt, existingSessionId, onActivity, onSessionReady }) {
+  async runTurn({ cwd, role, model, prompt, sandbox, existingSessionId, onActivity, onSessionReady }) {
     const t0 = Date.now();
-    const state = await this.#getClient(model);
+    const permissionMode =
+      role === "oracle"
+        ? "read-only"
+        : sandbox === "danger-full-access"
+          ? "danger-full-access"
+          : "workspace-write";
+    const state = await this.#getClient(model, permissionMode);
     const spec = ROLE_SPECS[role] || ROLE_SPECS.oracle;
 
     let sessionId = existingSessionId || "";

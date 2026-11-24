@@ -89,6 +89,34 @@ function testWorktrees() {
     assert.ok(fs.existsSync(dirty.worktreeRoot));
     assert.equal(git(repo, "rev-parse", "refs/heads/" + dirty.branch), git(dirty.effectiveCwd, "rev-parse", "HEAD"));
 
+    // Verify worktree dependency/config hydration & safe junction cleanup (never deletes main repo deps!)
+    fs.writeFileSync(path.join(repo, ".gitignore"), "node_modules/\n.venv/\n.env\nlocal_assets/\n");
+    fs.writeFileSync(path.join(repo, ".worktreeinclude"), "# custom ignored dir\nlocal_assets\n");
+    git(repo, "add", ".gitignore", ".worktreeinclude");
+    commit(repo, "Add gitignore and worktreeinclude");
+    fs.mkdirSync(path.join(repo, "node_modules", "demo-pkg"), { recursive: true });
+    fs.writeFileSync(path.join(repo, "node_modules", "demo-pkg", "index.js"), "module.exports = 42;\n");
+    fs.mkdirSync(path.join(repo, ".venv"), { recursive: true });
+    fs.writeFileSync(path.join(repo, ".venv", "pyvenv.cfg"), "home = /usr/bin\n");
+    fs.writeFileSync(path.join(repo, ".env"), "DEMO_PORT=3000\n");
+    fs.mkdirSync(path.join(repo, "local_assets"), { recursive: true });
+    fs.writeFileSync(path.join(repo, "local_assets", "seed.txt"), "seed-ok\n");
+
+    const hydrated = createJobWorktree({ ...detectGitRepo(subdir), dataDir, jobId: "job_hydrated" });
+    assert.equal(fs.readFileSync(path.join(hydrated.worktreeRoot, "node_modules", "demo-pkg", "index.js"), "utf8").trim(), "module.exports = 42;");
+    assert.equal(fs.readFileSync(path.join(hydrated.worktreeRoot, ".venv", "pyvenv.cfg"), "utf8").trim(), "home = /usr/bin");
+    assert.equal(fs.readFileSync(path.join(hydrated.worktreeRoot, ".env"), "utf8").trim(), "DEMO_PORT=3000");
+    assert.equal(fs.readFileSync(path.join(hydrated.worktreeRoot, "local_assets", "seed.txt"), "utf8").trim(), "seed-ok");
+    // .env must be an independent copy so modifying it in worktree does not mutate main repo
+    fs.writeFileSync(path.join(hydrated.worktreeRoot, ".env"), "DEMO_PORT=3099\n");
+    assert.equal(fs.readFileSync(path.join(repo, ".env"), "utf8").trim(), "DEMO_PORT=3000");
+    // Clean prune must remove the worktree and leave main repo dependencies 100% untouched
+    assert.deepEqual(finalizeJobWorktree(hydrated), { kept: false, pruned: true });
+    assert.equal(fs.existsSync(hydrated.worktreeRoot), false);
+    assert.equal(fs.readFileSync(path.join(repo, "node_modules", "demo-pkg", "index.js"), "utf8").trim(), "module.exports = 42;");
+    assert.equal(fs.readFileSync(path.join(repo, ".venv", "pyvenv.cfg"), "utf8").trim(), "home = /usr/bin");
+    assert.equal(fs.readFileSync(path.join(repo, "local_assets", "seed.txt"), "utf8").trim(), "seed-ok");
+
     const settings = new RelayStore(dataDir);
     assert.equal(settings.settings.allowWorktreeParallelWrite, false);
     settings.updateTopSettings({ allowWorktreeParallelWrite: true });
@@ -728,7 +756,7 @@ async function testAcpActivity() {
   const engine = new AcpEngine();
   const listeners = new Map();
   const sessionId = "fixture-acp";
-  const profile = `default::custom::::::${crypto.createHash("sha256").update("").digest("hex").slice(0, 16)}`;
+  const profile = `default::custom::::::${crypto.createHash("sha256").update("").digest("hex").slice(0, 16)}::read-only`;
   engine.clients.set(profile, {
     proc: { killed: false, exitCode: 0 },
     initialized: true,

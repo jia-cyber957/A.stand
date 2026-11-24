@@ -27,6 +27,156 @@ export function detectGitRepo(cwd) {
   }
 }
 
+const LINKABLE_DEP_DIRS = [
+  { name: "node_modules" },
+  { name: ".venv" },
+  { name: "venv" },
+  { name: "env", requireChild: "pyvenv.cfg" },
+  { name: "vendor" },
+  { name: ".bundle" },
+  { name: ".pnpm-store" },
+];
+
+const COPYABLE_LOCAL_FILES = [
+  ".env",
+  ".env.local",
+  ".env.development",
+  ".env.development.local",
+  ".env.test",
+  ".env.test.local",
+  "config.local.json",
+  "settings.local.json",
+  ".npmrc",
+];
+
+const MAX_COPY_BYTES = 256 * 1024;
+const MAX_INCLUDE_COPY_BYTES = 2 * 1024 * 1024;
+
+function isGitIgnored(repoRoot, relPath) {
+  try {
+    git(repoRoot, ["check-ignore", "-q", "--", relPath.replace(/\\/g, "/")], 3000);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function safeRelPath(raw) {
+  const norm = path.normalize(String(raw || "").trim().replace(/^[/\\]+/, ""));
+  if (!norm || norm === "." || norm === ".." || norm.startsWith(`..${path.sep}`) || path.isAbsolute(norm)) {
+    return "";
+  }
+  const first = norm.split(path.sep)[0];
+  if (first === ".git") return "";
+  return norm;
+}
+
+function readWorktreeInclude(repoRoot) {
+  const fp = path.join(repoRoot, ".worktreeinclude");
+  if (!fs.existsSync(fp)) return [];
+  try {
+    return fs
+      .readFileSync(fp, "utf8")
+      .split(/\r?\n/)
+      .map((line) => line.replace(/#.*$/, "").trim())
+      .map(safeRelPath)
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function linkDirSafe(src, dst) {
+  if (fs.lstatSync(dst, { throwIfNoEntry: false })) return false;
+  fs.mkdirSync(path.dirname(dst), { recursive: true });
+  const type = process.platform === "win32" ? "junction" : "dir";
+  fs.symlinkSync(src, dst, type);
+  return true;
+}
+
+function copyFileSafe(src, dst, maxBytes) {
+  if (fs.lstatSync(dst, { throwIfNoEntry: false })) return false;
+  const st = fs.lstatSync(src, { throwIfNoEntry: false });
+  if (!st || !st.isFile() || st.size > maxBytes) return false;
+  fs.mkdirSync(path.dirname(dst), { recursive: true });
+  fs.copyFileSync(src, dst);
+  return true;
+}
+
+function hydrateWorktree({ repoRoot, worktreeRoot, relSubdir = "" }) {
+  const bases = relSubdir ? ["", relSubdir] : [""];
+  const seen = new Set();
+
+  for (const base of bases) {
+    for (const dep of LINKABLE_DEP_DIRS) {
+      const rel = base ? path.join(base, dep.name) : dep.name;
+      if (seen.has(rel)) continue;
+      seen.add(rel);
+      const src = path.join(repoRoot, rel);
+      const st = fs.lstatSync(src, { throwIfNoEntry: false });
+      if (!st || !st.isDirectory()) continue;
+      if (dep.requireChild && !fs.existsSync(path.join(src, dep.requireChild))) continue;
+      if (!isGitIgnored(repoRoot, rel)) continue;
+      try {
+        linkDirSafe(src, path.join(worktreeRoot, rel));
+      } catch {}
+    }
+
+    for (const fname of COPYABLE_LOCAL_FILES) {
+      const rel = base ? path.join(base, fname) : fname;
+      if (seen.has(rel)) continue;
+      seen.add(rel);
+      const src = path.join(repoRoot, rel);
+      const st = fs.lstatSync(src, { throwIfNoEntry: false });
+      if (!st || !st.isFile()) continue;
+      if (!isGitIgnored(repoRoot, rel)) continue;
+      try {
+        copyFileSafe(src, path.join(worktreeRoot, rel), MAX_COPY_BYTES);
+      } catch {}
+    }
+  }
+
+  // Optional .worktreeinclude (Cursor / Claude Code convention) for extra ignored local deps/configs.
+  for (const rel of readWorktreeInclude(repoRoot)) {
+    if (seen.has(rel)) continue;
+    seen.add(rel);
+    const src = path.join(repoRoot, rel);
+    const st = fs.lstatSync(src, { throwIfNoEntry: false });
+    if (!st) continue;
+    if (!isGitIgnored(repoRoot, rel)) continue;
+    try {
+      if (st.isDirectory()) linkDirSafe(src, path.join(worktreeRoot, rel));
+      else if (st.isFile()) copyFileSafe(src, path.join(worktreeRoot, rel), MAX_INCLUDE_COPY_BYTES);
+    } catch {}
+  }
+}
+
+function unlinkWorktreeLinks({ repoRoot, worktreeRoot, effectiveCwd }) {
+  const relSubdir = effectiveCwd ? safeRelPath(path.relative(worktreeRoot, effectiveCwd)) : "";
+  const bases = relSubdir ? ["", relSubdir] : [""];
+  const candidates = new Set();
+  for (const base of bases) {
+    for (const dep of LINKABLE_DEP_DIRS) {
+      candidates.add(base ? path.join(base, dep.name) : dep.name);
+    }
+  }
+  for (const rel of readWorktreeInclude(repoRoot)) {
+    candidates.add(rel);
+  }
+  for (const rel of candidates) {
+    const p = path.join(worktreeRoot, rel);
+    const st = fs.lstatSync(p, { throwIfNoEntry: false });
+    if (!st || !st.isSymbolicLink()) continue;
+    try {
+      fs.unlinkSync(p);
+    } catch {
+      try {
+        fs.rmdirSync(p);
+      } catch {}
+    }
+  }
+}
+
 export function createJobWorktree({ dataDir, repoRoot, relSubdir = "", jobId }) {
   const worktreeRoot = path.resolve(dataDir, "worktrees", jobId);
   const branch = `astand/${jobId}`;
@@ -49,6 +199,7 @@ export function createJobWorktree({ dataDir, repoRoot, relSubdir = "", jobId }) 
       if (!entry) fs.mkdirSync(dir);
       else if (!entry.isDirectory()) throw new Error(`Worktree cwd is not a directory: ${dir}`);
     }
+    hydrateWorktree({ repoRoot, worktreeRoot, relSubdir });
     return wt;
   } catch (err) {
     try { finalizeJobWorktree(wt); } catch {}
@@ -74,6 +225,7 @@ export function finalizeJobWorktree(wt) {
   if (changedFilesCount || commitsCount) {
     return { kept: true, pruned: false, branch, worktreeRoot, changedFilesCount, commitsCount };
   }
+  unlinkWorktreeLinks(wt);
   git(repoRoot, ["worktree", "remove", "--force", worktreeRoot], 60_000);
   git(repoRoot, ["branch", "-D", branch]);
   return { kept: false, pruned: true };
