@@ -1,18 +1,24 @@
-# Agent Relay
+<p align="center">
+  <img src="./plugin/assets/logo.png" width="112" alt="A.stand" />
+</p>
 
-[English](./README.md) · [🤖 AI Agent 安装与配置手册（`AGENT_INSTALL.md`）](./AGENT_INSTALL.md)
+<h1 align="center">A.stand</h1>
 
-**面向 Antigravity 的零侵入、多 AI 持久化子 Agent 插件（实时折叠对话流 + 99% 缓存监控 + 后台零轮询门铃）。**
+<p align="center">
+  <strong>面向 Antigravity 的零侵入、多 AI 持久化子 Agent 插件（替身使者）</strong><br/>
+  实时折叠对话流 · 99% 缓存监控 · 后台零轮询门铃 · Git Worktree 并行改代码<br/>
+  <a href="./README.md">English</a> · <a href="./AGENT_INSTALL.md">🤖 AI Agent 安装与配置手册 (<code>AGENT_INSTALL.md</code>)</a>
+</p>
 
 > **🤖 最省事安装法：直接让你的 Antigravity 帮你装！**
-> 把本仓库链接发给你的 **Antigravity**，附上一句：
+> 直接把下面这句话发给你的 **Antigravity**：
 > ```text
-> 请先阅读这个仓库里的 AGENT_INSTALL.md，帮我把 Agent Relay 安装到 Antigravity，并引导我配置想用的外部模型。
+> 请先阅读 https://github.com/jia-cyber957/A.stand 里的 AGENT_INSTALL.md，帮我把 A.stand 安装到 Antigravity，并引导我配置想用的外部模型。
 > ```
 
-Agent Relay 让你的 Antigravity 主 Agent 专注于架构决策、任务拆解与最终验收，把耗时耗额度的重活外包给本机原版外部 AI 引擎（**OpenAI Codex CLI**、**DeepSeek Harness / 任意 OpenAI 兼容 API 与中转站**、**Claude Code**、**Antigravity CLI**）：
+A.stand 让你的 Antigravity 主 Agent 专注于架构决策、任务拆解与最终验收，把耗时耗额度的重活外包给本机原版外部 AI 引擎（**OpenAI Codex CLI**、**DeepSeek Harness / 任意 OpenAI 兼容 API 与中转站**、**Claude Code**、**Antigravity CLI**）：
 - **`Oracle`（严格只读 · 多路并行）**：并行深挖代码库、架构权衡、连续排错破局、独立 Code Review；
-- **`Hephaestus`（工作区可写 · 写互斥锁）**：多文件开发、核心重构、单测排错闭环。
+- **`Hephaestus`（工作区可写 · 默认写互斥）**：多文件开发、核心重构、单测排错闭环。可在设置中开启 Git Worktree 并行改代码。
 
 ---
 
@@ -70,7 +76,7 @@ Agent Relay 让你的 Antigravity 主 Agent 专注于架构决策、任务拆解
 npm install
 npm run install:antigravity
 ```
-安装完成后**重启一次 Antigravity**，从左侧插件栏或右侧面板 **`+`** 菜单打开 **Agent Relay** 即可。
+安装完成后**重启一次 Antigravity**，从左侧插件栏或右侧面板 **`+`** 菜单打开 **A.stand** 即可。
 
 ### 自检、测试与卸载
 ```bash
@@ -86,4 +92,4 @@ npm run uninstall:antigravity # 一键干净卸载（零残留、绝不改外部
 - [AGENT_INSTALL.md](./AGENT_INSTALL.md) — 写给 AI Agent 的自动化安装、引擎排坑与模型选型手册
 - [HANDOVER.md](./HANDOVER.md) — 完整技术交接文档与后续 Roadmap（含独立轻量 `.exe` 多宿主规划）
 - [UPGRADING_ENGINES.md](./UPGRADING_ENGINES.md) — 上游 CLI 升级适配指南
-- [docs/ROADMAP_WORKTREE.md](./docs/ROADMAP_WORKTREE.md) — 后续 `git worktree` 多工程师并行写设计方案
+- [docs/ROADMAP_WORKTREE.md](./docs/ROADMAP_WORKTREE.md) — 可选的 Git Worktree 并行写入

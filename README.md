@@ -1,20 +1,25 @@
-# Agent Relay
+<p align="center">
+  <img src="./plugin/assets/logo.png" width="112" alt="A.stand" />
+</p>
 
-[中文说明](./README.zh-CN.md) · [🤖 AI Agent Install & Setup Guide (`AGENT_INSTALL.md`)](./AGENT_INSTALL.md)
+<h1 align="center">A.stand</h1>
 
-**Zero-mutation multi-AI persistent subagent broker for Antigravity.**
+<p align="center">
+  <strong>Zero-mutation multi-AI persistent subagent broker for Antigravity.</strong><br/>
+  <a href="./README.zh-CN.md">中文说明</a> · <a href="./AGENT_INSTALL.md">🤖 AI Agent Install & Setup Guide (<code>AGENT_INSTALL.md</code>)</a>
+</p>
 
 > **🤖 Fastest way to install — let your AI Agent do it for you!**
-> Just paste this repo link into **Antigravity** and say:
+> Just paste this prompt into **Antigravity**:
 > ```text
-> Please read AGENT_INSTALL.md in <this-repo-url>, install Agent Relay into my Antigravity, and walk me through connecting my preferred AI models.
+> Please read AGENT_INSTALL.md in https://github.com/jia-cyber957/A.stand, install A.stand into my Antigravity, and walk me through connecting my preferred AI models.
 > ```
 
-Agent Relay lets your Antigravity Lead Agent stay focused on architecture, planning, and final verification while delegating heavy multi-file implementation (**Hephaestus**) and parallel read-only research/review (**Oracle**) to native external AI harnesses (**OpenAI Codex CLI**, **DeepSeek Harness / OpenAI-compatible APIs & proxies**, **Claude Code**, and **Antigravity CLI**) — with a clean bilingual side-panel console and real upstream Prompt Cache telemetry.
+A.stand lets your Antigravity Lead Agent stay focused on architecture, planning, and final verification while delegating heavy multi-file implementation (**Hephaestus**) and parallel read-only research/review (**Oracle**) to native external AI harnesses (**OpenAI Codex CLI**, **DeepSeek Harness / OpenAI-compatible APIs & proxies**, **Claude Code**, and **Antigravity CLI**) — with a clean bilingual side-panel console and real upstream Prompt Cache telemetry.
 
 ---
 
-## Why Agent Relay? (7 Core Highlights)
+## Why A.stand? (7 Core Highlights)
 
 1. **Real Lead-Quota Savings — Never Floods Your Main Chat**
    - Subagents read dozens of files, edit code, and loop through builds/tests inside their own isolated context (even 200K+ tokens).
@@ -45,7 +50,7 @@ Agent Relay lets your Antigravity Lead Agent stay focused on architecture, plann
    - **Never touches** `~/.codex/config.toml`, `~/.dsh/*`, `~/.claude/*`, or `~/.gemini/antigravity-cli/*`.
    - **Master Hard Switch**: OFF = hard-blocked inside MCP server (0 external calls).
    - **Secret Isolation**: API keys live solely in private `secrets.json` (cross-origin endpoint edits require re-entering the key).
-   - **Two-Layer Sandbox**: `Oracle` is strictly read-only (parallel slots); `Hephaestus` enforces per-workspace write mutex and defaults to `workspace-write` (full access gated by an explicit Settings toggle).
+   - **Two-Layer Sandbox**: `Oracle` is strictly read-only (parallel slots). `Hephaestus` defaults to `workspace-write` with a per-workspace write mutex. Settings can enable parallel Git worktree writers or allow full access.
 
 7. **Two-Level API Channels, Live Codex Quotas & Automatic Failover**
    - Add an OpenAI-compatible API Channel once (DeepSeek, OpenRouter, self-hosted gateway, etc.) and click **Fetch Models** (`GET /models`) to batch-import models.
@@ -68,7 +73,7 @@ Agent Relay lets your Antigravity Lead Agent stay focused on architecture, plann
 npm install
 npm run install:antigravity
 ```
-Restart Antigravity once, then open **Agent Relay** from the left sidebar or the right pane **`+`** button.
+Restart Antigravity once, then open **A.stand** from the left sidebar or the right pane **`+`** button.
 
 ### Verify & Uninstall
 ```bash
@@ -83,7 +88,7 @@ npm run uninstall:antigravity # Clean removal (zero external configs touched)
 
 ```text
 Antigravity Lead Agent (5 concise MCP tools + Skill + Rules)
-   └── Agent Relay Plugin (~/.gemini/config/plugins/agent-relay/)
+   └── A.stand Plugin (~/.gemini/config/plugins/agent-relay/)
          ├── Side-Panel Console (Team · Models/Channels · Cache · Settings · 中/EN)
          ├── Core Broker (Hard Switch · Concurrency · Doorbell · Gatekeeper · Crash Recovery)
          └── Isolated Engine Adapters (1 file = 1 engine)
@@ -96,4 +101,4 @@ Antigravity Lead Agent (5 concise MCP tools + Skill + Rules)
 - [AGENT_INSTALL.md](./AGENT_INSTALL.md) — AI-Agent executable install, engine setup & model pairing guide
 - [HANDOVER.md](./HANDOVER.md) — Current implementation state & engineering handover
 - [UPGRADING_ENGINES.md](./UPGRADING_ENGINES.md) — Adapting to upstream CLI updates
-- [docs/ROADMAP_WORKTREE.md](./docs/ROADMAP_WORKTREE.md) — Planned `git worktree` parallel writers roadmap
+- [docs/ROADMAP_WORKTREE.md](./docs/ROADMAP_WORKTREE.md) — Opt-in parallel writers via Git worktrees

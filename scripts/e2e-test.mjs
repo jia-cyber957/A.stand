@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { RelayStore } from "../src/core/store.mjs";
+import { createJobWorktree, detectGitRepo, finalizeJobWorktree } from "../src/core/worktree.mjs";
 import { AcpEngine, parseToolActivity, summarizeToolInput } from "../src/engines/acp.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -20,6 +21,85 @@ const WAIT_JOB_BUNDLE = path.join(ROOT, "dist", "wait-job.mjs");
 const WAIT_JOB_SRC = path.join(ROOT, "scripts", "wait-job.mjs");
 
 const LONG_CALL_OPTS = { timeout: 240_000 };
+
+function testWorktrees() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ar-worktree-"));
+  try {
+    const repo = path.join(dir, "source repo");
+    const dataDir = path.join(dir, "plugin data");
+    const subdir = path.join(repo, "src");
+    fs.mkdirSync(subdir, { recursive: true });
+    const git = (cwd, ...args) => execFileSync("git", args, {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+      timeout: 5000,
+    }).trim();
+    assert.deepEqual(detectGitRepo(dir), { isGit: false });
+    git(repo, "init", "--quiet");
+    git(repo, "config", "core.hooksPath", path.join(dir, "no-hooks"));
+    assert.deepEqual(detectGitRepo(subdir), { isGit: false });
+    fs.writeFileSync(path.join(subdir, "tracked.txt"), "fixture\n");
+    git(repo, "add", "src/tracked.txt");
+    const commit = (cwd, message) =>
+      git(cwd, "-c", "user.name=Worktree Fixture", "-c", "user.email=fixture@example.test",
+        "commit", "--quiet", "--no-gpg-sign", "-m", message);
+    commit(repo, "Base");
+    const detected = detectGitRepo(subdir);
+    assert.deepEqual(detected, {
+      isGit: true, repoRoot: fs.realpathSync(repo), headSha: git(repo, "rev-parse", "HEAD"), relSubdir: "src",
+    });
+
+    const create = (jobId) => createJobWorktree({ ...detected, dataDir, jobId });
+    const clean = create("job_clean");
+    assert.deepEqual(clean, {
+      worktreeRoot: path.join(dataDir, "worktrees", "job_clean"),
+      effectiveCwd: path.join(dataDir, "worktrees", "job_clean", "src"),
+      branch: "astand/job_clean",
+      repoRoot: detected.repoRoot,
+      baseHead: detected.headSha,
+    });
+    assert.equal(git(clean.effectiveCwd, "branch", "--show-current"), clean.branch);
+    assert.equal(fs.readFileSync(path.join(clean.effectiveCwd, "tracked.txt"), "utf8").trim(), "fixture");
+    assert.deepEqual(finalizeJobWorktree(clean), { kept: false, pruned: true });
+    assert.equal(fs.existsSync(clean.worktreeRoot), false);
+    assert.equal(git(repo, "branch", "--list", clean.branch), "");
+
+    const localDir = path.join(subdir, "local");
+    fs.mkdirSync(localDir);
+    const emptyCwd = createJobWorktree({ ...detectGitRepo(localDir), dataDir, jobId: "job_empty_cwd" });
+    assert.ok(fs.statSync(emptyCwd.effectiveCwd).isDirectory());
+    assert.deepEqual(finalizeJobWorktree(emptyCwd), { kept: false, pruned: true });
+
+    const dirty = create("job_dirty");
+    git(dirty.effectiveCwd, "mv", "tracked.txt", "renamed.txt");
+    fs.writeFileSync(path.join(dirty.effectiveCwd, "untracked.txt"), "isolated\n");
+    assert.deepEqual(finalizeJobWorktree(dirty), {
+      kept: true, pruned: false, branch: dirty.branch, worktreeRoot: dirty.worktreeRoot,
+      changedFilesCount: 2, commitsCount: 0,
+    });
+    assert.equal(git(repo, "status", "--porcelain"), "");
+    git(dirty.effectiveCwd, "add", "untracked.txt");
+    commit(dirty.effectiveCwd, "Isolated work");
+    assert.deepEqual(finalizeJobWorktree(dirty), {
+      kept: true, pruned: false, branch: dirty.branch, worktreeRoot: dirty.worktreeRoot,
+      changedFilesCount: 0, commitsCount: 1,
+    });
+    assert.ok(fs.existsSync(dirty.worktreeRoot));
+    assert.equal(git(repo, "rev-parse", "refs/heads/" + dirty.branch), git(dirty.effectiveCwd, "rev-parse", "HEAD"));
+
+    const settings = new RelayStore(dataDir);
+    assert.equal(settings.settings.allowWorktreeParallelWrite, false);
+    settings.updateTopSettings({ allowWorktreeParallelWrite: true });
+    assert.equal(new RelayStore(dataDir).settings.allowWorktreeParallelWrite, true);
+    settings.updateTopSettings({ allowWorktreeParallelWrite: false });
+    assert.equal(new RelayStore(dataDir).settings.allowWorktreeParallelWrite, false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  console.log("Git worktree lifecycle and Settings persistence PASSED.");
+}
 
 async function connectClient(dataDir, engineEnv) {
   const transport = new StdioClientTransport({
@@ -89,7 +169,7 @@ async function testBrowserStrictCspRender(htmlText, realToolResult) {
   };
   const complete = {
     ...running, status: "completed", activities,
-    finalText: "## Results\n\n**Gateway verified.**\n\n- Use `go test`\n- Keep <img src=x onerror=alert(1)> escaped\n\n```go\nfmt.Println(1)\n```\n\n[Agent Relay · fixture]",
+    finalText: "## Results\n\n**Gateway verified.**\n\n- Use `go test`\n- Keep <img src=x onerror=alert(1)> escaped\n\n```go\nfmt.Println(1)\n```\n\n[A.stand · fixture]\n\n[Git Worktree] Branch: astand/job_fixture",
   };
   realToolResult.structuredContent.settings.lang = "en";
   realToolResult.structuredContent.activeJobs = [running];
@@ -186,6 +266,10 @@ async function testBrowserStrictCspRender(htmlText, realToolResult) {
               }
               if (msg.params?.name === "agent_relay_ui_get_job_detail") {
                 result = { content: [], structuredContent: { ok: true, job: ++detailCalls === 1 ? LIVE_JOB : DONE_JOB } };
+              }
+              if (msg.params?.name === "agent_relay_ui_update_settings") {
+                TOOL_RESULT.structuredContent.settings.allowWorktreeParallelWrite =
+                  msg.params.arguments.allowWorktreeParallelWrite;
               }
               e.source.postMessage({ jsonrpc: "2.0", id: msg.id, result }, "*");
             }
@@ -333,6 +417,14 @@ async function testBrowserStrictCspRender(htmlText, realToolResult) {
                 && final.querySelector("ul code") && final.querySelector("pre code") && final.querySelector("footer"));
               uiChecks.finalEscaped = final?.textContent.includes("<img src=x onerror=alert(1)>") && !final.querySelector("img");
               uiChecks.finalSingle = (doc.querySelector(".job-conversation")?.textContent.match(/Gateway verified/g) || []).length === 1;
+              uiChecks.worktreeNotice = final?.textContent.includes("[Git Worktree]");
+
+              doc.querySelector('[data-tab="settings"]')?.click();
+              const worktreeSelector = '[data-key="allowWorktreeParallelWrite"]';
+              const worktreeToggle = doc.querySelector(worktreeSelector);
+              uiChecks.worktreeOff = worktreeToggle?.getAttribute("aria-checked") === "false";
+              worktreeToggle?.click();
+              uiChecks.worktreeOn = Boolean(await until(worktreeSelector + '[aria-checked="true"]'));
             } catch (err) {
               errors.push("inspect:" + String(err));
             }
@@ -394,7 +486,10 @@ async function testBrowserStrictCspRender(htmlText, realToolResult) {
       "opaque srcdoc iframe missing ui/notifications/initialized"
     );
     assert.equal(report.customVar, "#123456", "Expected raw custom CSS var to still be applied");
-    assert.ok(report.text.includes("Agent Relay"), `Rendered UI missing 'Agent Relay': ${report.text}`);
+    assert.ok(report.text.includes("A.stand"), `Rendered UI missing 'A.stand': ${report.text}`);
+    assert.equal(report.uiChecks?.worktreeNotice, true, "Expected retained worktree notice in job result");
+    assert.equal(report.uiChecks?.worktreeOff, true, "Expected the Settings worktree switch to start off");
+    assert.equal(report.uiChecks?.worktreeOn, true, "Expected the Settings worktree switch to turn on when clicked");
     assert.ok(report.text.includes("Oracle"), `Rendered UI missing 'Oracle': ${report.text}`);
     assert.ok(report.text.includes("Hephaestus"), `Rendered UI missing 'Hephaestus': ${report.text}`);
     assert.equal(report.uiChecks?.codexExpanded, true, "Expected Codex hover to expand sub-models");
@@ -871,11 +966,12 @@ async function testWaitJobScript() {
 }
 
 async function main() {
+  testWorktrees();
   const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), "ar-e2e-data-"));
   const tmpWork = fs.mkdtempSync(path.join(os.tmpdir(), "ar-e2e-work-"));
   fs.writeFileSync(
     path.join(tmpWork, "brief.md"),
-    "# Agent Relay Test Brief\n\nCodeword: RELAY-9041\nRole count: 2 (oracle read-only, hephaestus write).\nZero mutation policy: never modify ~/.codex/config.toml.\n",
+    "# A.stand Test Brief\n\nCodeword: RELAY-9041\nRole count: 2 (oracle read-only, hephaestus write).\nZero mutation policy: never modify ~/.codex/config.toml.\n",
     "utf8"
   );
 
@@ -1158,6 +1254,15 @@ async function main() {
   const statusJson = JSON.parse(statusRes.content[0].text);
   assert.equal(statusJson.limits.maxConcurrency, 4);
   assert.equal(statusJson.limits.allowHephaestusFullAccess, false);
+  assert.equal(statusJson.limits.allowWorktreeParallelWrite, false);
+  const worktreeOn = await call("agent_relay_ui_update_settings", { allowWorktreeParallelWrite: true });
+  assert.equal(worktreeOn.settings.allowWorktreeParallelWrite, true);
+  const liveWorktreeStatus = await client.callTool({
+    name: "agent_relay_session", arguments: { action: "status" },
+  });
+  assert.equal(JSON.parse(liveWorktreeStatus.content[0].text).limits.allowWorktreeParallelWrite, true);
+  const worktreeOff = await call("agent_relay_ui_update_settings", { allowWorktreeParallelWrite: false });
+  assert.equal(worktreeOff.settings.allowWorktreeParallelWrite, false);
 
   // Verify toggling allowHephaestusFullAccess persists and restores cleanly
   const fullAccOn = await client.callTool({
@@ -1498,7 +1603,7 @@ async function main() {
   // Full response text is always persisted for the Lead Agent (even when not truncated).
   const outPath = path.join(tmpData, "outputs", `${doneJob.jobId}.txt`);
   assert.ok(fs.existsSync(outPath), `Expected full output at ${outPath}`);
-  assert.match(fs.readFileSync(outPath, "utf8"), /RELAY-9041|Agent Relay/);
+  assert.match(fs.readFileSync(outPath, "utf8"), /RELAY-9041|A\.stand/);
   assert.equal(finishedSnap.outputPath, outPath);
 
   const toggledOn = await call("agent_relay_ui_update_settings", { asyncBackgroundMode: true, inspectorEnabled: true });
@@ -1557,7 +1662,7 @@ async function main() {
     waitSec: 30,
   });
   assert.doesNotMatch(explicitWait, /^\[Started · async\]/, `Explicit waitSec must block: ${explicitWait}`);
-  assert.match(explicitWait, /\[Agent Relay · oracle/);
+  assert.match(explicitWait, /\[A\.stand · oracle/);
 
   await call("agent_relay_ui_update_settings", { asyncBackgroundMode: false, inspectorEnabled: false });
   const toggledOff = (await call("agent_relay_ui_get_state")).settings;
@@ -1653,8 +1758,9 @@ async function main() {
   console.log("\nALL E2E TESTS PASSED!");
 }
 
-const run = process.argv.includes("--codex-fixture") ? runCodexFixture : main;
-run().catch((err) => {
+const run = process.argv.includes("--codex-fixture") ? runCodexFixture
+  : process.argv.includes("--worktree-only") ? testWorktrees : main;
+Promise.resolve().then(run).catch((err) => {
   console.error("E2E TEST FAILED:", err);
   process.exit(1);
 });

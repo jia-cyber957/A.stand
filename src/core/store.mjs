@@ -107,6 +107,7 @@ export class RelayStore {
       lang: "zh",
       codexKeepOfficePlugins: false,
       allowHephaestusFullAccess: false,
+      allowWorktreeParallelWrite: false,
       maxConcurrency: 3,
       silentCheckinMin: 3,
       longRunCheckinMin: 10,
@@ -207,6 +208,10 @@ export class RelayStore {
         typeof raw.allowHephaestusFullAccess === "boolean"
           ? raw.allowHephaestusFullAccess
           : def.allowHephaestusFullAccess,
+      allowWorktreeParallelWrite:
+        typeof raw.allowWorktreeParallelWrite === "boolean"
+          ? raw.allowWorktreeParallelWrite
+          : def.allowWorktreeParallelWrite,
       // Backward compatible: older settings.json files omit both flags -> default OFF.
       asyncBackgroundMode:
         typeof raw.asyncBackgroundMode === "boolean" ? raw.asyncBackgroundMode : def.asyncBackgroundMode,
@@ -253,7 +258,7 @@ export class RelayStore {
       return { ...raw, apiKeys };
     } catch (error) {
       if (error.code === "ENOENT") return { apiKeys: {} };
-      throw new Error("Cannot read secrets.json. Restore a readable secrets file before starting Agent Relay.");
+      throw new Error("Cannot read secrets.json. Restore a readable secrets file before starting A.stand.");
     }
   }
 
@@ -488,6 +493,9 @@ export class RelayStore {
     }
     if (typeof patch.allowHephaestusFullAccess === "boolean") {
       this.settings.allowHephaestusFullAccess = patch.allowHephaestusFullAccess;
+    }
+    if (typeof patch.allowWorktreeParallelWrite === "boolean") {
+      this.settings.allowWorktreeParallelWrite = patch.allowWorktreeParallelWrite;
     }
     if (patch.maxConcurrency !== undefined) {
       this.settings.maxConcurrency = clampInt(patch.maxConcurrency, 1, 6, this.settings.maxConcurrency);

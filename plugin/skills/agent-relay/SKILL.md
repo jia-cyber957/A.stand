@@ -1,11 +1,11 @@
 ---
 name: agent-relay
-description: Orchestrate persistent-context external AI subagents (Oracle read-only advisor/reviewer and Hephaestus deep engineer) through Agent Relay while maximizing Prompt Cache hit rate, handling non-interrupting check-ins and quota fallbacks, and guiding users through zero-mutation CLI/API setup.
+description: Orchestrate persistent-context external AI subagents (Oracle read-only advisor/reviewer and Hephaestus deep engineer) through A.stand while maximizing Prompt Cache hit rate, handling non-interrupting check-ins and quota fallbacks, and guiding users through zero-mutation CLI/API setup.
 ---
 
-# Agent Relay Collaboration & Setup Guide
+# A.stand Collaboration & Setup Guide
 
-Agent Relay is a **zero-mutation broker** connecting the lead agent to persistent external AI harnesses (`codex`, `claude-code`, `antigravity`, and `deepseek-harness` via ACP). External CLI configs are never altered — runtime scoping is applied strictly via ephemeral launch arguments and per-process environment variables.
+A.stand is a **zero-mutation broker** connecting the lead agent to persistent external AI harnesses (`codex`, `claude-code`, `antigravity`, and `deepseek-harness` via ACP). External CLI configs are never altered — runtime scoping is applied strictly via ephemeral launch arguments and per-process environment variables.
 
 ## 1. Check Live User Settings Before Parallel Delegation
 
@@ -13,6 +13,7 @@ Before fanning out parallel tasks or modifying orchestration behavior, call `age
 - `limits.maxConcurrency` (default `3`, configurable `1–6`)
 - `limits.silentCheckinMin` (default `3m`) & `limits.longRunCheckinMin` (default `10m`)
 - `limits.autoFallbackOnLimit` & per-role priority `queue` + cooldowns / Codex 5h & 7d quotas
+- `limits.allowWorktreeParallelWrite` (default `false`)
 - `limits.asyncBackgroundMode` (default `false`) and `limits.inspectorEnabled` (default `false`)
 - `limits.waitJobScript` — absolute path of the zero-token doorbell script
 - `activeJobs` currently running and `interruptedJobs` recovered after a host crash
@@ -20,7 +21,7 @@ Before fanning out parallel tasks or modifying orchestration behavior, call `age
 **Concurrency & Execution Rules**:
 - Read-only `oracle` supports parallel subtasks by passing distinct `slot` names (e.g. `slot="backend"`, `slot="frontend"`, `slot="security"`), keeping total active jobs within `limits.maxConcurrency`.
 - **True Parallel Launch Pattern (CRITICAL for stdio MCP hosts)**: Because host MCP clients often serialize blocking calls to the same stdio server, whenever launching 2+ parallel `oracle` slots, pass **`waitSec: 0`** on each `agent_relay_ask` (returns `jobId` in ~10ms so all subagents start simultaneously!), then wait for all of them together in one call via **`agent_relay_poll(jobIds=["job_...", "job_..."])`**!
-- Workspace-write `hephaestus` enforces a strict per-workspace write mutex — never run two `hephaestus` jobs or edit the same directory concurrently alongside `hephaestus`.
+- Workspace-write `hephaestus` uses a per-workspace write mutex by default and in non-Git directories. When `allowWorktreeParallelWrite` is on, a parallel writer targeting a busy Git checkout starts a fresh session in its own `astand/<jobId>` worktree. Pass `worktree: true` to isolate the first job too. Inspect and commit changes in retained worktrees, then merge the branch before running `git worktree remove`.
 - **Dynamic `effort` selection**: Pass `effort="low"` for fast targeted fixes/lookups, `effort="medium"` by default, and `effort="high"` only for hard architecture/debugging tasks.
 - **Two-Layer Sandbox Gating (No Privilege Escalation)**:
   - `oracle` is ALWAYS `read-only`.
@@ -79,7 +80,7 @@ Optional flags: `--stall-sec 180`, `--timeout-sec 3600`. It can watch many jobs 
 
 ## 4. Non-Interrupting Check-in & Control Protocol
 
-Agent Relay uses zero-token MCP protocol heartbeats during long runs and **never auto-kills** a running subagent. Instead, it triggers non-interrupting check-ins at the user's `silentCheckinMin` (no output/commands/file edits) or `longRunCheckinMin` (periodic check on long tasks):
+A.stand uses zero-token MCP protocol heartbeats during long runs and **never auto-kills** a running subagent. Instead, it triggers non-interrupting check-ins at the user's `silentCheckinMin` (no output/commands/file edits) or `longRunCheckinMin` (periodic check on long tasks):
 
 1. When `agent_relay_ask` or `agent_relay_poll` returns `silent_checkin` or `long_run_checkin`, the subagent is **still running undisturbed**.
 2. Review the returned summary (either from the user's configured Inspector Summarizer AI or structured error-prioritized trace).
@@ -95,13 +96,13 @@ Agent Relay uses zero-token MCP protocol heartbeats during long runs and **never
 
 ## 5. Quota Exhaustion & Priority Fallback Handling
 
-- When `autoFallbackOnLimit` is ON, Agent Relay automatically cools down rate-limited models (tracking exact upstream `resetsAt`), fails over to the next AI in the role's priority queue, and automatically restores the primary once its reset window passes.
+- When `autoFallbackOnLimit` is ON, A.stand automatically cools down rate-limited models (tracking exact upstream `resetsAt`), fails over to the next AI in the role's priority queue, and automatically restores the primary once its reset window passes.
 - If `agent_relay_ask` returns `fallback_confirmation_needed`, ask the user whether to fall back to the next AI in the queue.
-- If `agent_relay_ask` returns `[ALL_ENGINES_EXHAUSTED]`, **pause external delegation immediately**, display each model's reset time, and ask the user whether to turn off the Agent Relay switch (so you continue solo), top up/switch keys in the console, or wait for quota reset.
+- If `agent_relay_ask` returns `[ALL_ENGINES_EXHAUSTED]`, **pause external delegation immediately**, display each model's reset time, and ask the user whether to turn off the A.stand switch (so you continue solo), top up/switch keys in the console, or wait for quota reset.
 
 ## 6. Prompt Cache & Session Lifecycle
 
-Agent Relay uses an **explicit `sessionId` lifecycle** so unrelated tasks never contaminate each other while multi-turn tasks maintain 95%–99% Prompt Cache hit rates:
+A.stand uses an **explicit `sessionId` lifecycle** so unrelated tasks never contaminate each other while multi-turn tasks maintain 95%–99% Prompt Cache hit rates:
 
 1. **New Unrelated Task**: Omit `sessionId` (always starts a clean fresh session — zero cross-task contamination!) and pass a short `title` (e.g. `title="API channel refactor"`). On Turn 1, send goals, constraints, and file pointers rather than raw file dumps.
 2. **Follow-Up on the Same Task**: Pass the `sessionId` printed in the previous turn's footer (`sessionId="..."`) with a concise **delta-only prompt** (new errors, answers, or next instruction — never summarize or re-paste earlier turns) to maximize 95%–99% Prompt Cache hit rate!
@@ -118,7 +119,7 @@ When the user asks how to install/configure Codex, Claude Code, Antigravity CLI,
      - **Codex CLI**: `npm install -g @openai/codex` -> `codex login` (live models auto-discovered via `model/list`).
      - **Claude Code CLI**: `npm install -g @anthropic-ai/claude-code` -> `claude`.
      - **Antigravity CLI**: `agy`.
-     - **DeepSeek Harness (API Key & OpenAI-compatible Proxy engine)**: `npm install -g @deepseek-ai/dsh@latest` (`@latest` is required because official releases use prerelease tags; Agent Relay syncs `~/.dsh/` read-only and uses `--patch` + `AGENT_RELAY_API_KEY` without mutating `~/.dsh/`).
+     - **DeepSeek Harness (API Key & OpenAI-compatible Proxy engine)**: `npm install -g @deepseek-ai/dsh@latest` (`@latest` is required because official releases use prerelease tags; A.stand syncs `~/.dsh/` read-only and uses `--patch` + `AGENT_RELAY_API_KEY` without mutating `~/.dsh/`).
      - **If `dsh` reports `node_too_old` (`Node < 24.9.0`)**: Explain transparently that `dsh` requires Node.js >= 24.9.0 and offer:
        - *Option A (Recommended)*: Upgrade system Node.js to Node 24 LTS.
        - *Option B (Isolated)*: Install a portable Node 24 runtime into `plugin_data/agent-relay/runtime/node24` (or set `AGENT_RELAY_DSH_NODE`).

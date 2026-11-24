@@ -1,6 +1,6 @@
 # Upgrading Engine Adapters
 
-Agent Relay isolates every external AI harness into a single dedicated adapter file under `src/engines/`:
+A.stand isolates every external AI harness into a single dedicated adapter file under `src/engines/`:
 
 | Engine | Adapter File | Protocol |
 | :--- | :--- | :--- |

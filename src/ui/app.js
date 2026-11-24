@@ -17,7 +17,7 @@ function showFatalError(err) {
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;");
-    root.innerHTML = `<div class="app-shell"><div class="card empty-state" style="color:var(--ar-rose,#f43f5e);border-color:rgba(244,63,94,0.35)">Agent Relay UI Error: ${safeMsg}</div></div>`;
+    root.innerHTML = `<div class="app-shell"><div class="card empty-state" style="color:var(--ar-rose,#f43f5e);border-color:rgba(244,63,94,0.35)">A.stand UI Error: ${safeMsg}</div></div>`;
   } catch {}
 }
 
@@ -26,7 +26,7 @@ window.addEventListener("unhandledrejection", (ev) => showFatalError(ev));
 
 const I18N = {
   zh: {
-    brand: "Agent Relay",
+    brand: "A.stand",
     on: "已开启",
     off: "已关闭",
     tabTeam: "团队",
@@ -166,6 +166,8 @@ const I18N = {
     keepOfficeDesc: "开启保留 PDF / Excel / Word / PPT 插件；关闭则前缀最轻、缓存最稳",
     fullAccessTitle: "允许 Hephaestus 无沙箱运行",
     fullAccessDesc: "默认关闭（严格限制在项目目录沙箱内）；仅限信任项目开启，开启后主 Agent 仅在打包/浏览器等需要时才按需放开（Oracle 永久只读）",
+    worktreeTitle: "Git Worktree 并行改代码",
+    worktreeDesc: "开启后，同一 Git 仓库可并行运行多个 Hephaestus（各自独立分支目录，互不覆盖）；非 Git 目录自动回退写互斥。默认关闭",
     modalAdd: "添加 API 渠道",
     modalEdit: "管理 API 渠道",
     providerLabel: "供应商（OpenAI 兼容协议 API）",
@@ -225,7 +227,7 @@ const I18N = {
     inspectorEnabledOff: "当前关闭（0 费用，静默超时后直接拉响门铃叫醒主 Agent）",
   },
   en: {
-    brand: "Agent Relay",
+    brand: "A.stand",
     on: "Active",
     off: "Off",
     tabTeam: "Team",
@@ -345,7 +347,7 @@ const I18N = {
     longRunTitle: "Long-Run Check-in",
     longRunDesc: "Periodic non-interrupting progress check-in during long tasks",
     retentionTitle: "Session Index Retention",
-    retentionDesc: "Prunes Agent Relay index only; never deletes external CLI transcripts",
+    retentionDesc: "Prunes A.stand index only; never deletes external CLI transcripts",
     minSuffix: "m",
     unlimited: "Off",
     days7: "7d",
@@ -365,6 +367,8 @@ const I18N = {
     keepOfficeDesc: "Keep PDF / Excel / Word / PPT plugins; off keeps prefix leanest for cache",
     fullAccessTitle: "Allow Hephaestus Full Access (No Sandbox)",
     fullAccessDesc: "Off by default (workspace-write sandbox). Enable only for trusted workspaces so the lead agent can opt out of sandbox for builds/browsers (Oracle is always read-only)",
+    worktreeTitle: "Git Worktree Parallel Writers",
+    worktreeDesc: "Allow multiple Hephaestus jobs on the same Git repo via isolated worktree branches (auto-pruned if clean; non-Git dirs stay write-mutex guarded). Off by default",
     modalAdd: "Add API Channel",
     modalEdit: "Manage API Channel",
     providerLabel: "Provider (OpenAI-compatible API)",
@@ -753,7 +757,7 @@ function createCompatibleTransport() {
   };
 }
 
-const app = new App({ name: "Agent Relay", version: "1.0.0" }, {});
+const app = new App({ name: "A.stand", version: "1.0.0" }, {});
 
 let state = null;
 let liveTimer = null;
@@ -985,7 +989,7 @@ function applyTheme(ctx) {
 
 function iconSvg(kind) {
   const svgs = {
-    brand: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="19" r="2.5"/><circle cx="19" cy="19" r="2.5"/><path d="M12 7.5v4.5m0 0-5.2 4.8M12 12l5.2 4.8"/></svg>`,
+    brand: `<svg width="20" height="20" viewBox="16 18 96 88" fill="currentColor" aria-hidden="true"><path d="M77 28L108 98H96.5L77 52.5L57.5 98H46.5L77 28Z" opacity=".5"/><path d="M40 72H94C99 72 103 76 105 82H95C93 79 90 78 86 78H38L40 72Z" opacity=".7"/><path d="M51 28L82 98H70L51 53.5L32 98H20.5L51 28Z"/></svg>`,
     oracle: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>`,
     hephaestus: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m14.7 6.3 3 3-9.4 9.4-3.8.8.8-3.8 9.4-9.4Z"/><path d="m12.5 8.5 3 3"/></svg>`,
     chevron: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>`,
@@ -1319,8 +1323,8 @@ function renderMarkdown(text) {
 }
 
 function splitFinalResponse(text) {
-  const match = /(?:^|\r?\n)\s*(\[Agent Relay · [^\r\n]*\])\s*$/.exec(text);
-  return match ? { body: text.slice(0, match.index).trim(), footer: match[1] }
+  const match = /(?:^|\r?\n)\s*(\[(?:A\.stand|Agent Relay) · [^\r\n]*\])(?:\r?\n\r?\n(\[Git Worktree\] [\s\S]*))?\s*$/.exec(text);
+  return match ? { body: [text.slice(0, match.index).trim(), match[2]?.trim()].filter(Boolean).join("\n\n"), footer: match[1] }
     : { body: text.trim(), footer: "" };
 }
 
@@ -2289,6 +2293,14 @@ function renderSettingsTab() {
 
         <div class="setting-item">
           <div class="setting-meta">
+            <span class="setting-title">${t("worktreeTitle")}</span>
+            <span class="setting-desc">${t("worktreeDesc")}</span>
+          </div>
+          <button class="switch sm ${s.allowWorktreeParallelWrite ? "on" : ""}" data-action="toggle-bool" data-key="allowWorktreeParallelWrite" role="switch" aria-checked="${s.allowWorktreeParallelWrite === true}" aria-label="${esc(t("worktreeTitle"))}"></button>
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-meta">
             <span class="setting-title">${t("keepOfficeTitle")}</span>
             <span class="setting-desc">${t("keepOfficeDesc")}</span>
           </div>
@@ -2455,7 +2467,7 @@ function renderModal() {
 function render() {
   const root = document.getElementById("root");
   if (!state) {
-    root.innerHTML = `<div class="app-shell"><div class="card empty-state">Loading Agent Relay...</div></div>`;
+    root.innerHTML = `<div class="app-shell"><div class="card empty-state">Loading A.stand...</div></div>`;
     return;
   }
 

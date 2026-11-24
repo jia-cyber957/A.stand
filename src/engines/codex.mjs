@@ -316,7 +316,7 @@ export class CodexEngine {
       });
 
       const initRes = await this.#request("initialize", {
-        clientInfo: { name: "agent-relay", title: "Agent Relay", version: "1.0.0" },
+        clientInfo: { name: "agent-relay", title: "A.stand", version: "1.0.0" },
         capabilities: { experimentalApi: false },
       });
       const ua = initRes?.userAgent || "";

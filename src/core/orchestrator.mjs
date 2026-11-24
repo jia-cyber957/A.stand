@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { API_PROVIDERS, CLI_DEFAULT_MODELS_MAP } from "./constants.mjs";
 import { detectEngines, normalizeWorkspaceKey, readDshConfigModels } from "./paths.mjs";
 import { assertCanReuseApiKey, maskSecret } from "./store.mjs";
+import { createJobWorktree, detectGitRepo, finalizeJobWorktree } from "./worktree.mjs";
 import { AcpEngine } from "../engines/acp.mjs";
 import { AntigravityCliEngine } from "../engines/antigravity.mjs";
 import { ClaudeCodeEngine } from "../engines/claude-code.mjs";
@@ -272,6 +273,7 @@ export class RelayOrchestrator {
       stallAlert: job.stallAlert || null,
       logPath: job.logPath || "",
       outputPath: this.#outputPath(job.jobId),
+      ...(job.worktree && { worktree: job.worktree }),
     };
   }
 
@@ -308,6 +310,23 @@ export class RelayOrchestrator {
     this.#saveJobOutput(job);
     this.#saveJobEvents(job);
     this.#writeStatusSnapshot(job, { force: true, status });
+  }
+
+  #finalizeWorktree(job, wt) {
+    let notice;
+    try {
+      job.worktree = { ...wt, ...finalizeJobWorktree(wt) };
+      if (job.worktree.pruned) return;
+      notice =
+        `[Git Worktree] Branch: ${wt.branch} · Path: ${wt.worktreeRoot} · changedFiles: ${job.worktree.changedFilesCount} · commits: ${job.worktree.commitsCount}\n` +
+        `Review and commit any pending changes, then run from the source checkout: \`git merge ${wt.branch}\` and \`git worktree remove "${wt.worktreeRoot}"\`.`;
+    } catch (err) {
+      job.worktree = { ...wt, pruned: false, error: err?.message || String(err) };
+      notice = `[Git Worktree] Automatic cleanup failed for ${wt.branch} at ${wt.worktreeRoot}. Inspect the worktree and branch before cleanup.`;
+    }
+    job.worktreeNotice = `\n\n${notice}`;
+    if (job.result) job.result.text += job.worktreeNotice;
+    if (job.finalText || !job.result) job.finalText = (job.finalText || "") + job.worktreeNotice;
   }
 
   // Startup crash detection: any snapshot still "running" under another PID belongs to a host that died.
@@ -364,6 +383,7 @@ export class RelayOrchestrator {
         lastSummary: recovered.lastSummary || "",
         logPath: recovered.logPath || "",
         outputPath: recovered.outputPath || this.#outputPath(recovered.jobId),
+        worktree: recovered.worktree,
         promptPreview: diskTimeline?.prompt || "",
         activities: diskTimeline?.activities || this.#readLegacyLog(recovered.jobId)?.activities || [],
         result: null,
@@ -419,7 +439,7 @@ export class RelayOrchestrator {
       return {
         blocked: true,
         message:
-          "Agent Relay master switch is OFF. External subagents are disabled — handle this task directly or wait for the user to enable Agent Relay in the side panel.",
+          "A.stand master switch is OFF. External subagents are disabled — handle this task directly or wait for the user to enable A.stand in the side panel.",
       };
     }
     return { blocked: false };
@@ -552,6 +572,7 @@ export class RelayOrchestrator {
       lastSummary: j.lastSummary || "",
       logPath: j.logPath,
       outputPath: j.outputPath || (running ? "" : this.#outputPath(j.jobId)),
+      ...(j.worktree && { worktree: j.worktree }),
       error: j.error || "",
     };
   }
@@ -574,7 +595,7 @@ export class RelayOrchestrator {
     const modeStr = meta.resumedFromDisk ? "resumed" : meta.reused ? "warm" : "new";
     const fbStr = meta.fallbackNote ? ` · ${meta.fallbackNote}` : "";
     const sidStr = meta.sessionId ? ` · sessionId=${meta.sessionId}` : "";
-    return `[Agent Relay · ${meta.role}${meta.slot && meta.slot !== "default" ? `:${meta.slot}` : ""} · ${meta.resolvedModel} (${meta.engine}) · ${modeStr}${fbStr}${sidStr} · cache ${hitStr}${ctxStr} · ${(meta.elapsedMs / 1000).toFixed(1)}s]`;
+    return `[A.stand · ${meta.role}${meta.slot && meta.slot !== "default" ? `:${meta.slot}` : ""} · ${meta.resolvedModel} (${meta.engine}) · ${modeStr}${fbStr}${sidStr} · cache ${hitStr}${ctxStr} · ${(meta.elapsedMs / 1000).toFixed(1)}s]`;
   }
 
   async #syncCodexQuotaAndCooldowns(models) {
@@ -840,6 +861,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
     waitSec: requestedWaitSec,
     effort,
     sandbox,
+    worktree,
     forceNew = false,
     onHeartbeat,
   }) {
@@ -857,32 +879,40 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
         : "workspace-write";
 
     const workDir = path.resolve(cwd || process.cwd());
-    const wsKey = normalizeWorkspaceKey(workDir);
-    const cleanSlot = role === "hephaestus" ? "default" : (slot || "default").trim() || "default";
+    const isWriter = role === "hephaestus";
+    const cleanSlot = isWriter ? "default" : (slot || "default").trim() || "default";
     const cleanRequestedSid =
       !forceNew && typeof requestedSessionId === "string" ? requestedSessionId.trim() : "";
     const explicitTitle = String(title || "").replace(/\s+/g, " ").trim().slice(0, 60);
     const sessionTitle = deriveSessionTitle(title, prompt);
     const requestedExisting = cleanRequestedSid ? this.store.getSessionById(cleanRequestedSid) : null;
 
-    // Global concurrency guard
-    const running = this.#runningJobs();
-    if (running.length >= this.store.settings.maxConcurrency) {
-      return {
-        blocked: true,
-        status: "concurrency_limit",
-        text: `Concurrency cap reached (${running.length}/${this.store.settings.maxConcurrency} running: ${running.map((j) => `${j.jobId}:${j.role}`).join(", ")}). Poll or finish an existing job, or raise maxConcurrency in Agent Relay settings.`,
-      };
-    }
+    const gitRepo = isWriter && this.store.settings.allowWorktreeParallelWrite === true
+      ? detectGitRepo(workDir)
+      : null;
+    const wsKey = normalizeWorkspaceKey(workDir);
+    const repoKey = gitRepo?.isGit ? normalizeWorkspaceKey(gitRepo.repoRoot) : wsKey;
+    const busyWriter = () => this.activeWriters.get(wsKey) || this.activeWriters.get(repoKey);
 
-    // Per-workspace write mutex for hephaestus
-    if (role === "hephaestus" && this.activeWriters.has(wsKey)) {
-      const busyJob = this.activeWriters.get(wsKey);
-      return {
-        blocked: true,
-        text: `Hephaestus is already writing in ${workDir} (job ${busyJob}). Poll/wait for that job first to avoid concurrent write conflicts.`,
-      };
-    }
+    const checkAdmission = () => {
+      const running = this.#runningJobs();
+      if (running.length >= this.store.settings.maxConcurrency) {
+        return {
+          blocked: true,
+          status: "concurrency_limit",
+          text: `Concurrency cap reached (${running.length}/${this.store.settings.maxConcurrency} running: ${running.map((j) => `${j.jobId}:${j.role}`).join(", ")}). Poll or finish an existing job, or raise maxConcurrency in A.stand settings.`,
+        };
+      }
+      const busyJob = isWriter && busyWriter();
+      if (busyJob && !gitRepo?.isGit) {
+        return {
+          blocked: true,
+          text: `Hephaestus is already writing in ${workDir} (job ${busyJob}). Poll/wait for that job first to avoid concurrent write conflicts.`,
+        };
+      }
+    };
+    const initialBlock = checkAdmission();
+    if (initialBlock) return initialBlock;
 
     const roleCfg = this.store.getRoleConfig(role);
     const queue = roleCfg.queue || [];
@@ -891,6 +921,10 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
     }
 
     await this.#syncCodexQuotaAndCooldowns(queue);
+
+    // Quota discovery yields to other requests. Recheck before reserving the workspace.
+    const launchBlock = checkAdmission();
+    if (launchBlock) return launchBlock;
 
     // Filter candidates respecting active cooldowns
     const available = [];
@@ -916,8 +950,8 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
           details,
           ``,
           `ACTION REQUIRED (PAUSE external delegation and ask the user):`,
-          `1) Turn OFF the Agent Relay switch to let the lead agent continue solo;`,
-          `2) Top up / switch API key or account in the Agent Relay side panel;`,
+          `1) Turn OFF the A.stand switch to let the lead agent continue solo;`,
+          `2) Top up / switch API key or account in the A.stand side panel;`,
           `3) Wait until the earliest quota reset window above.`,
         ].join("\n"),
       };
@@ -943,6 +977,13 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
       `[${new Date().toISOString()}] Job ${jobId} started (${role}:${cleanSlot}, cwd=${workDir})\n`,
       "utf8"
     );
+    const wt = gitRepo?.isGit && (worktree === true || busyWriter())
+      ? createJobWorktree({ ...gitRepo, dataDir: this.store.dataDir, jobId })
+      : null;
+    const effectiveCwd = wt?.effectiveCwd || workDir;
+    const worktreeHint = wt
+      ? `[Git Worktree] You are running in an isolated Git worktree on branch ${wt.branch}. Keep edits here and use ephemeral ports (port: 0) for tests.\n`
+      : "";
 
     const now = Date.now();
     const job = {
@@ -952,7 +993,8 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
       title: requestedExisting?.title || sessionTitle,
       promptPreview: String(prompt || "").trim().slice(0, 4000),
       taskSummary: String(prompt || "").replace(/\s+/g, " ").trim().slice(0, 1200),
-      cwd: workDir,
+      cwd: effectiveCwd,
+      ...(wt && { worktree: wt }),
       engine: available[0].engine,
       modelId: available[0].id,
       modelDisplayName: available[0].name,
@@ -971,10 +1013,15 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
     };
     this.jobs.set(jobId, job);
     this.#writeStatusSnapshot(job, { force: true });
-    if (role === "hephaestus") this.activeWriters.set(wsKey, jobId);
+    if (isWriter && !wt) {
+      this.activeWriters.set(wsKey, jobId);
+      this.activeWriters.set(repoKey, jobId);
+    }
 
     const stopGatekeeper = this.#startStallGatekeeper(job);
     const runPromise = (async () => {
+      let terminalStatus = "failed";
+      let terminalError = "Unknown subagent execution error";
       try {
         let lastErr = null;
         let fallbackPrefixNote =
@@ -993,8 +1040,10 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
           job.modelDisplayName = model.name;
 
           const existing = cleanRequestedSid ? this.store.getSessionById(cleanRequestedSid) : null;
+          // A resumed engine session can keep its original working directory.
           const canReuse = Boolean(
-            cleanRequestedSid &&
+            !wt && cleanRequestedSid &&
+              (!gitRepo?.isGit || !existing || normalizeWorkspaceKey(existing.cwd) === wsKey) &&
               (!existing || (existing.engine === engineId && existing.modelId === model.id))
           );
           const existingSessionId = canReuse ? cleanRequestedSid : null;
@@ -1007,12 +1056,12 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
                 : prompt;
 
             const res = await engine.runTurn({
-              cwd: workDir,
+              cwd: effectiveCwd,
               role,
               model,
               effort: effort || roleCfg.effort || "medium",
               sandbox: effectiveSandbox,
-              prompt: turnPrompt,
+              prompt: worktreeHint + turnPrompt,
               existingSessionId,
               onSessionReady: (sid) => this.#onSessionReady(job, sid),
               onActivity: attachTurnSigToJob(job, (ev) => this.#recordActivity(job, ev)),
@@ -1020,13 +1069,14 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
 
             if (job.status !== "running") return;
             if (job.interruptRequested || res.interrupted) {
-              this.#markJobTerminal(job, "interrupted");
+              terminalStatus = "interrupted";
+              terminalError = "";
               return;
             }
             const prevTurns = canReuse ? existing?.turns || 0 : 0;
             if (res.sessionId) {
               this.store.setSessionById(res.sessionId, {
-                cwd: workDir,
+                cwd: effectiveCwd,
                 role,
                 slot: cleanSlot,
                 engine: engineId,
@@ -1043,7 +1093,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
 
             this.telemetry.record({
               jobId,
-              cwd: workDir,
+              cwd: effectiveCwd,
               role,
               slot: cleanSlot,
               engine: engineId,
@@ -1097,14 +1147,16 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
               outputPath: this.#outputPath(jobId),
               text: `${safeText}${compactHint}\n\n${footer}`,
             };
-            this.#markJobTerminal(job, "completed");
+            terminalStatus = "completed";
+            terminalError = "";
             return;
           } catch (err) {
             if (job.status !== "running") return;
             lastErr = err;
             this.#recordActivity(job, { type: "error", summary: err?.message || String(err) });
             if (job.interruptRequested) {
-              this.#markJobTerminal(job, "interrupted", err?.message || String(err));
+              terminalStatus = "interrupted";
+              terminalError = err?.message || String(err);
               return;
             }
             if (err?.isRateLimit || err?.isQuotaDepleted) {
@@ -1133,19 +1185,21 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
         }
 
         const allCooled = queue.every((m) => Boolean(this.store.getActiveCooldown(m.id)));
-        this.#markJobTerminal(
-          job,
-          "failed",
-          allCooled
-            ? `[ALL_ENGINES_EXHAUSTED] Every AI in the ${role} priority queue hit its quota/balance limit. Pause external delegation and ask the user to disable Agent Relay, top up, or wait for quota reset. Last error: ${lastErr?.message || ""}`
-            : lastErr?.message || "Unknown subagent execution error"
-        );
+        terminalError = allCooled
+          ? `[ALL_ENGINES_EXHAUSTED] Every AI in the ${role} priority queue hit its quota/balance limit. Pause external delegation and ask the user to disable A.stand, top up, or wait for quota reset. Last error: ${lastErr?.message || ""}`
+          : lastErr?.message || terminalError;
+      } catch (err) {
+        terminalError = err?.message || String(err);
       } finally {
         stopGatekeeper();
-        job.finishedAt = job.finishedAt || Date.now();
-        this.#writeStatusSnapshot(job, { force: true });
-        if (this.activeWriters.get(wsKey) === jobId) {
-          this.activeWriters.delete(wsKey);
+        if (wt) this.#finalizeWorktree(job, wt);
+        if (job.status === "running") this.#markJobTerminal(job, terminalStatus, terminalError);
+        else if (wt) {
+          this.#saveJobOutput(job);
+          this.#writeStatusSnapshot(job, { force: true });
+        }
+        for (const key of [wsKey, repoKey]) {
+          if (this.activeWriters.get(key) === jobId) this.activeWriters.delete(key);
         }
         for (const w of job.waiters) w();
         job.waiters = [];
@@ -1177,7 +1231,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
     }
     if (job.status === "completed") return job.result;
     if (job.status === "failed") {
-      return { status: "failed", jobId, text: `Job ${jobId} failed: ${job.error}` };
+      return { status: "failed", jobId, text: `Job ${jobId} failed: ${job.error}${job.worktreeNotice || ""}` };
     }
     if (job.status === "interrupted") {
       const sid = job.sessionId ? ` · sessionId=${job.sessionId}` : "";
@@ -1185,7 +1239,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
         status: "interrupted",
         jobId,
         sessionId: job.sessionId || "",
-        text: `[INTERRUPTED] Job ${jobId} (${job.role}:${job.slot}${sid}) — ${job.error || CRASH_RECOVERY_ERROR}. Last step: ${job.lastSummary || "(none)"}. To resume, re-send the task with sessionId="${job.sessionId || ""}" and note it should check the current workspace diff first.`,
+        text: `[INTERRUPTED] Job ${jobId} (${job.role}:${job.slot}${sid}) — ${job.error || CRASH_RECOVERY_ERROR}. Last step: ${job.lastSummary || "(none)"}. To resume, re-send the task with sessionId="${job.sessionId || ""}" and note it should check the current workspace diff first.${job.worktreeNotice || ""}`,
       };
     }
     if (waitSec === 0) {
@@ -1287,10 +1341,10 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
         allFailed = false;
         sections.push(`=== Job ${id} (${job.role}:${job.slot} · completed) ===\n${job.result?.text || ""}`);
       } else if (job.status === "failed") {
-        sections.push(`=== Job ${id} (${job.role}:${job.slot} · failed) ===\nJob ${id} failed: ${job.error}`);
+        sections.push(`=== Job ${id} (${job.role}:${job.slot} · failed) ===\nJob ${id} failed: ${job.error}${job.worktreeNotice || ""}`);
       } else if (job.status === "interrupted") {
         sections.push(
-          `=== Job ${id} (${job.role}:${job.slot} · interrupted) ===\nJob ${id} was interrupted: ${job.error || "Host/MCP exited while running"}${job.sessionId ? ` (sessionId=${job.sessionId})` : ""}`
+          `=== Job ${id} (${job.role}:${job.slot} · interrupted) ===\nJob ${id} was interrupted: ${job.error || "Host/MCP exited while running"}${job.sessionId ? ` (sessionId=${job.sessionId})` : ""}${job.worktreeNotice || ""}`
         );
       } else {
         anyRunning = true;
@@ -1352,8 +1406,8 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
 
       donePromise.then(() => {
         if (job.status === "completed") finish(job.result);
-        else if (job.status === "failed") {
-          finish({ status: "failed", jobId: job.jobId, text: `Job ${job.jobId} failed: ${job.error}` });
+        else if (job.status === "failed" || job.status === "interrupted") {
+          void this.poll(job.jobId).then(finish);
         }
       });
 
@@ -1423,7 +1477,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
       return {
         blocked: true,
         status: "concurrency_limit",
-        text: `Concurrency cap reached (${running.length}/${this.store.settings.maxConcurrency} running: ${running.map((j) => `${j.jobId}:${j.role}`).join(", ")}). Poll or finish an existing job, or raise maxConcurrency in Agent Relay settings.`,
+        text: `Concurrency cap reached (${running.length}/${this.store.settings.maxConcurrency} running: ${running.map((j) => `${j.jobId}:${j.role}`).join(", ")}). Poll or finish an existing job, or raise maxConcurrency in A.stand settings.`,
       };
     }
 
@@ -1720,6 +1774,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
           retentionDays: this.store.settings.retentionDays,
           autoFallbackOnLimit: this.store.settings.autoFallbackOnLimit,
           allowHephaestusFullAccess: Boolean(this.store.settings.allowHephaestusFullAccess),
+          allowWorktreeParallelWrite: this.store.settings.allowWorktreeParallelWrite === true,
           asyncBackgroundMode: this.store.settings.asyncBackgroundMode === true,
           inspectorEnabled: this.store.settings.inspectorEnabled === true,
           inspectorModelId: this.store.settings.inspectorModelId || null,
@@ -2050,6 +2105,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
         slot: snapshot?.slot || legacy?.slot || "default",
         title: snapshot?.title || "",
         cwd: snapshot?.cwd || "",
+        ...(snapshot?.worktree && { worktree: snapshot.worktree }),
         sessionId: snapshot?.sessionId || "",
         engine: snapshot?.engine || "",
         modelDisplayName: snapshot?.modelDisplayName || "",

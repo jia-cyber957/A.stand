@@ -100,7 +100,7 @@ server.registerResource(
   "agent-relay-console",
   APP_URI,
   {
-    title: "Agent Relay Console",
+    title: "A.stand Console",
     description: "Interactive control panel, quota tracker, live activity feed, and Prompt Cache monitor",
     mimeType: "text/html;profile=mcp-app",
     _meta: { ui: { prefersBorder: false } },
@@ -108,7 +108,7 @@ server.registerResource(
   async () => {
     const html = fs.existsSync(HTML_PATH)
       ? fs.readFileSync(HTML_PATH, "utf8")
-      : `<!doctype html><html><body style="font-family:sans-serif;padding:16px">Agent Relay UI bundle missing at ${HTML_PATH}. Run npm run build.</body></html>`;
+      : `<!doctype html><html><body style="font-family:sans-serif;padding:16px">A.stand UI bundle missing at ${HTML_PATH}. Run npm run build.</body></html>`;
     recordUiTrace({
       lastResourceReadAt: new Date().toISOString(),
       htmlBytes: Buffer.byteLength(html),
@@ -131,9 +131,9 @@ server.registerResource(
 server.registerTool(
   "agent_relay_console",
   {
-    title: "Agent Relay",
+    title: "A.stand",
     description:
-      "Open the Agent Relay control panel to toggle external subagents, manage AI priority queues, inspect GPT 5h/7d quotas, watch live subagent activity, and monitor real Prompt Cache hit rates.",
+      "Open the A.stand control panel to toggle external subagents, manage AI priority queues, inspect GPT 5h/7d quotas, watch live subagent activity, and monitor real Prompt Cache hit rates.",
     inputSchema: {},
     _meta: {
       ui: { resourceUri: APP_URI },
@@ -141,8 +141,8 @@ server.registerTool(
       ...(isCodexPlugin && { "openai/outputTemplate": APP_URI }),
       "com.google.antigravity/ui": {
         entrypoints: [
-          { type: "aux_pane", title: "Agent Relay" },
-          { type: "global", title: "Agent Relay" },
+          { type: "aux_pane", title: "A.stand" },
+          { type: "global", title: "A.stand" },
         ],
       },
     },
@@ -160,7 +160,7 @@ server.registerTool(
       content: [
         {
           type: "text",
-          text: `Agent Relay console opened (Master Switch: ${statusText}, Cumulative Cache Hit Rate: ${hit}, Turns: ${payload.telemetry.totalTurns}).`,
+          text: `A.stand console opened (Master Switch: ${statusText}, Cumulative Cache Hit Rate: ${hit}, Turns: ${payload.telemetry.totalTurns}).`,
         },
       ],
       structuredContent: payload,
@@ -210,6 +210,9 @@ server.registerTool(
           "Optional sandbox mode for hephaestus only. 'danger-full-access' is strictly gated by the user's allowHephaestusFullAccess setting (downgraded to 'workspace-write' if disabled). Ignored for oracle (always read-only)."
         ),
       forceNew: z.boolean().optional(),
+      worktree: z.boolean().optional().describe(
+        "Request an isolated Git worktree for hephaestus when allowWorktreeParallelWrite is enabled. A busy Git checkout automatically triggers isolation."
+      ),
     },
   },
   async (args, extra) => {
@@ -221,7 +224,7 @@ server.registerTool(
       };
     } catch (err) {
       return {
-        content: [{ type: "text", text: `Agent Relay error: ${err?.message || String(err)}` }],
+        content: [{ type: "text", text: `A.stand error: ${err?.message || String(err)}` }],
         isError: true,
       };
     }
@@ -298,7 +301,7 @@ server.registerTool(
       };
     } catch (err) {
       return {
-        content: [{ type: "text", text: `Agent Relay review error: ${err?.message || String(err)}` }],
+        content: [{ type: "text", text: `A.stand review error: ${err?.message || String(err)}` }],
         isError: true,
       };
     }
@@ -310,7 +313,7 @@ server.registerTool(
   {
     title: "Inspect settings/quotas or control persistent subagent sessions",
     description:
-      "Read live Agent Relay settings (concurrency cap, check-in timers, AI priority queues, quotas) via action='status', or control a session (compact, fork, steer, interrupt, reset).",
+      "Read live A.stand settings (concurrency cap, check-in timers, AI priority queues, quotas) via action='status', or control a session (compact, fork, steer, interrupt, reset).",
     inputSchema: {
       action: z.enum(["status", "compact", "fork", "steer", "interrupt", "reset"]),
       cwd: z.string().optional(),
@@ -339,7 +342,7 @@ if (isCodexPlugin) {
   server.registerTool(
     "agent_relay_configure",
     {
-      title: "View or change Agent Relay settings",
+      title: "View or change A.stand settings",
       description:
         "Read the current settings and model IDs with an empty patch. Change settings only when the user explicitly asks. Use this tool when the interactive panel is unavailable.",
       inputSchema: { patch: z.object(chatSettings).strict().optional() },
@@ -405,6 +408,7 @@ server.registerTool(
       ...chatSettings,
       codexKeepOfficePlugins: z.boolean().optional(),
       allowHephaestusFullAccess: z.boolean().optional(),
+      allowWorktreeParallelWrite: z.boolean().optional(),
       retentionDays: z.number().int().min(0).max(3650).optional(),
       asyncBackgroundMode: z.boolean().optional(),
       inspectorEnabled: z.boolean().optional(),

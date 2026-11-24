@@ -1,6 +1,6 @@
 # AI Agent Installation, Setup & Model Advisor Guide
 
-> **Audience**: This document is written specifically for **AI Agents** (e.g. Antigravity, Claude Code, Codex CLI) when a user shares this repository URL and asks you to install, configure, or troubleshoot **Agent Relay** (or asks which external engines/models to choose).
+> **Audience**: This document is written specifically for **AI Agents** (e.g. Antigravity, Claude Code, Codex CLI) when a user shares this repository URL and asks you to install, configure, or troubleshoot **A.stand** (or asks which external engines/models to choose).
 >
 > **Golden Rule**: NEVER silently install global packages, upgrade system Node.js, or modify external CLI configs (`~/.codex/config.toml`, `~/.dsh/*`, `~/.claude/*`) without clearly explaining the options and getting the user's confirmation first.
 
@@ -26,7 +26,7 @@ agy --version        # Google Antigravity CLI (optional)
 ```
 
 > **Important Node.js check for `dsh`**:
-> - Agent Relay itself runs on **Node.js >= 20**.
+> - A.stand itself runs on **Node.js >= 20**.
 > - However, **DeepSeek Harness (`dsh`)** strictly requires **Node.js >= 24.9.0** (on Node 20/22, `dsh --version` exits 0 silently without printing anything!).
 > - If the user wants API-key / OpenAI-compatible proxy models via `dsh` and `node -v` is `< 24.9.0`, present two clear choices:
 >   1. **Upgrade system Node.js to Node 24 LTS** (Recommended — `dsh` works everywhere in terminal too).
@@ -39,8 +39,8 @@ agy --version        # Google Antigravity CLI (optional)
 Ask the user where they'd like the repo cloned (or clone into their chosen projects directory), then run:
 
 ```bash
-git clone <REPO_URL> agent-relay
-cd agent-relay
+git clone https://github.com/jia-cyber957/A.stand.git A.stand
+cd A.stand
 npm install
 npm run install:antigravity
 ```
@@ -57,7 +57,7 @@ npm run check:contracts
 
 Tell the user:
 1. **Restart Antigravity once** so the MCP server registers cleanly.
-2. Open **Agent Relay** from the left sidebar or the right side-pane **`+`** button.
+2. Open **A.stand** from the left sidebar or the right side-pane **`+`** button.
 3. Keep the top-right **Master Switch** OFF until at least one engine/model is ready, then turn it **ON** to enable autonomous delegation.
 
 ---
@@ -73,7 +73,7 @@ After the plugin is installed, ask the user which external AI engine(s) they wan
   npm install -g @openai/codex
   codex login
   ```
-- **In Agent Relay**: Open **Models** tab → click **Re-scan**. Live Codex models (e.g. `gpt-5` / `gpt-6` series) auto-populate via `model/list`. Zero changes made to `~/.codex/config.toml`.
+- **In A.stand**: Open **Models** tab → click **Re-scan**. Live Codex models (e.g. `gpt-5` / `gpt-6` series) auto-populate via `model/list`. Zero changes made to `~/.codex/config.toml`.
 
 ### Option B: DeepSeek Harness (`dsh`) — Official DeepSeek & Any OpenAI-Compatible API / Proxy
 - **Best for**: Saving main-model quota dramatically, connecting DeepSeek API, OpenRouter, or self-hosted OpenAI-compatible gateways/proxies with **95%–99.8% Prompt Cache** hit rates.
@@ -83,7 +83,7 @@ After the plugin is installed, ask the user which external AI engine(s) they wan
   npm install -g @deepseek-ai/dsh@latest
   dsh --version
   ```
-- **Connect your API / Proxy in Agent Relay**:
+- **Connect your API / Proxy in A.stand**:
   1. Open **Models** tab → click **`+ Add API Channel`**.
   2. Enter Provider / Channel Name, Base URL (e.g. `https://api.deepseek.com/v1` or your own OpenAI-compatible gateway URL), and API Key (stored strictly in private `secrets.json`).
   3. Click **Fetch Models** (`GET /models`) to batch-import models (or type model IDs manually) → Save.
@@ -96,10 +96,10 @@ After the plugin is installed, ask the user which external AI engine(s) they wan
   npm install -g @anthropic-ai/claude-code
   claude
   ```
-- **In Agent Relay**: Open **Models** tab → click **Re-scan**.
+- **In A.stand**: Open **Models** tab → click **Re-scan**.
 
 ### Option D: Google Antigravity CLI (`agy`)
-- If `agy` is already installed and signed in on PATH, Agent Relay detects it automatically on **Re-scan**.
+- If `agy` is already installed and signed in on PATH, A.stand detects it automatically on **Re-scan**.
 
 ---
 

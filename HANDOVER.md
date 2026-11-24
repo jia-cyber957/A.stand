@@ -1,4 +1,4 @@
-# Agent Relay — Project Handover & Current State
+# A.stand — Project Handover & Current State
 
 > **Last updated**: 2026-11-24
 > **Purpose**: Self-contained engineering handover so any future session or AI agent can resume work on this repository immediately with zero context loss.
@@ -7,7 +7,7 @@
 
 ## 1. What This Project Is
 
-**Agent Relay** (working name; final brand name & custom SVG logo are currently being designed by Leo) is a **zero-mutation, multi-AI persistent subagent broker plugin for Antigravity** (and future standalone desktop/multi-host orchestrator).
+**A.stand** is a **zero-mutation, multi-AI persistent subagent broker plugin for Antigravity** (and future standalone desktop/multi-host orchestrator).
 
 - **Core idea**: Keep the expensive/smart Lead Agent (e.g., Antigravity Gemini) focused on architecture, task decomposition, and final verification, while offloading heavy multi-file implementation (`hephaestus`) and parallel read-only research/code review (`oracle`) to native external AI engines:
   - **OpenAI Codex CLI** (`codex app-server`, native subscription)
@@ -25,7 +25,7 @@ agent-relay/
 ├── plugin/
 │   ├── plugin.json                    # Antigravity plugin manifest
 │   ├── mcp_config.json                # Portable MCP stdio config (${PLUGIN_ROOT} / ${PLUGIN_DATA})
-│   ├── assets/logo.svg                # Plugin icon (to be replaced with Leo's final design)
+│   ├── assets/logo.svg                # Dual-A plugin icon
 │   ├── rules/AGENTS.md                # Concise host-agnostic delegation gate (always loaded by host)
 │   └── skills/agent-relay/SKILL.md    # Detailed orchestration, doorbell, setup & model-selection guide
 ├── src/
@@ -35,6 +35,7 @@ agent-relay/
 │   │   ├── paths.mjs                  # CLI detection (codex, dsh, claude, agy) & Node >= 24.9 check
 │   │   ├── store.mjs                  # Atomic JSON persistence (settings, secrets, sessions, cooldowns)
 │   │   ├── orchestrator.mjs           # Job lifecycle, concurrency, explicit sessionId, stall gatekeeper, crash recovery
+│   │   ├── worktree.mjs               # Git checkout detection and worktree lifecycle
 │   │   └── telemetry.mjs              # Real upstream Prompt Cache JSONL ledger
 │   ├── engines/
 │   │   ├── base.mjs                   # Shared role specs, usage normalization & structured activity helpers
@@ -54,7 +55,7 @@ agent-relay/
 │   ├── wait-job.mjs                   # Zero-token, ~0% CPU background doorbell waiter
 │   └── e2e-test.mjs                   # Full 9-section E2E suite (incl. headless Edge strict-CSP check)
 ├── docs/
-│   └── ROADMAP_WORKTREE.md            # Deferred design note for parallel Hephaestus via git worktree
+│   └── ROADMAP_WORKTREE.md            # Opt-in parallel Hephaestus worktree behavior
 ├── AGENT_INSTALL.md                   # Deterministic install, engine setup & model advisor for AI Agents
 ├── README.md / README.zh-CN.md        # Human-facing English & Chinese docs
 └── UPGRADING_ENGINES.md               # Guide for adapting when upstream CLIs change
@@ -62,7 +63,7 @@ agent-relay/
 
 ---
 
-## 3. Current Implemented Capabilities (All Verified Green as of 2026-11-24)
+## 3. Current Implemented Capabilities
 
 1. **Two-Level API Channels -> Models Architecture**:
    - Configure one API Channel (Base URL + API Key stored isolated in `secrets.json`), click **Fetch Models** (`GET /models`) to batch-import models; cross-origin endpoint edits enforce re-entering API key (P0 leak guard); reserved `dsh:`/`cli:` IDs rejected.
@@ -73,6 +74,7 @@ agent-relay/
 3. **True Parallel Read-Only `oracle` + Write-Mutex `hephaestus`**:
    - `waitSec: 0` async fire-and-return + `agent_relay_poll(jobIds=[...])` (`pollMany`) + `acp.mjs` `connecting` lock for true parallel startups.
    - `allowHephaestusFullAccess` toggle (default `false`) gates `sandbox="danger-full-access"` for `hephaestus` only (`oracle` always `read-only`).
+   - `allowWorktreeParallelWrite` (default `false`) isolates parallel Git writers. Jobs keep worktrees with uncommitted changes or new commits.
 4. **Antigravity-Native Borderless Collapsible Job Conversation View**:
    - Both `codex.mjs` and `acp.mjs` emit structured events (`id`, `kind`, `title`, `meta`, `added`, `removed`, `durationSec`, `status`, `exitCode`, `detail`).
    - In-place merge by `id` (thought ticks update one row; tool start + result update one row).
@@ -120,10 +122,7 @@ npm run test:e2e
 
 ## 6. Pending Roadmap (Next Up)
 
-1. **Rebrand & New Logo**: Apply final name & custom SVG icon once Leo delivers them.
-2. **Git Init & GitHub Public Release**:
-   - Initialize Git (clean `.gitignore`, verify zero personal secrets/IPs/paths), push first public release to GitHub using `README.md`, `README.zh-CN.md`, and `AGENT_INSTALL.md`.
-3. **Git Worktree Parallel Writers** (see `docs/ROADMAP_WORKTREE.md`):
-   - Optional Settings toggle allowing multiple `hephaestus` workers to edit isolated git worktrees concurrently and merge cleanly.
-4. **Standalone Portable `.exe` + Multi-Host Hub (v2 Vision)**:
+1. **GitHub Public Release**:
+   - Review the repository for public release and publish with `README.md`, `README.zh-CN.md`, and `AGENT_INSTALL.md`.
+2. **Standalone Portable `.exe` + Multi-Host Hub (v2 Vision)**:
    - Decouple MCP core into a local daemon (HTTP MCP + Tauri/WebView2 lightweight portable `.exe` tray UI) with a **Hosts** tab for one-click install/uninstall into Antigravity, Codex CLI, Claude Code, and Cursor — plus **per-host routing / anti-self-recursion** (e.g., Codex skips Codex and delegates to DeepSeek/Claude/Gemini; closing an IDE no longer kills running subagents).

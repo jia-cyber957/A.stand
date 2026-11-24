@@ -20,7 +20,7 @@ const REQUIRED_CODEX_METHODS = [
 ];
 
 async function main() {
-  console.log("=== Agent Relay Upstream Engine & Contract Check ===\n");
+  console.log("=== A.stand Upstream Engine & Contract Check ===\n");
   const detected = detectEngines(true);
   for (const [id, info] of Object.entries(detected)) {
     console.log(

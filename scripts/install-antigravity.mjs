@@ -10,7 +10,7 @@ const PLUGIN_NAME = "agent-relay";
 const TARGET_DIR = path.join(os.homedir(), ".gemini", "config", "plugins", PLUGIN_NAME);
 
 // 1. Always rebuild fresh bundle
-console.log("Building Agent Relay...");
+console.log("Building A.stand...");
 execFileSync(process.execPath, [path.join(ROOT, "scripts", "build.mjs")], {
   cwd: ROOT,
   stdio: "inherit",
@@ -31,6 +31,6 @@ fs.mkdirSync(TARGET_DIR, { recursive: true });
 copyDir(path.join(ROOT, "plugin"), TARGET_DIR);
 copyDir(path.join(ROOT, "dist"), path.join(TARGET_DIR, "dist"));
 
-console.log(`\nInstalled Agent Relay plugin to:\n  ${TARGET_DIR}`);
+console.log(`\nInstalled A.stand plugin to:\n  ${TARGET_DIR}`);
 console.log("Zero external CLI files (e.g. ~/.codex/config.toml) were modified.");
 console.log("Antigravity auto-discovers this plugin without a restart.");

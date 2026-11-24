@@ -1,17 +1,9 @@
-# Future Roadmap: Optional Git Worktree Isolation for Parallel Writers
+# Optional Git Worktree Isolation for Parallel Writers
 
-> **Status**: Deferred (planned as an opt-in Advanced Setting, OFF by default).
+> **Status**: Implemented (Opt-in Setting: allowWorktreeParallelWrite)
 
-## Problem
-Currently, `oracle` (read-only) scales freely up to `maxConcurrency`, while `hephaestus` (workspace-write) enforces a strict per-workspace write mutex so two writers never overwrite each other's files.
-
-## Planned Design (Inspired by Claude Code `--worktree` & Codex `--worktree`)
-1. **Opt-in Setting (`allowWorktreeParallelWrite`, default `false`)**:
-   - Exposed in **Settings → Advanced** with clear transparency: requires a Git repository with clean base commits.
-   - Non-Git directories always fall back cleanly to the existing per-workspace write mutex.
-2. **Lifecycle**:
-   - When enabled and a second `hephaestus` task targets the same Git repo, `agent-relay` creates an isolated checkout under `<repo>/.agent-relay-worktrees/<jobId>` (`git worktree add -b relay/<jobId>`).
-   - Each writer edits, tests, and commits strictly inside its own worktree directory.
-   - Clean unmodified worktrees are pruned automatically on completion; worktrees with changes remain inspectable so the lead agent or user can review and merge cleanly before removing (`git worktree remove`).
-3. **Runtime Port/State Caution**:
-   - Worktrees isolate source files, not shared local ports or databases; prompts should remind parallel writers to use ephemeral ports (`port: 0`) during tests.
+* `oracle` supports parallel read-only slots within `maxConcurrency`.
+* `hephaestus` uses a per-workspace write mutex by default. Enable **Git Worktree Parallel Writers** in Settings to allow concurrent writers in a Git checkout with an existing commit. Non-Git directories still use the mutex.
+* When enabled, A.stand launches a second writer for a busy Git checkout in a new worktree. Pass `worktree: true` to isolate a job explicitly. Each isolated job starts a fresh session from `HEAD` on branch `astand/<jobId>` under `<dataDir>/worktrees/<jobId>`.
+* A.stand prunes worktrees that finish with no local changes and no new commits. For a retained worktree, inspect and commit any local changes, then run `git merge astand/<jobId>` and `git worktree remove "<worktreePath>"` from the source checkout. Use the retained worktree's working directory for session follow-ups.
+* Tests should use ephemeral ports (`port: 0`). Worktrees share machine resources such as ports and databases.

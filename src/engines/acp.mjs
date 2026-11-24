@@ -533,7 +533,7 @@ export class AcpEngine {
               "  config:",
               "    providers:",
               "      agent-relay:",
-              `        displayName: ${JSON.stringify(model?.name || model?.providerId || "Agent Relay")}`,
+              `        displayName: ${JSON.stringify(model?.name || model?.providerId || "A.stand")}`,
               "        apiKeyEnv: AGENT_RELAY_API_KEY",
               "        api: openai-completions",
               `        baseURL: ${JSON.stringify(model.baseUrl)}`,
