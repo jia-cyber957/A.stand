@@ -745,13 +745,19 @@ export class AcpEngine {
         } catch {}
       }
     }
-    try {
-      await state.request("session/set_config_option", {
-        sessionId,
-        configId: "reasoning_effort",
-        value: effectiveEffort,
-      });
-    } catch {}
+    // Apply selected reasoning effort; if a native dsh route rejects "medium" (e.g. only offers off/low/high/max),
+    // gracefully fall back to the nearest supported level so thinking still reflects the user's intent.
+    const effortCandidates = effectiveEffort === "medium" ? ["medium", "high", "low"] : [effectiveEffort];
+    for (const candidate of effortCandidates) {
+      try {
+        await state.request("session/set_config_option", {
+          sessionId,
+          configId: "reasoning_effort",
+          value: candidate,
+        });
+        break;
+      } catch {}
+    }
     state.sessionRoles.set(sessionId, role);
     onSessionReady?.(sessionId);
 

@@ -103,9 +103,23 @@ function copyFileSafe(src, dst, maxBytes) {
   return true;
 }
 
+// Tracks exact relative paths symlinked/junctioned by hydrateWorktree per worktreeRoot
+// (kept off the returned wt object to preserve its plain shape).
+const HYDRATED_LINKS = new Map(); // worktreeRoot -> Set<string> (POSIX-normalized rel paths)
+
+function toPosixRel(rel) {
+  return String(rel || "").replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
+function isInsideDir(rootReal, targetPath) {
+  const rel = path.relative(rootReal, targetPath);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
 function hydrateWorktree({ repoRoot, worktreeRoot, relSubdir = "" }) {
   const bases = relSubdir ? ["", relSubdir] : [""];
   const seen = new Set();
+  const createdLinks = new Set();
 
   for (const base of bases) {
     for (const dep of LINKABLE_DEP_DIRS) {
@@ -118,7 +132,7 @@ function hydrateWorktree({ repoRoot, worktreeRoot, relSubdir = "" }) {
       if (dep.requireChild && !fs.existsSync(path.join(src, dep.requireChild))) continue;
       if (!isGitIgnored(repoRoot, rel)) continue;
       try {
-        linkDirSafe(src, path.join(worktreeRoot, rel));
+        if (linkDirSafe(src, path.join(worktreeRoot, rel))) createdLinks.add(toPosixRel(rel));
       } catch {}
     }
 
@@ -145,36 +159,40 @@ function hydrateWorktree({ repoRoot, worktreeRoot, relSubdir = "" }) {
     if (!st) continue;
     if (!isGitIgnored(repoRoot, rel)) continue;
     try {
-      if (st.isDirectory()) linkDirSafe(src, path.join(worktreeRoot, rel));
-      else if (st.isFile()) copyFileSafe(src, path.join(worktreeRoot, rel), MAX_INCLUDE_COPY_BYTES);
+      if (st.isDirectory()) {
+        if (linkDirSafe(src, path.join(worktreeRoot, rel))) createdLinks.add(toPosixRel(rel));
+      } else if (st.isFile()) {
+        copyFileSafe(src, path.join(worktreeRoot, rel), MAX_INCLUDE_COPY_BYTES);
+      }
     } catch {}
   }
+
+  if (createdLinks.size > 0) HYDRATED_LINKS.set(worktreeRoot, createdLinks);
 }
 
-function unlinkWorktreeLinks({ repoRoot, worktreeRoot, effectiveCwd }) {
-  const relSubdir = effectiveCwd ? safeRelPath(path.relative(worktreeRoot, effectiveCwd)) : "";
-  const bases = relSubdir ? ["", relSubdir] : [""];
-  const candidates = new Set();
-  for (const base of bases) {
-    for (const dep of LINKABLE_DEP_DIRS) {
-      candidates.add(base ? path.join(base, dep.name) : dep.name);
-    }
-  }
-  for (const rel of readWorktreeInclude(repoRoot)) {
-    candidates.add(rel);
-  }
-  for (const rel of candidates) {
-    const p = path.join(worktreeRoot, rel);
+function unlinkWorktreeLinks(worktreeRoot) {
+  const links = HYDRATED_LINKS.get(worktreeRoot);
+  if (!links || links.size === 0) return;
+  const rootReal = fs.realpathSync(worktreeRoot);
+  for (const posixRel of links) {
+    const p = path.join(worktreeRoot, ...posixRel.split("/"));
     const st = fs.lstatSync(p, { throwIfNoEntry: false });
-    if (!st || !st.isSymbolicLink()) continue;
+    if (!st) continue;
+    if (!st.isSymbolicLink()) continue;
+    const parentReal = fs.realpathSync(path.dirname(p));
+    if (!isInsideDir(rootReal, parentReal)) {
+      throw new Error(`Refusing to unlink hydration link outside worktree: ${p}`);
+    }
     try {
       fs.unlinkSync(p);
     } catch {
-      try {
-        fs.rmdirSync(p);
-      } catch {}
+      fs.rmdirSync(p);
+    }
+    if (fs.lstatSync(p, { throwIfNoEntry: false })) {
+      throw new Error(`Failed to unlink hydration link before worktree removal: ${p}`);
     }
   }
+  HYDRATED_LINKS.delete(worktreeRoot);
 }
 
 export function createJobWorktree({ dataDir, repoRoot, relSubdir = "", jobId }) {
@@ -209,13 +227,28 @@ export function createJobWorktree({ dataDir, repoRoot, relSubdir = "", jobId }) 
 
 export function finalizeJobWorktree(wt) {
   const { worktreeRoot, repoRoot, branch, baseHead } = wt;
+  const links = HYDRATED_LINKS.get(worktreeRoot);
   const status = git(worktreeRoot, ["status", "--porcelain", "-z", "--untracked-files=all", "--ignore-submodules=none"], 60_000);
   const entries = status.split("\0");
   let changedFilesCount = 0;
   for (let i = 0; i < entries.length - 1; i++) {
-    changedFilesCount++;
+    const line = entries[i];
+    const code = line.slice(0, 2);
+    const relPath = toPosixRel(line.slice(3));
     // In porcelain -z, renames and copies have a second, NUL-delimited path.
-    if (/[RC]/.test(entries[i].slice(0, 2))) i++;
+    if (/[RC]/.test(code)) {
+      changedFilesCount++;
+      i++;
+      continue;
+    }
+    // On POSIX, Git's directory-only ignore patterns (e.g. `node_modules/`) do not ignore a symlink.
+    // Skip verified hydration symlinks we created so clean worktrees still prune cleanly.
+    if (code === "??" && links?.has(relPath)) {
+      const p = path.join(worktreeRoot, ...relPath.split("/"));
+      const st = fs.lstatSync(p, { throwIfNoEntry: false });
+      if (st?.isSymbolicLink()) continue;
+    }
+    changedFilesCount++;
   }
   let commitsCount = Number(git(worktreeRoot, ["rev-list", "--count", `${baseHead}..HEAD`]).trim());
   if (changedFilesCount === 0 && commitsCount === 0) {
@@ -225,7 +258,7 @@ export function finalizeJobWorktree(wt) {
   if (changedFilesCount || commitsCount) {
     return { kept: true, pruned: false, branch, worktreeRoot, changedFilesCount, commitsCount };
   }
-  unlinkWorktreeLinks(wt);
+  unlinkWorktreeLinks(worktreeRoot);
   git(repoRoot, ["worktree", "remove", "--force", worktreeRoot], 60_000);
   git(repoRoot, ["branch", "-D", branch]);
   return { kept: false, pruned: true };
