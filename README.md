@@ -29,11 +29,11 @@ A.stand lets your Antigravity Lead Agent stay focused on architecture, planning,
 
 ### Team panel — live subagent timeline & Prompt Cache
 
-![A.stand Team panel: live subagent jobs with the collapsible X-ray timeline and real Prompt Cache hit rates](./docs/screenshots/console-team.png)
+![A.stand Team panel: live subagent jobs with the collapsible X-ray timeline and real Prompt Cache hit rates](./docs/screenshots/console-team-en.png)
 
 ### Cache analytics — cumulative hit rate from real upstream billing counters
 
-![A.stand Cache panel: cumulative Prompt Cache hit rate, input/cached/output token totals and recent turn chart](./docs/screenshots/console-cache.png)
+![A.stand Cache panel: cumulative Prompt Cache hit rate, input/cached/output token totals and recent turn chart](./docs/screenshots/console-cache-en.png)
 
 ---
 

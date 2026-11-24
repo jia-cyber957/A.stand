@@ -5,10 +5,19 @@
 //   2. Serves dist/console.html behind a minimal MCP-Apps host harness (same ui/initialize + tool-result
 //      postMessage contract the real Antigravity host uses) bound to an ephemeral port on 127.0.0.1.
 //   3. Injects a completely synthetic dashboard state (fake workspace /projects/demo-web-app, mock engine
-//      versions, 98.6% prompt-cache hit rate, Codex quota windows, 白泽/祝融 role cards and one expanded
+//      versions, 98.6% prompt-cache hit rate, Codex quota windows, role cards and one expanded
 //      Antigravity-native X-ray job). No real paths, keys, hostnames or IPs ever appear.
+//      The state is rendered twice: English (settings.lang="en", hostContext.locale="en-US") for
+//      README.md, and Chinese (settings.lang="zh", hostContext.locale="zh-CN") for README.zh-CN.md.
+//      The injected UI HTML's <html lang> and the harness page's <html lang> are switched to match.
 //   4. Renders the iframe at 480x920 CSS px @ 2x DPR and exports the PNG with CDP
 //      Page.captureScreenshot (the browser viewport is oversized so nothing is cut off).
+//
+// Output (4 files):
+//   docs/screenshots/console-team-en.png   English Team X-ray timeline
+//   docs/screenshots/console-cache-en.png  English Cache analytics
+//   docs/screenshots/console-team.png      Chinese Team X-ray timeline
+//   docs/screenshots/console-cache.png     Chinese Cache analytics
 //
 // Usage: node scripts/capture-screenshots.mjs   (PORT=0 style ephemeral ports only; no server left running)
 
@@ -25,11 +34,63 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 const DIST_HTML = path.join(ROOT, "dist", "console.html");
 const OUT_DIR = path.join(ROOT, "docs", "screenshots");
-const MIN_PNG_BYTES = 15 * 1024;
+const MIN_PNG_BYTES = 100 * 1024; // docs must ship crisp Retina PNGs, not near-empty frames
 const FRAME_WIDTH = 480; // CSS px — matches the Antigravity inline/side panel width
 const DEVICE_SCALE = 2; // 2x DPR -> 960 px wide QR-ready PNGs
 const VIEWPORT = { width: FRAME_WIDTH, height: 3600 };
 const DEMO_CWD = "/projects/demo-web-app";
+
+// Locale pairing for the two READMEs. `lang` drives state.settings.lang (UI strings),
+// `locale` drives hostContext.locale and both <html lang> attributes.
+const LANGS = {
+  en: { lang: "en", locale: "en-US" },
+  zh: { lang: "zh", locale: "zh-CN" },
+};
+
+// ---------------------------------------------------------------------------------------------
+// Synthetic, zero-PII copy for the demo job — localized so each screenshot reads naturally in
+// its own language instead of mixing English body text into the Chinese UI (and vice versa).
+// ---------------------------------------------------------------------------------------------
+const SHOT_COPY = {
+  en: {
+    jobTitle: "Checkout retry + idempotency key",
+    jobPrompt:
+      "Checkout retries double-charge VIP users on network timeout. Add an idempotency key end-to-end (client → `POST /api/checkout` → payment adapter), keep the legacy `chargeId` field for older mobile clients, and prove it with an integration test for the timeout-retry path. Don't touch the admin billing UI.",
+    thoughtDetail:
+      "Two code paths can retry a checkout: the client `withRetry()` helper and the server-side gateway on 502/504.\n\nI'll mint the key once per checkout at the client boundary, persist it on the order draft, and make the payment adapter dedupe on `Idempotency-Key`. Then add a timeout-retry integration test.",
+    finalText:
+      "## Summary\n\nAdds a client-minted **idempotency key** that survives retries and is enforced server-side, so a timeout retry can never double-charge.\n\n- `withRetry()` now only retries **transient** failures with jittered backoff and reuses the same key\n- `POST /api/checkout` dedupes on `Idempotency-Key`; replays get the original receipt\n- Legacy `chargeId` kept for older mobile clients\n\n```ts\nconst key = newIdempotencyKey();\nawait withRetry(() => charge({ key, order }), 3, key);\n```\n\n`pnpm vitest` → **5 passed**. No changes to the admin billing UI.\n\n[A.stand · hephaestus · gpt-5-codex (codex) · warm · cache 98.9% (189,241 / 194,562) | ctx 71% · 86.4s]\n\n[Git Worktree] Branch: astand/job_demo_checkout · 3 files changed",
+    recent: {
+      checkout: "Checkout retry + idempotency key",
+      cache: "Gateway prompt-prefix audit",
+      webhook: "Webhook signature parity",
+    },
+    sessions: {
+      review: "Checkout race review",
+      checkout: "Checkout retry + idempotency key",
+      webhook: "Webhook signature parity",
+    },
+  },
+  zh: {
+    jobTitle: "结算重试 + 幂等键",
+    jobPrompt:
+      "VIP 用户在网络超时重试结算时会被重复扣款。请端到端加上幂等键（客户端 → `POST /api/checkout` → 支付适配器），为老版本移动端保留 `chargeId` 字段，并用一个针对超时重试路径的集成测试证明它。不要改动管理后台的计费界面。",
+    thoughtDetail:
+      "结算有两条重试路径：客户端的 `withRetry()` 辅助函数，以及服务端网关在 502/504 时的重试。\n\n我会在客户端边界为每次结算生成一次幂等键，持久化到订单草稿上，并让支付适配器按 `Idempotency-Key` 去重。然后补一个超时重试的集成测试。",
+    finalText:
+      "## 摘要\n\n在客户端生成**幂等键**并贯穿重试，服务端强制去重，因此超时重试永远不会重复扣款。\n\n- `withRetry()` 现在只重试**瞬时**故障，带抖动退避，并复用同一个键\n- `POST /api/checkout` 按 `Idempotency-Key` 去重；重放请求返回原始回执\n- 为老版本移动端保留 `chargeId`\n\n```ts\nconst key = newIdempotencyKey();\nawait withRetry(() => charge({ key, order }), 3, key);\n```\n\n`pnpm vitest` → **5 passed**。未改动管理后台的计费界面。\n\n[A.stand · hephaestus · gpt-5-codex (codex) · warm · cache 98.9% (189,241 / 194,562) | ctx 71% · 86.4s]\n\n[Git Worktree] Branch: astand/job_demo_checkout · 3 files changed",
+    recent: {
+      checkout: "结算重试 + 幂等键",
+      cache: "网关 Prompt 前缀审计",
+      webhook: "Webhook 签名一致性",
+    },
+    sessions: {
+      review: "结算竞态审查",
+      checkout: "结算重试 + 幂等键",
+      webhook: "Webhook 签名一致性",
+    },
+  },
+};
 
 // ---------------------------------------------------------------------------------------------
 // 1. Build
@@ -151,7 +212,9 @@ function cliSubModels() {
   };
 }
 
-function buildDashboardState() {
+function buildDashboardState(lang = "zh") {
+  const L = LANGS[lang] || LANGS.zh;
+  const copy = SHOT_COPY[L.lang];
   const telemetry = buildTelemetry();
   const cliModels = cliSubModels();
   const engines = {
@@ -247,7 +310,7 @@ function buildDashboardState() {
   const settings = {
     version: 3,
     enabled: true,
-    lang: "zh",
+    lang: L.lang,
     codexKeepOfficePlugins: false,
     allowHephaestusFullAccess: false,
     allowWorktreeParallelWrite: true,
@@ -286,7 +349,7 @@ function buildDashboardState() {
       modelId: "cli-codex-default",
       modelDisplayName: "gpt-5-codex",
       resolvedModel: "gpt-5-codex",
-      title: "Checkout race review",
+      title: copy.sessions.review,
       turns: 17,
       lastHitRate: 98.4,
       contextPct: 46,
@@ -302,7 +365,7 @@ function buildDashboardState() {
       modelId: "cli-codex-default",
       modelDisplayName: "gpt-5-codex",
       resolvedModel: "gpt-5-codex",
-      title: "Checkout retry + idempotency key",
+      title: copy.sessions.checkout,
       turns: 42,
       lastHitRate: 98.9,
       contextPct: 71,
@@ -318,7 +381,7 @@ function buildDashboardState() {
       modelId: "custom-demo-deepseek-1",
       modelDisplayName: "deepseek-reasoner",
       resolvedModel: "deepseek-reasoner",
-      title: "Webhook signature parity",
+      title: copy.sessions.webhook,
       turns: 12,
       lastHitRate: 99.1,
       contextPct: 33,
@@ -339,7 +402,7 @@ function buildDashboardState() {
       jobId: "job_demo_checkout",
       role: "hephaestus",
       slot: "default",
-      title: "Checkout retry + idempotency key",
+      title: copy.recent.checkout,
       cwd: DEMO_CWD,
       engine: "codex",
       modelDisplayName: "gpt-5-codex",
@@ -354,7 +417,7 @@ function buildDashboardState() {
       jobId: "job_demo_cache",
       role: "oracle",
       slot: "default",
-      title: "Gateway prompt-prefix audit",
+      title: copy.recent.cache,
       cwd: DEMO_CWD,
       engine: "codex",
       modelDisplayName: "gpt-5-codex",
@@ -369,7 +432,7 @@ function buildDashboardState() {
       jobId: "job_demo_webhook",
       role: "hephaestus",
       slot: "default",
-      title: "Webhook signature parity",
+      title: copy.recent.webhook,
       cwd: DEMO_CWD,
       engine: "deepseek-harness",
       modelDisplayName: "deepseek-reasoner",
@@ -402,14 +465,18 @@ function buildDashboardState() {
 
 // One completed job whose Antigravity-native X-ray timeline shows every row kind:
 // Thought / Analyzed / Edited / Created / Ran (+ live pulse) / Markdown final response.
-function buildJobDetail() {
+// `lang` localizes the synthetic prompt, thought, and final response so the timeline body text
+// matches the surrounding UI language (Chinese screenshots must not read as mixed-language).
+function buildJobDetail(lang = "zh") {
+  const L = LANGS[lang] || LANGS.zh;
+  const copy = SHOT_COPY[L.lang];
   return {
     ok: true,
     job: {
       jobId: "job_demo_checkout",
       role: "hephaestus",
       slot: "default",
-      title: "Checkout retry + idempotency key",
+      title: copy.jobTitle,
       cwd: DEMO_CWD,
       sessionId: "sess-demo-1b44de02",
       engine: "codex",
@@ -423,17 +490,15 @@ function buildJobDetail() {
       contextPct: 71,
       activityCount: 7,
       logPath: "/var/lib/a-stand/jobs/job_demo_checkout.log",
-      prompt:
-        "Checkout retries double-charge VIP users on network timeout. Add an idempotency key end-to-end (client → `POST /api/checkout` → payment adapter), keep the legacy `chargeId` field for older mobile clients, and prove it with an integration test for the timeout-retry path. Don't touch the admin billing UI.",
+      prompt: copy.jobPrompt,
       activities: [
         {
           id: "demo_thought_1",
           kind: "thought",
-          title: "Plan",
+          title: L.lang === "en" ? "Plan" : "计划",
           status: "done",
           durationSec: 11,
-          detail:
-            "Two code paths can retry a checkout: the client `withRetry()` helper and the server-side gateway on 502/504.\n\nI'll mint the key once per checkout at the client boundary, persist it on the order draft, and make the payment adapter dedupe on `Idempotency-Key`. Then add a timeout-retry integration test.",
+          detail: copy.thoughtDetail,
         },
         { id: "demo_read_1", kind: "read", title: "checkout.ts", meta: "#L88-142" },
         { id: "demo_search_1", kind: "search", title: '"withRetry("', meta: "src/lib" },
@@ -467,8 +532,7 @@ function buildJobDetail() {
         },
       ],
       prompt_preview: "",
-      finalText:
-        "## Summary\n\nAdds a client-minted **idempotency key** that survives retries and is enforced server-side, so a timeout retry can never double-charge.\n\n- `withRetry()` now only retries **transient** failures with jittered backoff and reuses the same key\n- `POST /api/checkout` dedupes on `Idempotency-Key`; replays get the original receipt\n- Legacy `chargeId` kept for older mobile clients\n\n```ts\nconst key = newIdempotencyKey();\nawait withRetry(() => charge({ key, order }), 3, key);\n```\n\n`pnpm vitest` → **5 passed**. No changes to the admin billing UI.\n\n[A.stand · hephaestus · gpt-5-codex (codex) · warm · cache 98.9% (189,241 / 194,562) | ctx 71% · 86.4s]\n\n[Git Worktree] Branch: astand/job_demo_checkout · 3 files changed",
+      finalText: copy.finalText,
       error: "",
       recovered: false,
     },
@@ -478,14 +542,20 @@ function buildJobDetail() {
 // ---------------------------------------------------------------------------------------------
 // 3. Host harness page (clean, self-contained, same postMessage contract as e2e-test.mjs)
 // ---------------------------------------------------------------------------------------------
-function hostHtml({ uiHtml, state, jobDetail }) {
+function hostHtml({ uiHtml, state, jobDetail, lang = "zh" }) {
+  const L = LANGS[lang] || LANGS.zh;
+  // dist/console.html hardcodes <html lang="zh-CN"> (the product default), so the harness rewrites
+  // the srcdoc document's lang attribute to match the synthetic locale for this capture.
+  const localizedUiHtml = /<html\s+lang="[^"]*"/i.test(uiHtml)
+    ? uiHtml.replace(/<html\s+lang="[^"]*"/i, `<html lang="${L.locale}"`)
+    : uiHtml.replace(/<html\b/i, `<html lang="${L.locale}"`);
   const payload = {
     content: [{ type: "text", text: "A.stand demo dashboard (synthetic)" }],
     structuredContent: state,
   };
   const safe = (v) => JSON.stringify(v).replace(/</g, "\\u003c");
   return `<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><style>
+<html lang="${L.locale}"><head><meta charset="utf-8"><style>
   html,body{margin:0;padding:0;background:#0b0b0d}
   #frame{border:0;display:block;width:${FRAME_WIDTH}px;height:100px;background:#0b0b0d}
 </style></head><body>
@@ -493,7 +563,8 @@ function hostHtml({ uiHtml, state, jobDetail }) {
 <script>
   const TOOL_RESULT = ${safe(payload)};
   const JOB_DETAIL = ${safe(jobDetail)};
-  const HTML_SRC = ${safe(uiHtml)};
+  const HTML_SRC = ${safe(localizedUiHtml)};
+  const UI_LANG = ${safe(L.locale)};
   const frame = document.getElementById("frame");
   const ready = { done: false };
 
@@ -506,7 +577,7 @@ function hostHtml({ uiHtml, state, jobDetail }) {
         theme: "dark",
         platform: "desktop",
         displayMode: "inline",
-        locale: "zh-CN",
+        locale: UI_LANG,
         containerDimensions: { width: ${FRAME_WIDTH}, maxHeight: 920 },
       },
     };
@@ -595,6 +666,7 @@ function hostHtml({ uiHtml, state, jobDetail }) {
         height,
         title: doc().querySelector(".job-detail-title")?.textContent || "",
         text: body.innerText,
+        htmlLang: doc().documentElement.lang || "",
         errorShell: Boolean(doc().querySelector(".empty-state") && body.innerText.includes("UI Error")),
         frames: doc().querySelectorAll("iframe,frame").length,
         images: doc().querySelectorAll("img").length,
@@ -878,19 +950,72 @@ async function captureWithScreenshotFlag({ browser, url, outFile }) {
 // ---------------------------------------------------------------------------------------------
 // 5. Main
 // ---------------------------------------------------------------------------------------------
+// The exact strings each screenshot must prove it rendered — a language/regression guard so a
+// silently-Chinese English PNG (or vice versa) can never be committed to docs/.
+const SHOT_EXPECT = {
+  "console-team-en": {
+    lang: "en",
+    must: ["Hephaestus", "Thought for 11s", "Analyzed", "Edited", "98.9%"],
+    mustNot: ["祝融", "白泽", "思考了", "已分析", "已编辑"],
+  },
+  "console-cache-en": {
+    lang: "en",
+    must: ["98.6%", "Hephaestus", "Oracle"],
+    mustNot: ["祝融", "白泽"],
+  },
+  "console-team": {
+    lang: "zh",
+    must: ["祝融", "思考了 11s", "已分析", "已编辑", "98.9%"],
+    mustNot: ["Thought for 11s", "Analyzed"],
+  },
+  "console-cache": {
+    lang: "zh",
+    must: ["98.6%", "祝融", "白泽"],
+    mustNot: ["Hephaestus"],
+  },
+};
+
+function assertShotContent(name, report) {
+  const expect = SHOT_EXPECT[name];
+  const text = String(report.text || "");
+  const missing = expect.must.filter((s) => !text.includes(s));
+  const leaked = expect.mustNot.filter((s) => text.includes(s));
+  const problems = [];
+  if (missing.length) problems.push(`missing ${missing.map((s) => JSON.stringify(s)).join(", ")}`);
+  if (leaked.length) problems.push(`unexpected ${leaked.map((s) => JSON.stringify(s)).join(", ")}`);
+  if (report.htmlLang !== LANGS[expect.lang].locale) {
+    problems.push(`<html lang> is "${report.htmlLang || ""}", expected "${LANGS[expect.lang].locale}"`);
+  }
+  if (problems.length) {
+    throw new Error(`${name} rendered the wrong locale/content: ${problems.join("; ")}`);
+  }
+}
+
 async function main() {
   let browser = "";
   const uiHtml = build();
-  const state = buildDashboardState();
-  const jobDetail = buildJobDetail();
   fs.mkdirSync(OUT_DIR, { recursive: true });
 
-  const page = hostHtml({ uiHtml, state, jobDetail });
+  // One harness page per language: its embedded state, job detail, locale and <html lang> all match.
+  const pages = {};
+  for (const [lang, L] of Object.entries(LANGS)) {
+    pages[lang] = hostHtml({
+      uiHtml,
+      state: buildDashboardState(lang),
+      jobDetail: buildJobDetail(lang),
+      lang,
+    });
+    if (!pages[lang].includes(`<html lang="${L.locale}"`)) {
+      throw new Error(`Host harness for "${lang}" did not get <html lang="${L.locale}">`);
+    }
+  }
+
   const server = http.createServer((req, res) => {
-    const pathname = new URL(req.url || "/", "http://127.0.0.1").pathname;
-    if (pathname === "/host" || pathname === "/") {
+    const url = new URL(req.url || "/", "http://127.0.0.1");
+    if (url.pathname === "/host" || url.pathname === "/") {
+      const lang = url.searchParams.get("lang") === "en" ? "en" : "zh";
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
-      res.end(page);
+      res.end(pages[lang]);
       return;
     }
     res.writeHead(404, { "Content-Type": "text/plain" });
@@ -901,8 +1026,10 @@ async function main() {
   const base = `http://127.0.0.1:${port}`;
 
   const shots = [
-    { out: "console-team.png", mode: "team" },
-    { out: "console-cache.png", mode: "cache" },
+    { out: "console-team-en.png", lang: "en", mode: "team" },
+    { out: "console-cache-en.png", lang: "en", mode: "cache" },
+    { out: "console-team.png", lang: "zh", mode: "team" },
+    { out: "console-cache.png", lang: "zh", mode: "cache" },
   ];
 
   try {
@@ -912,25 +1039,32 @@ async function main() {
     }
     console.log(`Browser: ${browser}`);
     for (const shot of shots) {
+      const name = shot.out.replace(/\.png$/, "");
+      const url = `${base}/host?lang=${shot.lang}&mode=${shot.mode}`;
       const outFile = path.join(OUT_DIR, shot.out);
       fs.rmSync(outFile, { force: true });
       let result;
       try {
-        result = await captureWithCdp({ browser, url: `${base}/host?mode=${shot.mode}`, mode: shot.mode, outFile });
+        result = await captureWithCdp({ browser, url, mode: shot.mode, outFile });
       } catch (err) {
-        console.warn(`  CDP capture failed for ${shot.mode} (${err.message}); retrying with --screenshot + virtual time.`);
-        result = await captureWithScreenshotFlag({ browser, url: `${base}/host?mode=${shot.mode}`, outFile });
+        console.warn(`  CDP capture failed for ${shot.out} (${err.message}); retrying with --screenshot + virtual time.`);
+        result = await captureWithScreenshotFlag({ browser, url, outFile });
+      }
+      if (result.text !== undefined) assertShotContent(name, result);
+      else console.warn(`  ${shot.out}: content/locale assertions skipped (fallback renderer cannot report text).`);
+      if (process.env.AGENT_RELAY_SHOT_DEBUG === "1" && result.text) {
+        console.log(`----- ${shot.out} rendered text -----\n${result.text}\n-----`);
       }
       console.log(
         `  ${shot.out}: ${(result.bytes / 1024).toFixed(1)} KB (${result.method}, ${FRAME_WIDTH}px @${DEVICE_SCALE}x, ` +
-          `${result.height ?? "?"} CSS px tall)` + (result.title ? ` · "${result.title}"` : "")
+          `${result.height ?? "?"} CSS px tall, lang=${shot.lang})` + (result.title ? ` · "${result.title}"` : "")
       );
     }
   } finally {
     await new Promise((r) => server.close(r));
   }
 
-  // Verify everything promised to docs: both files exist, are real PNGs and are non-trivial.
+  // Verify everything promised to docs: all four files exist, are real PNGs and are non-trivial.
   let failed = false;
   for (const shot of shots) {
     const file = path.join(OUT_DIR, shot.out);
