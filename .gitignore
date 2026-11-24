@@ -1,0 +1,11 @@
+node_modules/
+dist/
+data/
+.tmp-shots/
+scripts/tmp-*.mjs
+*.log
+*.bak
+.env
+.env.*
+.DS_Store
+Thumbs.db

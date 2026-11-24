@@ -1,0 +1,12 @@
+{
+  "name": "agent-relay",
+  "displayName": "Agent Relay",
+  "version": "1.0.0",
+  "description": "Zero-mutation multi-AI persistent subagent broker for Antigravity — delegates to native Codex, Claude Code, Antigravity CLI, and DeepSeek Harness with a real-time Prompt Cache console.",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "Open the Agent Relay console to check cache hit rates and active AI models",
+    "Ask Oracle to review our uncommitted changes for bugs and race conditions",
+    "Help me connect Claude Code or DeepSeek Harness into Agent Relay"
+  ]
+}

@@ -1,0 +1,70 @@
+import esbuild from "esbuild";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(__dirname, "..");
+const DIST = path.join(ROOT, "dist");
+
+fs.mkdirSync(DIST, { recursive: true });
+
+// 1. Bundle MCP server into a standalone ESM file (zero runtime node_modules needed in plugin dir)
+await esbuild.build({
+  entryPoints: [path.join(ROOT, "src", "server.mjs")],
+  outfile: path.join(DIST, "server.mjs"),
+  bundle: true,
+  platform: "node",
+  target: "node20",
+  format: "esm",
+  sourcemap: false,
+  banner: {
+    js: 'import { createRequire as __arCreateRequire } from "node:module"; const require = __arCreateRequire(import.meta.url);',
+  },
+});
+
+// 2. Bundle UI script with @modelcontextprotocol/ext-apps and inline CSS + JS into single HTML
+const uiBuild = await esbuild.build({
+  entryPoints: [path.join(ROOT, "src", "ui", "app.js")],
+  bundle: true,
+  platform: "browser",
+  target: "es2020",
+  format: "iife",
+  minify: true,
+  write: false,
+});
+
+// Escape any accidental </script sequence inside bundled JS string literals
+const jsCode = uiBuild.outputFiles[0].text.replace(/<\/script/gi, "<\\/script");
+const cssCode = fs.readFileSync(path.join(ROOT, "src", "ui", "styles.css"), "utf8");
+const template = fs.readFileSync(path.join(ROOT, "src", "ui", "template.html"), "utf8");
+
+// CRITICAL: Use function replacers (() => ...) so '$' patterns ($&, $`, $') inside minified JS never corrupt the HTML!
+const html = template
+  .replace("/*__INLINE_CSS__*/", () => cssCode)
+  .replace("/*__INLINE_JS__*/", () => jsCode);
+
+// Post-build integrity assertion
+const doctypeCount = (html.match(/<!doctype html>/gi) || []).length;
+if (
+  doctypeCount !== 1 ||
+  html.includes("/*__INLINE_JS__*/") ||
+  html.includes("/*__INLINE_CSS__*/") ||
+  html.includes('<script type="module">')
+) {
+  throw new Error(`console.html integrity check failed (doctypeCount=${doctypeCount})`);
+}
+
+fs.writeFileSync(path.join(DIST, "console.html"), html, "utf8");
+
+// 3. Ship the zero-token doorbell waiter so the Lead Agent can run it from the installed plugin dir
+const waitJobSrc = path.join(ROOT, "scripts", "wait-job.mjs");
+const waitJobText = fs.readFileSync(waitJobSrc, "utf8");
+if (!waitJobText.includes("process.exit(") || !waitJobText.includes("status.json")) {
+  throw new Error("wait-job.mjs integrity check failed");
+}
+fs.writeFileSync(path.join(DIST, "wait-job.mjs"), waitJobText, "utf8");
+
+console.log(
+  `Built dist/server.mjs (${(fs.statSync(path.join(DIST, "server.mjs")).size / 1024).toFixed(1)} KB), dist/console.html (${(Buffer.byteLength(html) / 1024).toFixed(1)} KB, verified OK) and dist/wait-job.mjs`
+);
