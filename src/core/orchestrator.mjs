@@ -16,6 +16,13 @@ const MAX_BLOCKING_WAIT_MS = 120_000;
 const INSPECTOR_TIMEOUT_MS = 15_000;
 const STATUS_WRITE_THROTTLE_MS = 2_500;
 const CRASH_RECOVERY_ERROR = "Host/MCP exited while job was running";
+const GATEKEEPER_MAX_DEFERRALS = 3;
+const GATEKEEPER_VERDICT_GRACE_MS = 30_000;
+const RECOVER_WINDOW_MS = 24 * 60 * 60 * 1000;
+const RECOVER_SCAN_LIMIT = 500;
+const RECOVER_ACTION_TEXT_MAX = 240;
+const GATEKEEPER_REASON_MAX = 180;
+const TRIAGE_DETAIL_MAX = 600;
 
 const __orchestratorDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -212,6 +219,148 @@ function deriveSessionTitle(title, prompt) {
   return raw.length > 42 ? `${raw.slice(0, 41).trimEnd()}…` : raw;
 }
 
+// Handoff / doorbell text is untrusted (engine output, commands, paths). Strip ANSI/control chars,
+// redact obvious bearer tokens & key-shaped secrets, collapse whitespace and hard-bound the length.
+export function sanitizeHandoffText(value, max = 160) {
+  let text = String(value ?? "");
+  text = text.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "");
+  text = text.replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, " ");
+  text = text.replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]");
+  text = text.replace(/\b(?:sk|pk|api|token|secret|key)[-_][A-Za-z0-9_-]{10,}\b/gi, "[redacted]");
+  text = text.replace(/\b[A-Za-z0-9_-]{40,}\b/g, "[redacted]");
+  text = text.replace(/\s+/g, " ").trim();
+  const limit = Math.max(8, Number(max) || 160);
+  return text.length > limit ? `${text.slice(0, limit - 1).trimEnd()}…` : text;
+}
+
+const NON_MEANINGFUL_ACTIVITY = new Set(["start", "touch", "log", "triage", "triage_alert", "steer", "interrupt", "fallback"]);
+
+// Last real action a job performed (read/edit/write/search/cmd/thought/output), sanitized + bounded.
+export function lastMeaningfulAction(activities, max = 160) {
+  const rows = Array.isArray(activities) ? activities : [];
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const a = rows[i];
+    const kind = a?.kind || a?.type || "";
+    if (!kind || NON_MEANINGFUL_ACTIVITY.has(kind) || NON_MEANINGFUL_ACTIVITY.has(a?.type)) continue;
+    const text = sanitizeHandoffText(a?.title || a?.summary || "", max);
+    if (!text) continue;
+    return {
+      kind: String(kind).slice(0, 24),
+      text,
+      status: sanitizeHandoffText(a?.status || "", 24),
+      at: typeof a?.ts === "string" ? a.ts.slice(0, 32) : "",
+    };
+  }
+  return null;
+}
+
+function sanitizeConversationId(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  const clean = raw.replace(/[^A-Za-z0-9._:-]/g, "").slice(0, 128);
+  return clean.length >= 2 ? clean : "";
+}
+
+function sanitizeModelChoice(value) {
+  return typeof value === "string" ? value.trim().slice(0, 200) : "";
+}
+
+// Ordered (default) keeps the configured priority queue untouched. Smart promotes one explicit
+// configured model to the front and keeps the remaining order as fallbacks. No judging call here.
+// Resumes are pinned to the original engine/model so the session (and its Prompt Cache) stays reusable.
+export function selectRoleModels({ role, queue = [], selectionMode = "ordered", requestedModelId = "", resumeRecord = null } = {}) {
+  const mode = selectionMode === "smart" ? "smart" : "ordered";
+  const models = Array.isArray(queue) ? queue.filter(Boolean) : [];
+  const requested = sanitizeModelChoice(requestedModelId);
+  const validIds = models.map((m) => m.id);
+  const notes = [];
+
+  if (resumeRecord?.modelId && resumeRecord?.engine) {
+    const same = models.find((m) => m.id === resumeRecord.modelId);
+    if (same) {
+      const rest = models.filter((m) => m.id !== same.id);
+      return { mode, models: [same, ...rest], selected: same, notes, resumeForced: true };
+    }
+    notes.push(
+      `Resume session ${resumeRecord.sessionId || ""} was created on ${resumeRecord.engine}/${resumeRecord.modelId}, ` +
+      `which is no longer in the ${role} queue; starting a fresh session on the queue head.`
+    );
+  }
+
+  if (!requested) return { mode, models, selected: models[0] || null, notes };
+
+  const picked = models.find((m) => m.id === requested);
+  if (!picked) {
+    return {
+      mode,
+      models,
+      selected: models[0] || null,
+      notes,
+      error:
+        `[INVALID_MODEL_CHOICE] "${requested}" is not in the ${role} configured queue ` +
+        `(selectionMode=${mode}). Valid ids: ${validIds.join(", ") || "(none)"}. ` +
+        `Call agent_relay_session(action="status") for the live queue, or add the model in the A.stand panel first.`,
+    };
+  }
+  if (mode !== "smart") {
+    notes.push(
+      `modelId="${requested}" ignored: ${role}.selectionMode is "ordered" (fixed priority queue). ` +
+      `Set it to "smart" in the A.stand panel to pick a model per call.`
+    );
+    return { mode, models, selected: models[0], notes };
+  }
+  const rest = models.filter((m) => m.id !== picked.id);
+  return { mode, models: [picked, ...rest], selected: picked, notes };
+}
+
+// Pure silence decision shared by the class and tests. Never mutates the job.
+// OFF  => the Lead is alerted directly at the silence threshold (no judging call).
+// ON   => the gatekeeper judges first; a pending verdict or an existing alert short-circuits.
+export function decideSilence({
+  status = "running",
+  hasAlert = false,
+  silentMs = 0,
+  triggerMs = 0,
+  gatekeeperArmed = false,
+  verdictPending = false,
+} = {}) {
+  if (status !== "running" || hasAlert) return { action: "none" };
+  if (silentMs < triggerMs) return { action: "none" };
+  if (!gatekeeperArmed) return { action: "alert", silentMs };
+  if (verdictPending) return { action: "pending" };
+  return { action: "judge", silentMs };
+}
+
+// Real progress resets the deferral budget and invalidates any in-flight verdict.
+export function noteRealProgress(job) {
+  if (!job || typeof job !== "object") return job;
+  job.gatekeeperDeferrals = 0;
+  job.gatekeeperVerdictPending = false;
+  job.gatekeeperLastVerdictAt = 0;
+  return job;
+}
+
+// Existing `triage*` step type: `kind` is set explicitly so `#appendJobLog` never re-parses and
+// drops `detail`. `detail` = what the job is doing (judge content), `summary` = one-line verdict.
+export function buildTriageActivity({ summary, detail, type = "triage" } = {}) {
+  return {
+    type: type === "triage_alert" ? "triage_alert" : "triage",
+    kind: type === "triage_alert" ? "triage_alert" : "triage",
+    summary: sanitizeHandoffText(summary, 240),
+    detail: sanitizeHandoffText(detail, TRIAGE_DETAIL_MAX),
+    status: "done",
+  };
+}
+
+function safeReadCheckpoint(filePath) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
 export class RelayOrchestrator {
   constructor(store, telemetry) {
     this.store = store;
@@ -268,6 +417,7 @@ export class RelayOrchestrator {
     const terminal = status !== "running";
     const endTs = terminal ? job.finishedAt || Date.now() : Date.now();
     const lastActivity = job.activities?.[job.activities.length - 1];
+    const meaningful = lastMeaningfulAction(job.activities, RECOVER_ACTION_TEXT_MAX);
     return {
       jobId: job.jobId,
       role: job.role,
@@ -276,21 +426,26 @@ export class RelayOrchestrator {
       cwd: job.cwd || "",
       sessionId: job.sessionId || "",
       engine: job.engine,
+      modelId: job.modelId || "",
       modelDisplayName: job.modelDisplayName || job.engine,
       status,
       pid: process.pid,
+      lang: this.store.settings.lang === "en" ? "en" : "zh",
       startedAt: job.startedAt,
       updatedAt: Date.now(),
       lastActivityAt: job.lastActivityAt || job.startedAt,
       hitRate: job.hitRate ?? null,
       contextPct: job.contextPct ?? null,
-      lastSummary: String(job.lastSummary || lastActivity?.summary || "").slice(0, 240),
+      lastSummary: sanitizeHandoffText(job.lastSummary || lastActivity?.summary || "", 240),
+      lastAction: meaningful,
       finishedAt: terminal ? endTs : null,
       elapsedSec: Number(((endTs - job.startedAt) / 1000).toFixed(1)),
       error: job.error || null,
       stallAlert: job.stallAlert || null,
       logPath: job.logPath || "",
       outputPath: this.#outputPath(job.jobId),
+      // Durable handoff fields: lets the Lead recover/ACK exact jobs without guessing.
+      ...(job.conversationId && { conversationId: job.conversationId }),
       ...(job.worktree && { worktree: job.worktree }),
     };
   }
@@ -396,14 +551,16 @@ export class RelayOrchestrator {
         title: recovered.title || "",
         cwd: recovered.cwd || "",
         engine: recovered.engine || "",
-        modelId: "",
+        modelId: recovered.modelId || "",
         modelDisplayName: recovered.modelDisplayName || recovered.engine || "",
         sessionId: recovered.sessionId || "",
+        conversationId: recovered.conversationId || "",
         status: "interrupted",
         startedAt: Number(recovered.startedAt) || finishedAt,
         lastActivityAt: Number(recovered.lastActivityAt) || finishedAt,
         lastCheckinAt: finishedAt,
         lastSummary: recovered.lastSummary || "",
+        lastAction: recovered.lastAction || null,
         logPath: recovered.logPath || "",
         outputPath: recovered.outputPath || this.#outputPath(recovered.jobId),
         worktree: recovered.worktree,
@@ -416,6 +573,7 @@ export class RelayOrchestrator {
         dismissed: false,
         waiters: [],
       };
+      if (!job.taskSummary) job.taskSummary = job.promptPreview.slice(0, 1200);
       for (const activity of job.activities) {
         if (activity.status === "running") activity.status = "interrupted";
       }
@@ -449,11 +607,16 @@ export class RelayOrchestrator {
       .sort((a, b) => (b.finishedAt || 0) - (a.finishedAt || 0))
       .map((j) => ({
         ...this.#summarizeJob(j, now),
+        modelId: j.modelId || "",
+        conversationId: j.conversationId || "",
         sessionId: j.sessionId || "",
         cwd: j.cwd || "",
         error: j.error || CRASH_RECOVERY_ERROR,
         lastSummary: j.lastSummary || "",
+        lastAction: j.lastAction || lastMeaningfulAction(j.activities, RECOVER_ACTION_TEXT_MAX),
         outputPath: j.outputPath || this.#outputPath(j.jobId),
+        ack: this.store.getReceipt(j.jobId, "result_ack"),
+        userAccepted: Boolean(this.store.getReceipt(j.jobId, "user_accept")),
       }));
   }
 
@@ -535,6 +698,7 @@ export class RelayOrchestrator {
   #recordActivity(job, ev) {
     if (job.status !== "running") return;
     job.lastActivityAt = Date.now();
+    if (ev?.type && ev.type !== "touch") this.#noteRealProgress(job);
     this.#appendJobLog(job, ev);
     this.#writeStatusSnapshot(job);
   }
@@ -579,6 +743,7 @@ export class RelayOrchestrator {
       cwd: j.cwd || "",
       sessionId: j.sessionId || "",
       engine: j.engine,
+      modelId: j.modelId || "",
       modelDisplayName: j.modelDisplayName || j.engine,
       status: j.status,
       elapsedSec: Number(((endTs - j.startedAt) / 1000).toFixed(1)),
@@ -593,8 +758,10 @@ export class RelayOrchestrator {
       recentActivities: (j.activities || []).filter((a) => !["start", "log"].includes(a.kind || a.type))
         .slice(-4).map((a) => this.#timelineRow(a)),
       lastSummary: j.lastSummary || "",
+      lastAction: j.lastAction || lastMeaningfulAction(j.activities, RECOVER_ACTION_TEXT_MAX),
       logPath: j.logPath,
       outputPath: j.outputPath || (running ? "" : this.#outputPath(j.jobId)),
+      ...(j.conversationId && { conversationId: j.conversationId }),
       ...(j.worktree && { worktree: j.worktree }),
       error: j.error || "",
     };
@@ -655,9 +822,133 @@ export class RelayOrchestrator {
     return rl;
   }
 
+  #isZh() {
+    return this.store.settings.lang !== "en";
+  }
+
+  // Compact bilingual-safe phrasing for check-in headlines. `lang` follows the user's existing setting.
+  #checkinLabels() {
+    const zh = this.#isZh();
+    return {
+      stillRunning: zh ? "仍在运行（未打断）" : "still running (untouched)",
+      elapsed: zh ? "已运行" : "elapsed",
+      silent: zh ? "静默" : "silent",
+      lastAction: zh ? "最近动作" : "last action",
+      errors: zh ? "近期错误" : "recent errors",
+      recent: zh ? "近期活动" : "recent activity",
+      noActivity: zh ? "暂无命令或文本输出" : "(no commands or text streamed yet)",
+      options: zh ? "主 Agent 可选动作" : "Lead Agent options",
+      inspect: zh ? "不打断地查看完整日志" : "inspect the full log without interrupting",
+      keepWaiting: zh ? "继续等待" : "keep waiting",
+      steer: zh ? "改方向（Codex）" : "steer (Codex)",
+      stop: zh ? "停止子 Agent" : "stop the subagent",
+      session: zh ? "会话" : "session",
+      log: zh ? "日志" : "log",
+      rearm: zh ? "重新挂钟（下一段巡检）" : "re-arm the doorbell (next interval)",
+      checkpoint: zh ? "检查点" : "checkpoint",
+      gatekeeper: zh ? "守门员" : "gatekeeper",
+    };
+  }
+
+  // Distinct, machine-readable event for long-run check-ins. `wait-job.mjs` exits 5 on this.
+  #longRunEvent(job, reason) {
+    const elapsedSec = Number(((Date.now() - job.startedAt) / 1000).toFixed(1));
+    const silentSec = Number(((Date.now() - job.lastActivityAt) / 1000).toFixed(1));
+    const action = lastMeaningfulAction(job.activities, RECOVER_ACTION_TEXT_MAX);
+    return {
+      exitCode: 5,
+      event: "long_run_checkin",
+      kind: reason,
+      jobId: job.jobId,
+      role: job.role,
+      slot: job.slot || "default",
+      title: sanitizeHandoffText(job.title || "", 60),
+      engine: job.engine || "",
+      modelId: job.modelId || "",
+      sessionId: job.sessionId || "",
+      conversationId: job.conversationId || "",
+      cwd: job.cwd || "",
+      elapsedSec,
+      silentSec,
+      lastAction: action,
+      lastSummary: sanitizeHandoffText(job.lastSummary || "", 160),
+      logPath: job.logPath || "",
+      outputPath: job.outputPath || this.#outputPath(job.jobId),
+      checkpointPath: this.#checkpointPath(job.jobId),
+      longRunCheckinMin: Number(this.store.settings.longRunCheckinMin) || 0,
+      silentCheckinMin: Number(this.store.settings.silentCheckinMin) || 0,
+      worktree: job.worktree || null,
+      at: Date.now(),
+    };
+  }
+
+  #checkpointPath(jobId) {
+    return path.join(this.store.dataDir, "jobs", `${jobId}.checkpoint.json`);
+  }
+
+  // Durable, idempotent checkpoint so a restarted waiter / restarted host can re-arm the interval.
+  #writeCheckpoint(job, reason, extra = {}) {
+    const event = this.#longRunEvent(job, reason);
+    const prior = safeReadCheckpoint(this.#checkpointPath(job.jobId));
+    const checkpoint = {
+      version: 1,
+      jobId: job.jobId,
+      role: job.role,
+      title: event.title,
+      sessionId: event.sessionId,
+      conversationId: event.conversationId,
+      cwd: event.cwd,
+      engine: event.engine,
+      modelId: event.modelId,
+      worktree: event.worktree,
+      lastAction: event.lastAction,
+      lastSummary: event.lastSummary,
+      logPath: event.logPath,
+      outputPath: event.outputPath,
+      taskSummary: sanitizeHandoffText(job.taskSummary || job.promptPreview || "", 1200),
+      longRunCheckinMin: event.longRunCheckinMin,
+      silentCheckinMin: event.silentCheckinMin,
+      rearmToken: `rearm_${crypto.randomBytes(8).toString("hex")}`,
+      rearmCount: (Number(prior?.rearmCount) || 0) + 1,
+      rearmAfterMs: Math.max(60_000, (Number(this.store.settings.longRunCheckinMin) || 10) * 60_000),
+      reason,
+      ...extra,
+      updatedAt: Date.now(),
+      firstAt: prior?.firstAt || Date.now(),
+    };
+    try {
+      fs.mkdirSync(path.dirname(this.#checkpointPath(job.jobId)), { recursive: true });
+      writeAtomicJson(this.#checkpointPath(job.jobId), checkpoint);
+    } catch {}
+    return checkpoint;
+  }
+
+  #doorbellRearmCommand(jobId, extraArgs = "") {
+    const longRunMin = Number(this.store.settings.longRunCheckinMin) || 0;
+    const args = [
+      `--data-dir "${this.store.dataDir}"`,
+      `--stall-sec ${Math.max(60, (Number(this.store.settings.silentCheckinMin) || 3) * 60)}`,
+      longRunMin > 0 ? `--long-run-min ${longRunMin}` : "",
+      `--rearm`,
+      extraArgs.trim(),
+      jobId,
+    ].filter(Boolean);
+    return `node "${resolveWaitJobScript()}" ${args.join(" ")}`;
+  }
+
   async #buildCheckinReport(job, reason, detail = "summary", allowInspector = true) {
     const elapsedSec = ((Date.now() - job.startedAt) / 1000).toFixed(1);
     const silentSec = ((Date.now() - job.lastActivityAt) / 1000).toFixed(1);
+    const labels = this.#checkinLabels();
+    const isLongRun = reason === "long_run_checkin";
+    const action = lastMeaningfulAction(job.activities, RECOVER_ACTION_TEXT_MAX);
+    const checkpoint = isLongRun ? this.#writeCheckpoint(job, reason) : null;
+    const rearm = isLongRun ? this.#doorbellRearmCommand(job.jobId) : this.#doorbellCommand(job.jobId);
+    const sid = job.sessionId || "(none)";
+    const title = sanitizeHandoffText(job.title || job.jobId, 60);
+    const actionLine = action
+      ? `${labels.lastAction}: [${action.kind}] ${sanitizeHandoffText(action.text, 140)}`
+      : `${labels.lastAction}: (none)`;
 
     let fullLog = "";
     try {
@@ -673,20 +964,29 @@ export class RelayOrchestrator {
           : fullLog || "(no activity logged yet)";
       return {
         status: reason,
+        event: isLongRun ? "long_run_checkin" : reason,
+        exitCode: isLongRun ? 5 : null,
         jobId: job.jobId,
         sessionId: job.sessionId || "",
+        conversationId: job.conversationId || "",
         elapsedSec: Number(elapsedSec),
         silentSec: Number(silentSec),
+        lastAction: action,
         logPath: job.logPath,
+        checkpointPath: checkpoint ? this.#checkpointPath(job.jobId) : "",
+        rearm,
         text: [
-          `[Non-Interrupting Inspection · ${reason}] Job ${job.jobId} (${job.role} · ${job.engine}) is STILL RUNNING (untouched).`,
-          `Elapsed: ${elapsedSec}s | Silent for: ${silentSec}s | Full log: ${job.logPath}`,
+          `[Non-Interrupting Inspection · ${reason}] Job ${job.jobId} (${job.role}:${job.slot || "default"} · ${title}) is STILL RUNNING — ${labels.stillRunning}.`,
+          `${labels.elapsed}: ${elapsedSec}s | ${labels.silent}: ${silentSec}s | ${labels.session}: ${sid}`,
+          actionLine,
+          `${labels.log}: ${job.logPath}`,
           `--- Full Recent Activity ---`,
           tail,
-          `--- Lead Agent Decision Options ---`,
-          `1) Continue waiting: agent_relay_poll(jobId="${job.jobId}")`,
-          `2) Steer direction (Codex): agent_relay_session(action="steer", sessionId="${job.sessionId || ""}", message="...")`,
-          `3) Stop subagent: agent_relay_session(action="interrupt", jobId="${job.jobId}")`,
+          `--- ${labels.options} ---`,
+          `1) ${labels.keepWaiting}: agent_relay_poll(jobId="${job.jobId}")`,
+          `2) ${labels.steer}: agent_relay_session(action="steer", sessionId="${sid}", message="...")`,
+          `3) ${labels.stop}: agent_relay_session(action="interrupt", jobId="${job.jobId}")`,
+          `4) ${labels.rearm}: ${rearm}`,
         ].join("\n"),
       };
     }
@@ -695,21 +995,28 @@ export class RelayOrchestrator {
     const errors = job.activities
       .filter((a) => a.type === "error" || /exit=[1-9]\b/.test(a.summary))
       .slice(-6);
-    const recent = job.activities.slice(-12);
+    const recent = job.activities.slice(-8);
     const structuredBlock = [
-      errors.length > 0 ? `Errors detected:\n${errors.map((e) => `  ! ${e.summary}`).join("\n")}` : null,
+      errors.length > 0
+        ? `${labels.errors}:\n${errors.map((e) => `  ! ${sanitizeHandoffText(e.summary, 140)}`).join("\n")}`
+        : null,
       recent.length > 0
-        ? `Recent activity (${recent.length} items):\n${recent.map((a) => `  - [${a.ts.slice(11, 19)}] ${a.summary}`).join("\n")}`
-        : `Recent activity: (no commands or text streamed yet)`,
+        ? `${labels.recent} (${recent.length}):\n${recent.map((a) => `  - [${String(a.ts || "").slice(11, 19)}] ${sanitizeHandoffText(a.summary, 120)}`).join("\n")}`
+        : `${labels.recent}: ${labels.noActivity}`,
     ]
       .filter(Boolean)
       .join("\n");
 
-    // Optional Inspector Summarizer AI (opt-in, default OFF): only on silent/stuck, long-running, or errors
+    // Optional Inspector Summarizer AI (opt-in, default OFF): only on silent/stuck, long-running, or errors.
+    // If a gatekeeper verdict already exists for this stall, REUSE it — never issue a second judging call.
     let aiSummary = "";
     const inspectorId = this.store.settings.inspectorModelId;
+    const existingVerdict = job.stallAlert?.verdict
+      ? `${this.#isZh() ? "判定" : "verdict"}: ${job.stallAlert.verdict} · ${job.stallAlert.reason}`
+      : "";
     const shouldInvokeInspector =
       allowInspector &&
+      !existingVerdict &&
       this.store.settings.inspectorEnabled === true &&
       Boolean(inspectorId) &&
       fullLog.trim().length > 0 &&
@@ -728,37 +1035,60 @@ export class RelayOrchestrator {
         );
       }
     }
+    if (existingVerdict) aiSummary = existingVerdict;
+    const stallLine = job.stallAlert
+      ? `${labels.stall}: ${sanitizeHandoffText(job.stallAlert.reason, GATEKEEPER_REASON_MAX)} (${sanitizeHandoffText(job.stallAlert.source || "silence_timeout", 24)})`
+      : "";
 
     return {
       status: reason,
+      event: isLongRun ? "long_run_checkin" : reason,
+      exitCode: isLongRun ? 5 : null,
       jobId: job.jobId,
       sessionId: job.sessionId || "",
+      conversationId: job.conversationId || "",
       elapsedSec: Number(elapsedSec),
       silentSec: Number(silentSec),
+      lastAction: action,
       logPath: job.logPath,
+      checkpointPath: checkpoint ? this.#checkpointPath(job.jobId) : "",
+      rearm,
       text: [
-        `[Non-Interrupting Check-in · ${reason}] Job ${job.jobId} (${job.role} · ${job.engine}) is STILL RUNNING (not interrupted).`,
-        `Elapsed: ${elapsedSec}s | Silent for: ${silentSec}s | Full raw log: ${job.logPath}`,
+        // "STILL RUNNING" is a stable machine-readable token shared with the e2e auto-poll loop.
+        isLongRun
+          ? `[Non-Interrupting Check-in · long_run_checkin · exit 5] Job ${job.jobId} (${job.role}:${job.slot || "default"} · ${title}) is STILL RUNNING — ${labels.stillRunning}.`
+          : `[Non-Interrupting Check-in · ${reason}] Job ${job.jobId} (${job.role}:${job.slot || "default"} · ${title}) is STILL RUNNING — ${labels.stillRunning}.`,
+        `${labels.elapsed}: ${elapsedSec}s | ${labels.silent}: ${silentSec}s | ${labels.session}: ${sid}`,
+        actionLine,
+        stallLine || null,
         aiSummary
-          ? `--- Inspector AI Summary ---\n${aiSummary}${errors.length > 0 ? `\n\nRecent Errors:\n${errors.slice(-3).map((e) => `  ! ${e.summary}`).join("\n")}` : ""}`
+          ? `--- Inspector AI Summary ---\n${aiSummary}${errors.length > 0 ? `\n\n${labels.errors}:\n${errors.slice(-3).map((e) => `  ! ${sanitizeHandoffText(e.summary, 140)}`).join("\n")}` : ""}`
           : structuredBlock,
-        `--- Lead Agent Decision Options ---`,
-        `• Inspect full log without interrupting: agent_relay_poll(jobId="${job.jobId}", waitSec=0, detail="full") or read ${job.logPath}`,
-        `• Continue waiting: agent_relay_poll(jobId="${job.jobId}")`,
-        `• Steer (Codex): agent_relay_session(action="steer", sessionId="${job.sessionId || ""}", message="...")`,
-        `• Stop: agent_relay_session(action="interrupt", jobId="${job.jobId}")`,
-      ].join("\n"),
+        `--- ${labels.options} ---`,
+        `• ${labels.inspect}: agent_relay_poll(jobId="${job.jobId}", waitSec=0, detail="full")`,
+        `• ${labels.keepWaiting}: agent_relay_poll(jobId="${job.jobId}")`,
+        `• ${labels.steer}: agent_relay_session(action="steer", sessionId="${sid}", message="...")`,
+        `• ${labels.stop}: agent_relay_session(action="interrupt", jobId="${job.jobId}")`,
+        isLongRun
+          ? `• ${labels.rearm}: ${rearm}${checkpoint ? ` · ${labels.checkpoint}: ${this.#checkpointPath(job.jobId)}` : ""}`
+          : `• ${labels.log}: ${job.logPath}`,
+      ].filter(Boolean).join("\n"),
     };
   }
 
   async #triageStallWithGatekeeper(model, job, elapsedSec, silentSec) {
+    const zh = this.#isZh();
     try {
       const cleanBase = model.baseUrl.replace(/\/+$/, "");
       const recentLines = (job.activities || [])
         .slice(-30)
-        .map((a) => `[${a.ts.slice(11, 19)}] [${a.type}] ${a.summary}`)
+        .map((a) => `[${String(a.ts || "").slice(11, 19)}] [${a.type}] ${sanitizeHandoffText(a.summary, 200)}`)
         .join("\n");
-      const taskGoal = String(job.taskSummary || job.title || "(unspecified)").slice(0, 1200);
+      const taskGoal = sanitizeHandoffText(job.taskSummary || job.title || "(unspecified)", 1200);
+      const action = lastMeaningfulAction(job.activities, 200);
+      const langLine = zh
+        ? "Write REASON and SUMMARY in concise Simplified Chinese (简体中文); keep VERDICT tokens in English."
+        : "Write REASON and SUMMARY in concise English.";
       const res = await fetch(`${cleanBase}/chat/completions`, {
         method: "POST",
         headers: {
@@ -768,75 +1098,168 @@ export class RelayOrchestrator {
         body: JSON.stringify({
           model: model.modelName,
           temperature: 0.1,
-          max_tokens: 180,
+          max_tokens: 220,
           messages: [
             {
               role: "system",
               content:
-                "You are a strict 2-choice Stall Gatekeeper watching a background coding subagent. You NEVER steer or edit code. Read ONLY the Task Goal and the last 30 X-ray activity lines, then output EXACTLY two lines:\nVERDICT: CONTINUE   (normal slow progress such as compiling, running tests, downloading, or long reasoning — do NOT wake the Lead Agent)\nOR\nVERDICT: ALERT      (deadlocked test, hung interactive prompt, repeated error loop, or genuinely stuck — wake the Lead Agent)\nREASON: <one concise sentence explaining why>",
+                "You are a strict 2-choice Stall Gatekeeper watching a background coding subagent. You NEVER steer or edit code. Read ONLY the Task Goal and the last 30 X-ray activity lines, then output EXACTLY three lines:\nVERDICT: CONTINUE   (normal slow progress such as compiling, running tests, downloading, or long reasoning — do NOT wake the Lead Agent)\nOR\nVERDICT: ALERT      (deadlocked test, hung interactive prompt, repeated error loop, or genuinely stuck — wake the Lead Agent)\nREASON: <one concise sentence explaining why>\nSUMMARY: <one short sentence describing what the subagent is currently doing, based only on observed activity — never invent progress>",
             },
             {
               role: "user",
-              content: `Role: ${job.role} | Engine: ${job.engine} | Elapsed: ${elapsedSec}s | Silent: ${silentSec}s\n\nTask Goal:\n${taskGoal}\n\nRecent X-Ray Activity (last 30 items):\n${recentLines || "(no activity yet)"}`,
+              content: `Role: ${job.role} | Engine: ${job.engine} | Elapsed: ${elapsedSec}s | Silent: ${silentSec}s\nLast meaningful action: ${action ? `[${action.kind}] ${sanitizeHandoffText(action.text, 160)}` : "(none)"}\n\nTask Goal:\n${taskGoal}\n\nRecent X-Ray Activity (last 30 items):\n${recentLines || "(no activity yet)"}\n\n${langLine}`,
             },
           ],
         }),
         signal: AbortSignal.timeout(INSPECTOR_TIMEOUT_MS),
       });
-      if (!res.ok) return { verdict: "ALERT", reason: `Gatekeeper HTTP ${res.status}`, raw: "" };
+      if (!res.ok) return { verdict: "ALERT", reason: `Gatekeeper HTTP ${res.status}`, summary: "", raw: "" };
       const json = await res.json();
       const raw = json?.choices?.[0]?.message?.content?.trim() || "";
       const verdictMatch = raw.match(/VERDICT\s*:\s*(CONTINUE|ALERT)/i);
       const reasonMatch = raw.match(/REASON\s*:\s*(.+)/i);
+      const summaryMatch = raw.match(/SUMMARY\s*:\s*(.+)/i);
       const verdict = verdictMatch ? verdictMatch[1].toUpperCase() : "ALERT";
-      const reason = (reasonMatch ? reasonMatch[1] : raw.split(/\r?\n/).pop() || "Stall check triggered").trim().slice(0, 180);
-      return { verdict, reason, raw };
+      const reason = sanitizeHandoffText(
+        reasonMatch ? reasonMatch[1] : raw.split(/\r?\n/).pop() || "Stall check triggered",
+        GATEKEEPER_REASON_MAX
+      );
+      const summary = sanitizeHandoffText(summaryMatch ? summaryMatch[1] : "", 200);
+      return { verdict, reason, summary, raw };
     } catch (err) {
-      return { verdict: "ALERT", reason: `Gatekeeper check failed (${err?.message || "timeout"})`, raw: "" };
+      return { verdict: "ALERT", reason: `Gatekeeper check failed (${err?.message || "timeout"})`, summary: "", raw: "" };
     }
   }
 
   async #summarizeWithInspectorAi(model, job, _reason, elapsedSec, silentSec) {
     const t = await this.#triageStallWithGatekeeper(model, job, elapsedSec, silentSec);
-    return t.raw || `VERDICT: ${t.verdict}\nREASON: ${t.reason}`;
+    const parts = [`VERDICT: ${t.verdict}`, `REASON: ${t.reason}`];
+    if (t.summary) parts.push(`SUMMARY: ${t.summary}`);
+    return t.raw || parts.join("\n");
+  }
+
+  // ---- Silent gatekeeper (opt-in). OFF: silence is surfaced as a plain stall alert. ON: judge first. ----
+  #isGatekeeperArmed() {
+    return this.store.settings.inspectorEnabled === true && Boolean(this.store.settings.inspectorModelId);
+  }
+
+  #gatekeeperModel() {
+    const inspModel = this.store.getModelById(this.store.settings.inspectorModelId);
+    if (!(inspModel?.mode === "api" && inspModel.apiKey && inspModel.baseUrl && inspModel.modelName)) return null;
+    return inspModel;
+  }
+
+  // Called from the activity stream: real progress resets the deferral budget and clears a stale verdict.
+  #noteRealProgress(job) {
+    noteRealProgress(job);
+  }
+
+  #stallAlert(job, reason, { verdict = "", deferrals = 0 } = {}) {
+    const clean = sanitizeHandoffText(reason, GATEKEEPER_REASON_MAX) || "stall detected";
+    job.stallAlert = {
+      at: Date.now(),
+      reason: clean,
+      source: verdict ? "gatekeeper" : "silence_timeout",
+      verdict: verdict || "",
+      deferrals,
+      event: "stall_alert",
+      exitCode: 2,
+    };
+    return job.stallAlert;
+  }
+
+  // Silences are evaluated on a timer; OFF => alert lead directly, ON => judge first (bounded deferrals).
+  #evaluateSilence(job) {
+    const silentMin = Math.max(1, Number(this.store.settings.silentCheckinMin) || 3);
+    const decision = decideSilence({
+      status: job.status,
+      hasAlert: Boolean(job.stallAlert),
+      silentMs: Date.now() - (job.lastActivityAt || job.startedAt),
+      triggerMs: silentMin * 60_000,
+      gatekeeperArmed: this.#isGatekeeperArmed(),
+      verdictPending: Boolean(job.gatekeeperVerdictPending),
+    });
+    if (decision.action === "alert") {
+      // Gatekeeper OFF: do not judge, just alert the lead at the silence threshold.
+      this.#stallAlert(job, `silent for ${Math.round(decision.silentMs / 1000)}s (silentCheckinMin=${silentMin})`);
+      return { alerted: true, judged: false };
+    }
+    if (decision.action === "judge") return { needsJudge: true, silentMs: decision.silentMs };
+    if (decision.action === "pending") return { pending: true };
+    return null;
+  }
+
+  async #judgeSilence(job, silentMs) {
+    if (job.status !== "running" || job.stallAlert) return;
+    if (job.gatekeeperVerdictPending) return; // never issue a second concurrent judging call
+    const inspModel = this.#gatekeeperModel();
+    if (!inspModel) {
+      this.#stallAlert(job, "gatekeeper configured but unavailable (missing API key/baseUrl/model)");
+      this.#writeStatusSnapshot(job, { force: true });
+      return;
+    }
+    const judgedAt = Date.now();
+    const activityAtStart = job.lastActivityAt;
+    job.gatekeeperVerdictPending = true;
+    let res;
+    try {
+      const elapsedSec = ((judgedAt - job.startedAt) / 1000).toFixed(1);
+      const silentSec = (silentMs / 1000).toFixed(1);
+      res = await this.#triageStallWithGatekeeper(inspModel, job, elapsedSec, silentSec);
+    } finally {
+      job.gatekeeperVerdictPending = false;
+    }
+    job.gatekeeperLastVerdictAt = Date.now();
+    if (job.status !== "running" || job.stallAlert) return;
+    // Race guard: if real activity landed while the judge was thinking, its verdict is stale — ignore it.
+    if (job.lastActivityAt !== activityAtStart) {
+      job.gatekeeperDeferrals = 0;
+      return;
+    }
+
+    const deferrals = Number(job.gatekeeperDeferrals) || 0;
+    if (res.verdict === "CONTINUE" && deferrals < GATEKEEPER_MAX_DEFERRALS) {
+      job.gatekeeperDeferrals = deferrals + 1;
+      // Extend the judge window only; NEVER fake progress (lastActivityAt stays untouched).
+      job.gatekeeperNextJudgeAt = Date.now() + Math.max(
+        GATEKEEPER_VERDICT_GRACE_MS,
+        (Number(this.store.settings.silentCheckinMin) || 3) * 60_000
+      );
+      const zh = this.#isZh();
+      const line = zh
+        ? `守门员判定继续等 (${job.gatekeeperDeferrals}/${GATEKEEPER_MAX_DEFERRALS}): ${res.reason}`
+        : `Gatekeeper deferred (${job.gatekeeperDeferrals}/${GATEKEEPER_MAX_DEFERRALS}): ${res.reason}`;
+      this.#appendJobLog(job, buildTriageActivity({ summary: line, detail: res.summary || res.reason }));
+      this.#writeStatusSnapshot(job, { force: true });
+      return;
+    }
+
+    const reason =
+      res.verdict === "CONTINUE"
+        ? this.#isZh()
+          ? `连续延长 ${GATEKEEPER_MAX_DEFERRALS} 次仍无新活动，转交主 Agent (${res.reason})`
+          : `Deferred ${GATEKEEPER_MAX_DEFERRALS} times with no new activity; handing off to the Lead (${res.reason})`
+        : res.reason;
+    const alert = this.#stallAlert(job, reason, { verdict: res.verdict, deferrals });
+    this.#appendJobLog(job, { type: "triage_alert", summary: this.#isZh() ? `守门员拉响警报: ${alert.reason}` : `Gatekeeper alert: ${alert.reason}` });
+    this.#writeStatusSnapshot(job, { force: true });
   }
 
   #startStallGatekeeper(job) {
-    const silentMin = Math.max(1, Number(this.store.settings.silentCheckinMin) || 3);
-    const triggerMs = Math.max(20_000, silentMin * 60_000 - 15_000);
     let inFlight = false;
-    let consecutiveContinue = 0;
     const timer = setInterval(async () => {
       if (job.status !== "running" || inFlight || job.stallAlert) return;
-      if (this.store.settings.inspectorEnabled !== true || !this.store.settings.inspectorModelId) return;
+      if (job.gatekeeperVerdictPending) return;
       const now = Date.now();
-      const silentMs = now - (job.lastActivityAt || job.startedAt);
-      if (silentMs < triggerMs) return;
-      const inspModel = this.store.getModelById(this.store.settings.inspectorModelId);
-      if (!(inspModel?.mode === "api" && inspModel.apiKey && inspModel.baseUrl && inspModel.modelName)) return;
-
+      if (job.gatekeeperNextJudgeAt && now < job.gatekeeperNextJudgeAt) return;
+      const decision = this.#evaluateSilence(job);
+      if (!decision?.needsJudge) {
+        if (decision?.alerted) this.#writeStatusSnapshot(job, { force: true });
+        return;
+      }
       inFlight = true;
       try {
-        const elapsedSec = ((now - job.startedAt) / 1000).toFixed(1);
-        const silentSec = (silentMs / 1000).toFixed(1);
-        const res = await this.#triageStallWithGatekeeper(inspModel, job, elapsedSec, silentSec);
-        if (job.status !== "running") return;
-        if (res.verdict === "CONTINUE" && consecutiveContinue < 3) {
-          consecutiveContinue++;
-          job.lastActivityAt = Date.now();
-          this.#appendJobLog(job, { type: "triage", summary: `守门员判定继续等 (${consecutiveContinue}/3): ${res.reason}` });
-          job.lastSummary = `守门员判定继续等: ${res.reason}`;
-          this.#writeStatusSnapshot(job, { force: true });
-        } else {
-          const reason =
-            res.verdict === "CONTINUE"
-              ? `连续延长 3 次仍无新活动，转交主 Agent (${res.reason})`
-              : res.reason;
-          job.stallAlert = { at: Date.now(), reason };
-          this.#appendJobLog(job, { type: "triage_alert", summary: `守门员拉响警报: ${reason}` });
-          job.lastSummary = `守门员拉响警报: ${reason}`;
-          this.#writeStatusSnapshot(job, { force: true });
-        }
+        await this.#judgeSilence(job, decision.silentMs);
       } finally {
         inFlight = false;
       }
@@ -866,12 +1289,32 @@ export class RelayOrchestrator {
 
   #doorbellCommand(jobId) {
     const stallSec = Math.max(60, (Number(this.store.settings.silentCheckinMin) || 3) * 60);
-    return `node "${resolveWaitJobScript()}" --data-dir "${this.store.dataDir}" --stall-sec ${stallSec} ${jobId}`;
+    const longRunMin = Number(this.store.settings.longRunCheckinMin) || 0;
+    return [
+      `node "${resolveWaitJobScript()}"`,
+      `--data-dir "${this.store.dataDir}"`,
+      `--stall-sec ${stallSec}`,
+      longRunMin > 0 ? `--long-run-min ${longRunMin}` : "",
+      jobId,
+    ].filter(Boolean).join(" ");
   }
 
-  #asyncLaunchText(headline, job) {
+  // Ordered (default) keeps the configured priority queue untouched. Smart promotes one explicit
+  // configured model to the front and keeps the remaining order as fallbacks. No judging call here.
+  #selectModels(roleCfg, requestedModelId, resumeRecord) {
+    return selectRoleModels({
+      role: roleCfg.role,
+      queue: roleCfg.queue || [],
+      selectionMode: roleCfg.selectionMode,
+      requestedModelId,
+      resumeRecord,
+    });
+  }
+
+  #asyncLaunchText(headline, job, notes = []) {
+    const noteLines = notes.length ? `\n${notes.map((n) => `Note: ${n}`).join("\n")}` : "";
     return `${headline} Use agent_relay_poll(jobIds=["${job.jobId}", ...]) to collect results.
-Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
+Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${noteLines}`;
   }
 
   async ask({
@@ -886,6 +1329,8 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
     sandbox,
     worktree,
     forceNew = false,
+    modelId: requestedModelId,
+    conversationId: requestedConversationId,
     onHeartbeat,
   }) {
     const waitSec = this.#effectiveWaitSec(requestedWaitSec);
@@ -938,10 +1383,17 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
     if (initialBlock) return initialBlock;
 
     const roleCfg = this.store.getRoleConfig(role);
-    const queue = roleCfg.queue || [];
-    if (queue.length === 0) {
+    if ((roleCfg.queue || []).length === 0) {
       return { blocked: true, text: `No AI models configured for role=${role}.` };
     }
+
+    // Smart selection happens BEFORE quota filtering so the fallback order is preserved.
+    const selection = this.#selectModels(roleCfg, requestedModelId, cleanRequestedSid ? requestedExisting : null);
+    if (selection.error) {
+      return { blocked: true, status: "invalid_model_choice", text: selection.error };
+    }
+    const queue = selection.models;
+    const conversationId = sanitizeConversationId(requestedConversationId);
 
     await this.#syncCodexQuotaAndCooldowns(queue);
 
@@ -1018,6 +1470,8 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
       taskSummary: String(prompt || "").replace(/\s+/g, " ").trim().slice(0, 1200),
       cwd: effectiveCwd,
       ...(wt && { worktree: wt }),
+      ...(conversationId && { conversationId }),
+      selectionMode: selection.mode,
       engine: available[0].engine,
       modelId: available[0].id,
       modelDisplayName: available[0].name,
@@ -1026,6 +1480,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
       startedAt: now,
       lastActivityAt: now,
       lastCheckinAt: now,
+      lastLongRunAt: now,
       lastSummary: "",
       logPath,
       outputPath: this.#outputPath(jobId),
@@ -1240,10 +1695,17 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
         role,
         slot: cleanSlot,
         engine: job.engine,
+        modelId: job.modelId,
+        selectionMode: selection.mode,
         logPath,
         outputPath: job.outputPath,
         sessionId: job.sessionId || "",
-        text: this.#asyncLaunchText(`[Started · async] Job ${jobId} (${role}:${cleanSlot} · ${job.engine}) launched in background.`, job),
+        ...(conversationId && { conversationId }),
+        text: this.#asyncLaunchText(
+          `[Started · async] Job ${jobId} (${role}:${cleanSlot} · ${job.engine}) launched in background.`,
+          job,
+          selection.notes
+        ),
       };
     }
 
@@ -1393,14 +1855,11 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
     { explicitWaitSec, deadline, detail = "summary", onHeartbeat }
   ) {
     const silentMs = this.store.settings.silentCheckinMin * 60_000;
-    const longRunMs =
-      this.store.settings.longRunCheckinMin > 0
-        ? this.store.settings.longRunCheckinMin * 60_000
-        : Number.POSITIVE_INFINITY;
+    const longRunMin = Number(this.store.settings.longRunCheckinMin) || 0;
+    const longRunMs = longRunMin > 0 ? longRunMin * 60_000 : Number.POSITIVE_INFINITY;
     const remainingMs = Math.max(0, deadline - Date.now());
     const explicitMs = explicitWaitSec ? Math.max(1, explicitWaitSec) * 1000 : Infinity;
-    const inspectorActive =
-      this.store.settings.inspectorEnabled === true && Boolean(this.store.settings.inspectorModelId);
+    const inspectorActive = this.#isGatekeeperArmed();
     const inspectorBudget = detail !== "full" && inspectorActive ? INSPECTOR_TIMEOUT_MS : 0;
     const checkinMs = Math.min(explicitMs, Math.max(0, remainingMs - inspectorBudget));
     let heartbeatTick = 0;
@@ -1409,6 +1868,8 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
       let settled = false;
       let reporting = false;
       let checkinTimer;
+      // Local cooldowns prevent a tight loop when the judge defers or a check-in is already in flight.
+      let nextSilenceCheckAt = 0;
       const finish = (result) => {
         if (settled) return;
         settled = true;
@@ -1421,6 +1882,8 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
         if (settled || reporting) return;
         reporting = true;
         job.lastCheckinAt = Date.now();
+        if (reason === "long_run_checkin") job.lastLongRunAt = Date.now();
+        // The report itself persists the durable checkpoint exactly once (no duplicate write).
         finish(await this.#buildCheckinReport(job, reason, detail));
       };
       const deadlineTimer = setTimeout(async () => {
@@ -1431,6 +1894,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
         checkinTimer = setTimeout(() => checkIn("running_checkin"), checkinMs);
       }
 
+      // Terminal completion is the primary wakeup; a dropped notification still falls back to ticks below.
       donePromise.then(() => {
         if (job.status === "completed") finish(job.result);
         else if (job.status === "failed" || job.status === "interrupted") {
@@ -1439,7 +1903,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
       });
 
       const interval = setInterval(() => {
-        if (settled) return;
+        if (settled || reporting) return;
         const now = Date.now();
 
         // Zero-token MCP protocol progress heartbeat every ~15s (does NOT reset lastActivityAt)
@@ -1450,14 +1914,57 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
           } catch {}
         }
 
+        // Dropped terminal notification guard: if the run settled without waking us, resolve now.
+        if (job.status === "completed") {
+          finish(job.result);
+          return;
+        }
+        if (job.status === "failed" || job.status === "interrupted") {
+          void this.poll(job.jobId).then(finish);
+          return;
+        }
+
         const silentFor = now - job.lastActivityAt;
         const sinceLastCheckin = now - job.lastCheckinAt;
+        const sinceLastLongRun = now - (job.lastLongRunAt || job.startedAt);
 
-        if (silentFor >= silentMs && sinceLastCheckin >= silentMs) {
-          void checkIn("silent_checkin");
-        } else if (sinceLastCheckin >= longRunMs) {
+        // Long-run interval: distinct exit/event so the Lead decides and re-arms the waiter.
+        if (longRunMs !== Number.POSITIVE_INFINITY && sinceLastLongRun >= longRunMs && now >= nextSilenceCheckAt) {
           void checkIn("long_run_checkin");
+          return;
         }
+
+        if (silentFor < silentMs || sinceLastCheckin < silentMs || now < nextSilenceCheckAt) return;
+
+        if (!this.#isGatekeeperArmed()) {
+          // Gatekeeper OFF: surface the silence to the Lead immediately (never silent).
+          void checkIn("silent_checkin");
+          return;
+        }
+        if (job.stallAlert) {
+          void checkIn("silent_checkin");
+          return;
+        }
+        if (job.gatekeeperVerdictPending) {
+          nextSilenceCheckAt = now + GATEKEEPER_VERDICT_GRACE_MS;
+          return;
+        }
+        // Gatekeeper ON: judge first. Deferrals are bounded; the shared judge also feeds the doorbell.
+        reporting = true;
+        void this.#judgeSilence(job, silentFor)
+          .then(() => {
+            reporting = false;
+            if (settled) return;
+            if (job.stallAlert) {
+              void checkIn("silent_checkin");
+              return;
+            }
+            nextSilenceCheckAt = Math.max(now + GATEKEEPER_VERDICT_GRACE_MS, job.gatekeeperNextJudgeAt || 0);
+          })
+          .catch(() => {
+            reporting = false;
+            nextSilenceCheckAt = now + GATEKEEPER_VERDICT_GRACE_MS;
+          });
       }, 3000);
     });
   }
@@ -1486,6 +1993,8 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
     sessionId: requestedSessionId,
     title,
     waitSec: requestedWaitSec,
+    modelId: requestedModelId,
+    conversationId: requestedConversationId,
     onHeartbeat,
   }) {
     const waitSec = this.#effectiveWaitSec(requestedWaitSec);
@@ -1499,6 +2008,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
     const explicitTitle = String(title || "").replace(/\s+/g, " ").trim().slice(0, 60);
     const sessionTitle = deriveSessionTitle(title, instructions || `Review (${targetType})`);
     const requestedExisting = cleanRequestedSid ? this.store.getSessionById(cleanRequestedSid) : null;
+    const conversationId = sanitizeConversationId(requestedConversationId);
     const running = this.#runningJobs();
     if (running.length >= this.store.settings.maxConcurrency) {
       return {
@@ -1509,10 +2019,14 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
     }
 
     const roleCfg = this.store.getRoleConfig("oracle");
-    const queue = roleCfg.queue || [];
-    if (queue.length === 0) {
+    if ((roleCfg.queue || []).length === 0) {
       return { blocked: true, text: "No AI models configured for role=oracle." };
     }
+    const selection = this.#selectModels(roleCfg, requestedModelId, cleanRequestedSid ? requestedExisting : null);
+    if (selection.error) {
+      return { blocked: true, status: "invalid_model_choice", text: selection.error };
+    }
+    const queue = selection.models;
 
     await this.#syncCodexQuotaAndCooldowns(queue);
 
@@ -1558,6 +2072,8 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
         sessionId: cleanRequestedSid || undefined,
         title: sessionTitle,
         waitSec,
+        modelId: requestedModelId,
+        conversationId,
         onHeartbeat,
       });
     }
@@ -1586,6 +2102,8 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
       promptPreview: reviewPrompt.trim().slice(0, 4000),
       taskSummary: String(instructions || sessionTitle || `Review ${targetType}`).replace(/\s+/g, " ").trim().slice(0, 1200),
       cwd: workDir,
+      ...(conversationId && { conversationId }),
+      selectionMode: selection.mode,
       engine: available[0].engine,
       modelId: available[0].id,
       modelDisplayName: available[0].name,
@@ -1594,6 +2112,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
       startedAt: now,
       lastActivityAt: now,
       lastCheckinAt: now,
+      lastLongRunAt: now,
       lastSummary: "",
       logPath,
       outputPath: this.#outputPath(jobId),
@@ -1781,12 +2300,16 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
         role: "oracle",
         slot: "default",
         engine: job.engine,
+        modelId: job.modelId,
+        selectionMode: selection.mode,
         logPath,
         outputPath: job.outputPath,
         sessionId: job.sessionId || "",
+        ...(conversationId && { conversationId }),
         text: this.#asyncLaunchText(
           `[Started · async] Review job ${jobId} (oracle:default · ${job.engine}) launched in background.`,
-          job
+          job,
+          selection.notes
         ),
       };
     }
@@ -1794,7 +2317,260 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
     return this.#waitWithCheckins(job, runPromise, { explicitWaitSec: waitSec, deadline, onHeartbeat });
   }
 
-  async sessionAction({ action, cwd, role = "oracle", slot = "default", sessionId, jobId, message }) {
+  #roleStatus(role) {
+    const cfg = this.store.getRoleConfig(role);
+    return {
+      effort: this.store.settings.roles[role].effort,
+      selectionMode: cfg.selectionMode,
+      selectedModelId: cfg.modelId,
+      queue: cfg.queue.map((m) => ({
+        id: m.id,
+        name: m.name,
+        engine: m.engine,
+        cooldown: this.store.getActiveCooldown(m.id),
+      })),
+    };
+  }
+
+  // ---- Durable conditional handoff: disk-only discovery, no quota probes, no live model calls. ----
+
+  // Bounded, disk-only scan of recent (<= 24h) job snapshots. Never guesses across threads.
+  #scanRecentJobs({ role = "", cwd = "", conversationId = "", limit = RECOVER_SCAN_LIMIT } = {}) {
+    const jobsDir = path.join(this.store.dataDir, "jobs");
+    const cutoff = Date.now() - RECOVER_WINDOW_MS;
+    const cwdKey = cwd ? normalizeWorkspaceKey(cwd) : "";
+    const wantedConv = sanitizeConversationId(conversationId);
+    let names = [];
+    try {
+      names = fs.readdirSync(jobsDir).filter((n) => n.endsWith(".status.json"));
+    } catch {
+      return [];
+    }
+    const rows = [];
+    for (const name of names.slice(0, limit)) {
+      const filePath = path.join(jobsDir, name);
+      let snap;
+      try {
+        const st = fs.statSync(filePath);
+        if (st.mtimeMs < cutoff) continue;
+        snap = JSON.parse(fs.readFileSync(filePath, "utf8"));
+      } catch {
+        continue;
+      }
+      if (!snap || !/^[a-zA-Z0-9_-]{3,48}$/.test(String(snap.jobId || ""))) continue;
+      const live = this.jobs.get(snap.jobId);
+      const merged = live ? { ...snap, ...this.#buildStatusSnapshot(live, live.status) } : snap;
+      if (role && merged.role !== role) continue;
+      if (cwdKey && normalizeWorkspaceKey(merged.cwd || "") !== cwdKey) continue;
+      if (wantedConv && String(merged.conversationId || "") !== wantedConv) continue;
+      const updatedAt = Number(merged.updatedAt) || Number(merged.finishedAt) || 0;
+      if (!updatedAt || updatedAt < cutoff) continue;
+      rows.push({ ...merged, updatedAt });
+    }
+    rows.sort((a, b) => b.updatedAt - a.updatedAt);
+    return rows;
+  }
+
+  #recoverPromptFor(snap) {
+    const title = sanitizeHandoffText(snap.title || snap.jobId, 80);
+    const cwd = snap.cwd || "(unknown cwd)";
+    const status = snap.status || "unknown";
+    const action = snap.lastAction || lastMeaningfulAction(this.jobs.get(snap.jobId)?.activities, RECOVER_ACTION_TEXT_MAX);
+    const task = sanitizeHandoffText(snap.taskSummary || snap.lastSummary || "", 600);
+    const worktree = snap.worktree
+      ? ` · worktree=${snap.worktree.worktreeRoot} · branch=${snap.worktree.branch}`
+      : "";
+    return [
+      `继续上次任务（${status}）: ${title} · job=${snap.jobId} · role=${snap.role || "?"}:${snap.slot || "default"}`,
+      `原始 cwd=${cwd} · sessionId=${snap.sessionId || "(none)"} · engine=${snap.engine || "?"} · modelId=${snap.modelId || "(unknown)"}${worktree}`,
+      action ? `上次有效动作: [${action.kind}] ${sanitizeHandoffText(action.text, RECOVER_ACTION_TEXT_MAX)}` : "上次有效动作: (none)",
+      task ? `任务检查点: ${task}` : "任务检查点: (none persisted)",
+      `Resume contract: re-call agent_relay_ask with the ORIGINAL cwd (and worktree above if present), sessionId="${snap.sessionId || ""}", modelId="${snap.modelId || ""}" only when selectionMode=smart, plus the delta prompt. First inspect the workspace diff; never restart an explicitly stopped job.`,
+    ].join("\n");
+  }
+
+  #resultAvailable(snap, ack) {
+    if (!ack) return true;
+    const ackedAt = Date.parse(ack.createdAt || "") || 0;
+    const finishedAt = Number(snap.finishedAt) || Number(snap.updatedAt) || 0;
+    // A newer completion (e.g. a resumed job) invalidates an older ACK for the same jobId.
+    return finishedAt > ackedAt;
+  }
+
+  #summarizeRecoverRow(snap) {
+    const ack = this.store.getReceipt(snap.jobId, "result_ack");
+    const accepted = this.store.getReceipt(snap.jobId, "user_accept");
+    return {
+      jobId: snap.jobId,
+      role: snap.role || "",
+      slot: snap.slot || "default",
+      title: sanitizeHandoffText(snap.title || "", 60),
+      status: snap.status || "unknown",
+      engine: snap.engine || "",
+      modelId: snap.modelId || "",
+      sessionId: snap.sessionId || "",
+      conversationId: snap.conversationId || "",
+      cwd: snap.cwd || "",
+      startedAt: snap.startedAt || null,
+      finishedAt: snap.finishedAt || null,
+      updatedAt: snap.updatedAt || null,
+      elapsedSec: snap.elapsedSec ?? null,
+      lastAction: snap.lastAction || null,
+      lastSummary: sanitizeHandoffText(snap.lastSummary || "", 240),
+      logPath: snap.logPath || "",
+      outputPath: snap.outputPath || this.#outputPath(snap.jobId),
+      checkpointPath: this.#checkpointPath(snap.jobId),
+      worktree: snap.worktree || null,
+      resultAck: ack || null,
+      resultUnread: this.#resultAvailable(snap, ack),
+      userAccepted: Boolean(accepted),
+    };
+  }
+
+  #recoverHandoff({ jobId, jobIds, cwd, role, conversationId }) {
+    const explicitIds = [...new Set(
+      [...(Array.isArray(jobIds) ? jobIds : []), ...(jobId ? [jobId] : [])]
+        .map((id) => String(id || "").trim())
+        .filter((id) => /^[a-zA-Z0-9_-]{3,48}$/.test(id))
+    )];
+    const scopedCwd = cwd ? path.resolve(cwd) : "";
+    const wantedConv = sanitizeConversationId(conversationId);
+
+    if (explicitIds.length === 0 && !scopedCwd && !wantedConv) {
+      return {
+        ok: false,
+        status: "scope_required",
+        text: "recover needs exact jobId/jobIds, or a tightly scoped cwd (optionally with conversationId). Refusing to borrow another thread's jobs by guessing.",
+      };
+    }
+
+    let matches;
+    if (explicitIds.length > 0) {
+      const byId = new Map(this.#scanRecentJobs({ limit: RECOVER_SCAN_LIMIT }).map((s) => [s.jobId, s]));
+      matches = explicitIds.map((id) => byId.get(id)).filter(Boolean);
+      const missing = explicitIds.filter((id) => !byId.has(id));
+      if (missing.length) {
+        return {
+          ok: false,
+          status: "not_found",
+          text: `No durable job metadata found for: ${missing.join(", ")} (disk window ~24h). Do not guess; ask the user for the exact jobId or sessionId.`,
+          missing,
+        };
+      }
+    } else {
+      // Scope keys are the exact cwd + optional conversationId (role is metadata, never a guess key).
+      matches = this.#scanRecentJobs({ cwd: scopedCwd, conversationId: wantedConv });
+      if (matches.length === 0) {
+        return {
+          ok: false,
+          status: "not_found",
+          text: `No durable jobs matched cwd=${scopedCwd}${wantedConv ? ` conversationId=${wantedConv}` : ""} within ~24h. Do not borrow an unrelated thread's jobs.`,
+        };
+      }
+      const owners = new Set(matches.map((s) => normalizeWorkspaceKey(s.cwd || "")));
+      if (owners.size > 1) {
+        return {
+          ok: false,
+          status: "ambiguous_ownership",
+          text: `Multiple workspaces (${[...owners].join(", ")}) matched; refusing to guess. Pass exact jobIds or narrow cwd/conversationId.`,
+          candidates: matches.slice(0, 10).map((s) => this.#summarizeRecoverRow(s)),
+        };
+      }
+      if (matches.length > 1 && !wantedConv) {
+        // Same workspace: still ambiguous only when several *unread* results compete for one thread.
+        const unread = matches.filter((s) => this.#resultAvailable(s, this.store.getReceipt(s.jobId, "result_ack")));
+        if (unread.length > 1) {
+          return {
+            ok: false,
+            status: "ambiguous_ownership",
+            text: `${unread.length} jobs in ${scopedCwd} have unread results (${unread.map((s) => s.jobId).join(", ")}). Pass exact jobIds (or conversationId) so a thread never consumes another thread's results.`,
+            candidates: matches.slice(0, 10).map((s) => this.#summarizeRecoverRow(s)),
+          };
+        }
+      }
+    }
+
+    const rows = matches.map((s) => this.#summarizeRecoverRow(s));
+    const lines = rows.map((r) => {
+      const sid = r.sessionId ? ` · sessionId=${r.sessionId}` : "";
+      const unread = r.resultUnread ? " · RESULT_UNREAD" : " · result_ack_recorded";
+      const accepted = r.userAccepted ? " · user_accepted" : "";
+      const wt = r.worktree ? ` · worktree=${r.worktree.worktreeRoot} (${r.worktree.branch})` : "";
+      return `=== ${r.jobId} (${r.role}:${r.slot} · ${r.status}) ===\n${this.#recoverPromptFor(r)}${sid}${wt}${unread}${accepted}`;
+    });
+    return {
+      ok: true,
+      status: "recovered",
+      jobIds: rows.map((r) => r.jobId),
+      recovered: rows,
+      unreadCount: rows.filter((r) => r.resultUnread).length,
+      text: [
+        `[Durable handoff · recovered ${rows.length} job(s) from disk, nothing restarted]`,
+        ...lines,
+        `ACK when the Lead has actually read a result: agent_relay_session(action="ack", jobId="<id>", kind="result_ack") — this records a durable receipt, it is NOT user acceptance.`,
+        `Record real user acceptance separately with kind="user_accept".`,
+      ].join("\n\n"),
+    };
+  }
+
+  #ackHandoff({ jobId, jobIds, kind = "result_ack" }) {
+    const receiptKind = kind === "user_accept" ? "user_accept" : "result_ack";
+    const ids = [...new Set(
+      [...(Array.isArray(jobIds) ? jobIds : []), ...(jobId ? [jobId] : [])]
+        .map((id) => String(id || "").trim())
+        .filter(Boolean)
+    )];
+    if (ids.length === 0) {
+      return { ok: false, text: "ack requires an explicit jobId or jobIds." };
+    }
+    const known = new Map(this.#scanRecentJobs({ limit: RECOVER_SCAN_LIMIT }).map((s) => [s.jobId, s]));
+    const unknown = ids.filter((id) => !known.has(id));
+    if (unknown.length) {
+      return { ok: false, text: `Cannot ACK unknown job(s): ${unknown.join(", ")}. ACK only jobs you actually recovered.` };
+    }
+    const receipts = ids.map((id) => {
+      const snap = known.get(id);
+      const receipt = this.store.putReceipt(id, receiptKind, {
+        role: snap.role || "",
+        sessionId: snap.sessionId || "",
+        conversationId: snap.conversationId || "",
+        cwd: snap.cwd || "",
+        status: snap.status || "",
+        finishedAt: snap.finishedAt || null,
+        outputPath: snap.outputPath || this.#outputPath(id),
+        readAt: new Date().toISOString(),
+      });
+      return receipt;
+    });
+    return {
+      ok: true,
+      kind: receiptKind,
+      jobIds: ids,
+      duplicate: receipts.every((r) => r.duplicate),
+      receipts,
+      text: [
+        `[Durable receipt · ${receiptKind}] ${ids.join(", ")}`,
+        receiptKind === "user_accept"
+          ? "Recorded USER ACCEPTANCE (the user approved the result)."
+          : "Recorded RESULT ACK (the Lead read the result). This is NOT user acceptance.",
+        receipts.some((r) => r.duplicate) ? "Duplicate ACK(s) were idempotent — the first receipt is preserved." : "",
+      ].filter(Boolean).join("\n"),
+    };
+  }
+
+  async sessionAction({
+    action,
+    cwd,
+    role = "oracle",
+    slot = "default",
+    sessionId,
+    jobId,
+    jobIds,
+    conversationId,
+    modelId,
+    kind,
+    message,
+  }) {
     if (action === "status") {
       const codexRateLimits = await this.engines.codex.readRateLimits(false);
       return {
@@ -1814,24 +2590,8 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
         },
         interruptedJobs: this.#interruptedJobs(),
         roles: {
-          oracle: {
-            effort: this.store.settings.roles.oracle.effort,
-            queue: this.store.getRoleConfig("oracle").queue.map((m) => ({
-              id: m.id,
-              name: m.name,
-              engine: m.engine,
-              cooldown: this.store.getActiveCooldown(m.id),
-            })),
-          },
-          hephaestus: {
-            effort: this.store.settings.roles.hephaestus.effort,
-            queue: this.store.getRoleConfig("hephaestus").queue.map((m) => ({
-              id: m.id,
-              name: m.name,
-              engine: m.engine,
-              cooldown: this.store.getActiveCooldown(m.id),
-            })),
-          },
+          oracle: this.#roleStatus("oracle"),
+          hephaestus: this.#roleStatus("hephaestus"),
         },
         codexRateLimits,
         activeJobs: this.#runningJobs().map((j) => ({
@@ -1840,14 +2600,28 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
           slot: j.slot,
           title: j.title || "",
           sessionId: j.sessionId || "",
+          conversationId: j.conversationId || "",
           engine: j.engine,
+          modelId: j.modelId || "",
           elapsedSec: Number(((Date.now() - j.startedAt) / 1000).toFixed(1)),
           silentSec: Number(((Date.now() - j.lastActivityAt) / 1000).toFixed(1)),
+          lastAction: j.lastAction || lastMeaningfulAction(j.activities, RECOVER_ACTION_TEXT_MAX),
+          stallAlert: j.stallAlert || null,
           logPath: j.logPath,
+          checkpointPath: this.#checkpointPath(j.jobId),
         })),
         sessions: this.store.listSessions(),
+        receipts: this.store.listReceipts().slice(0, 50),
         telemetry: this.telemetry.getSummary(10),
       };
+    }
+
+    if (action === "recover") {
+      return this.#recoverHandoff({ jobId, jobIds, cwd, role, conversationId });
+    }
+
+    if (action === "ack") {
+      return this.#ackHandoff({ jobId, jobIds, kind });
     }
 
     if (action === "interrupt" && jobId) {
@@ -2105,9 +2879,12 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
       activeJobs: this.#runningJobs().map((j) => ({
         ...this.#summarizeJob(j),
         sessionId: j.sessionId || "",
+        checkpointPath: this.#checkpointPath(j.jobId),
+        stallAlert: j.stallAlert || null,
       })),
       recentJobs: this.#recentJobs(10),
       interruptedJobs: this.#interruptedJobs(),
+      receipts: this.store.listReceipts().slice(0, 50),
     };
   }
 
@@ -2137,6 +2914,9 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
           prompt: job.promptPreview || "",
           finalText: job.finalText || job.result?.text || this.#readFinalText(id),
           recovered: Boolean(job.recovered),
+          checkpointPath: this.#checkpointPath(id),
+          resultAck: this.store.getReceipt(id, "result_ack"),
+          userAccepted: Boolean(this.store.getReceipt(id, "user_accept")),
         },
       };
     }
@@ -2149,6 +2929,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
     if (!events && !legacy && !snapshot && !finalText) return { ok: false, error: "Job log not found" };
     const activities = events?.activities || legacy?.activities || [];
     const error = snapshot?.error || activities.findLast((a) => a.type === "error")?.summary || "";
+    const checkpoint = safeReadCheckpoint(this.#checkpointPath(id));
     return {
       ok: true,
       job: {
@@ -2159,7 +2940,9 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
         cwd: snapshot?.cwd || "",
         ...(snapshot?.worktree && { worktree: snapshot.worktree }),
         sessionId: snapshot?.sessionId || "",
+        conversationId: snapshot?.conversationId || checkpoint?.conversationId || "",
         engine: snapshot?.engine || "",
+        modelId: snapshot?.modelId || checkpoint?.modelId || "",
         modelDisplayName: snapshot?.modelDisplayName || "",
         status: snapshot?.status || (error ? "failed" : "completed"),
         elapsedSec: snapshot?.elapsedSec ?? null,
@@ -2175,6 +2958,11 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
         prompt: events?.prompt || "",
         finalText,
         error,
+        lastAction: snapshot?.lastAction || lastMeaningfulAction(activities, RECOVER_ACTION_TEXT_MAX),
+        checkpointPath: this.#checkpointPath(id),
+        checkpoint: checkpoint || null,
+        resultAck: this.store.getReceipt(id, "result_ack"),
+        userAccepted: Boolean(this.store.getReceipt(id, "user_accept")),
       },
     };
   }

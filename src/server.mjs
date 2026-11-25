@@ -34,6 +34,7 @@ const isCodexPlugin = Boolean(process.env.AGENT_RELAY_CODEX_PLUGIN_ID);
 const roleSettings = z.object({
   modelId: z.string().optional(),
   queue: z.array(z.string()).optional(),
+  selectionMode: z.enum(["ordered", "smart"]).optional(),
   effort: z.enum(["off", "low", "medium", "high"]).optional(),
   customRules: z.string().max(4000).optional(),
 });
@@ -211,6 +212,16 @@ server.registerTool(
           "Optional sandbox mode for hephaestus only. 'danger-full-access' is strictly gated by the user's allowHephaestusFullAccess setting (downgraded to 'workspace-write' if disabled). Ignored for oracle (always read-only)."
         ),
       forceNew: z.boolean().optional(),
+      modelId: z
+        .string()
+        .optional()
+        .describe(
+          "Optional model id for this turn. Honored only when roles.<role>.selectionMode='smart' AND the id is already in that role's configured queue; it is promoted to the front and the remaining queue stays as fallback order. In 'ordered' mode (default) it is ignored with a note. Invalid ids return an actionable error."
+        ),
+      conversationId: z
+        .string()
+        .optional()
+        .describe("Optional opaque conversation/thread id persisted with the job so a later durable handoff can match the exact thread without guessing."),
       worktree: z.boolean().optional().describe(
         "Request an isolated Git worktree (branch astand/<jobId>) for hephaestus when allowWorktreeParallelWrite is enabled. Use with waitSec=0 to proactively split large independent multi-module work across 2-3 parallel hephaestus jobs on non-overlapping file sets; a busy Git checkout also auto-triggers isolation."
       ),
@@ -290,6 +301,16 @@ server.registerTool(
         .string()
         .optional()
         .describe("Optional short task title shown in the Team panel and status list."),
+      modelId: z
+        .string()
+        .optional()
+        .describe(
+          "Optional model id for this review. Honored only when roles.oracle.selectionMode='smart' AND the id is in the oracle configured queue; the rest of the queue remains the fallback order."
+        ),
+      conversationId: z
+        .string()
+        .optional()
+        .describe("Optional opaque conversation/thread id persisted with the review job for durable handoff matching."),
       waitSec: z.number().int().min(0).max(1800).optional(),
     },
   },
@@ -314,14 +335,23 @@ server.registerTool(
   {
     title: "Inspect settings/quotas or control persistent subagent sessions",
     description:
-      "Read live A.stand settings (concurrency cap, check-in timers, AI priority queues, quotas) via action='status', or control a session (compact, fork, steer, interrupt, reset).",
+      "Read live A.stand settings (concurrency cap, check-in timers, per-role selectionMode + priority queues, quotas) via action='status'; control a session (compact, fork, steer, interrupt, reset); or recover/ACK a durable handoff from disk via action='recover' / action='ack' (never restarts a stopped job, never consumes unread output).",
     inputSchema: {
-      action: z.enum(["status", "compact", "fork", "steer", "interrupt", "reset"]),
+      action: z.enum(["status", "recover", "ack", "compact", "fork", "steer", "interrupt", "reset"]),
       cwd: z.string().optional(),
       role: z.enum(["oracle", "hephaestus"]).optional().default("oracle"),
       slot: z.string().optional().default("default"),
       sessionId: z.string().optional(),
-      jobId: z.string().optional().describe("Optional running jobId when action='interrupt'."),
+      jobId: z.string().optional().describe("Optional running jobId for interrupt, or the exact jobId for recover/ack."),
+      jobIds: z.array(z.string()).max(10).optional().describe("Exact jobIds for recover/ack (multi-job handoff)."),
+      conversationId: z
+        .string()
+        .optional()
+        .describe("Optional thread id used to scope recover so it never borrows another thread's jobs."),
+      kind: z
+        .enum(["result_ack", "user_accept"])
+        .optional()
+        .describe("For action='ack': result_ack means the Lead read the result (NOT user acceptance); user_accept means the user approved it."),
       message: z.string().optional().describe("Steering message when action='steer'."),
     },
   },

@@ -93,10 +93,12 @@ export class RelayStore {
     this.secretsPath = path.join(this.dataDir, "secrets.json");
     this.sessionsPath = path.join(this.dataDir, "sessions.json");
     this.cooldownsPath = path.join(this.dataDir, "cooldowns.json");
+    this.receiptsPath = path.join(this.dataDir, "receipts.json");
     this.secrets = this.#loadSecrets();
     this.settings = this.#loadSettings();
     this.sessions = this.#loadSessions();
     this.cooldowns = this.#loadCooldowns();
+    this.receipts = this.#loadReceipts();
     this.pruneExpiredSessions();
   }
 
@@ -120,12 +122,14 @@ export class RelayStore {
         oracle: {
           modelId: "cli-codex-default",
           queue: ["cli-codex-default"],
+          selectionMode: "ordered",
           effort: "medium",
           customRules: "",
         },
         hephaestus: {
           modelId: "cli-codex-default",
           queue: ["cli-codex-default"],
+          selectionMode: "ordered",
           effort: "medium",
           customRules: "",
         },
@@ -147,6 +151,7 @@ export class RelayStore {
     return {
       modelId: queue[0],
       queue,
+      selectionMode: merged.selectionMode === "smart" ? "smart" : "ordered",
       effort: ["off", "low", "medium", "high"].includes(merged.effort) ? merged.effort : "medium",
       customRules: String(merged.customRules ?? "").slice(0, 4000),
     };
@@ -273,6 +278,14 @@ export class RelayStore {
     return safeReadJson(this.cooldownsPath, { items: {} });
   }
 
+  #loadReceipts() {
+    const raw = safeReadJson(this.receiptsPath, { items: {} });
+    if (!raw || typeof raw !== "object" || Array.isArray(raw) || !raw.items || typeof raw.items !== "object") {
+      return { items: {} };
+    }
+    return { items: raw.items };
+  }
+
   saveSettings() {
     atomicWriteJson(this.settingsPath, this.settings);
   }
@@ -289,6 +302,43 @@ export class RelayStore {
     atomicWriteJson(this.cooldownsPath, this.cooldowns);
   }
 
+  saveReceipts() {
+    atomicWriteJson(this.receiptsPath, this.receipts);
+  }
+
+  // ---- Durable handoff receipts (result ACK vs. user acceptance are distinct kinds) ----
+  #receiptKey(jobId, kind) {
+    return `${String(jobId || "").trim()}::${kind === "user_accept" ? "user_accept" : "result_ack"}`;
+  }
+
+  getReceipt(jobId, kind = "result_ack") {
+    const key = this.#receiptKey(jobId, kind);
+    return this.receipts.items[key] || null;
+  }
+
+  // Idempotent: the first ACK wins; repeats return the same durable receipt (no double-consume).
+  putReceipt(jobId, kind = "result_ack", info = {}) {
+    const key = this.#receiptKey(jobId, kind);
+    const prev = this.receipts.items[key];
+    if (prev) return { ...prev, duplicate: true };
+    const receipt = {
+      key,
+      jobId: String(jobId || "").trim(),
+      kind: kind === "user_accept" ? "user_accept" : "result_ack",
+      ...info,
+      createdAt: new Date().toISOString(),
+    };
+    this.receipts.items[key] = receipt;
+    this.saveReceipts();
+    return { ...receipt, duplicate: false };
+  }
+
+  listReceipts() {
+    return Object.values(this.receipts.items).sort((a, b) =>
+      String(b.createdAt || "").localeCompare(String(a.createdAt || ""))
+    );
+  }
+
   pruneExpiredSessions() {
     const days = this.settings.retentionDays;
     if (!days || days <= 0) return 0;
@@ -302,6 +352,16 @@ export class RelayStore {
       }
     }
     if (removed > 0) this.saveSessions();
+    // Handoff receipts follow the same retention window as sessions/jobs.
+    let receiptsRemoved = 0;
+    for (const [k, rec] of Object.entries(this.receipts?.items || {})) {
+      const ts = Date.parse(rec?.createdAt || "");
+      if (Number.isFinite(ts) && ts < cutoff) {
+        delete this.receipts.items[k];
+        receiptsRemoved++;
+      }
+    }
+    if (receiptsRemoved > 0) this.saveReceipts();
     // Also prune expired job logs, structured events, status snapshots & outputs under <dataDir>/jobs/ and <dataDir>/outputs/
     for (const sub of ["jobs", "outputs"]) {
       try {
@@ -507,6 +567,9 @@ export class RelayStore {
       role,
       effort: r.effort || "medium",
       customRules: r.customRules || "",
+      selectionMode: r.selectionMode === "smart" ? "smart" : "ordered",
+      modelId: queueIds[0] || "",
+      queueIds: [...queueIds],
       model: queue[0] || this.getModelById(r.modelId),
       queue,
     };
@@ -571,6 +634,9 @@ export class RelayStore {
         }
         if (["off", "low", "medium", "high"].includes(rp.effort)) {
           this.settings.roles[role].effort = rp.effort;
+        }
+        if (rp.selectionMode === "smart" || rp.selectionMode === "ordered") {
+          this.settings.roles[role].selectionMode = rp.selectionMode;
         }
         if (typeof rp.customRules === "string") {
           this.settings.roles[role].customRules = rp.customRules.slice(0, 4000);
