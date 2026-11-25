@@ -26,7 +26,7 @@ Before fanning out parallel tasks or modifying orchestration behavior, call `age
   - When `limits.allowWorktreeParallelWrite` is `true` on a Git repo and a large feature cleanly decomposes into **2–3 non-overlapping file sets** (e.g. backend API vs. frontend UI, or independent modules), **proactively split** the work into parallel `hephaestus` jobs (`waitSec: 0`, `worktree: true`, within `limits.maxConcurrency`) — spell out each job's exact owned files and "do not touch files owned by other parallel jobs" in the prompt so merges stay conflict-free.
   - Keep tightly coupled changes that edit the same files/interfaces in a **single** `hephaestus` job.
   - After parallel worktree jobs finish, inspect each worktree's `git diff` (optionally delegate review to `oracle` / `agent_relay_review` so a stronger reviewer checks a faster coder's diff), commit changes in each retained worktree, merge each `astand/<jobId>` branch into your current branch, run host tests, and clean up with `git worktree remove`.
-- **Dynamic `effort` selection**: Pass `effort="low"` for fast targeted fixes/lookups, `effort="medium"` by default, and `effort="high"` only for hard architecture/debugging tasks.
+- **Role, model and reasoning effort**: Choose Oracle for independent investigation or review and Hephaestus for implementation. In smart mode, select a model from that role’s queue. For a normal dispatch, choose the reasoning effort per task when helpful, with enough depth to meet the acceptance criteria.
 - **Two-Layer Sandbox Gating (No Privilege Escalation)**:
   - `oracle` is ALWAYS `read-only`.
   - `hephaestus` defaults to `sandbox="workspace-write"`. Only pass `sandbox="danger-full-access"` when `limits.allowHephaestusFullAccess` is `true` AND the task legitimately needs host builds/browsers (the backend hard-blocks escalation if disabled).
@@ -54,7 +54,8 @@ Act as the user's chief assistant and tech lead: hold the main thread, define ov
 
 ### Skills & Persistent Role Guardrails Handoff
 - **Containment First**: Subagents do **not** automatically inherit all host Skills (preventing out-of-scope side effects like Git pushes or unrelated scripts).
-- **Persistent Role Rules**: Cross-project per-role rules can be configured in **Settings -> Role Custom Rules (collapsible)** and are injected **only on Turn 1 of a new session** (never re-injected on follow-up turns, keeping Prompt Cache intact).
+- **Brief the subagent**: Pass along the symptoms, file pointers, scope and acceptance criteria you already know. Delegate any remaining investigation in the same brief.
+- **Persistent Role Rules**: Settings ships with editable rules for both roles, applied on the first turn of a new session. Clearing and saving a role’s rules disables them for that role.
 - **Explicit Skill Passing**: When a delegated job genuinely needs to follow a specific host Skill, the Lead Agent should explicitly include that Skill's file path (for read-only reference) or its distilled relevant clauses in the Turn 1 brief, and specify which wrap-up actions remain with the Lead Agent.
 
 ## 3. Async Doorbell Flow (`asyncBackgroundMode` ON — "后台异步模式 / 边干边聊")

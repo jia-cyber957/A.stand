@@ -26,9 +26,15 @@ const LONG_CALL_OPTS = { timeout: 240_000 };
 
 function testRoleSettingsAndMappedDriveHint(dataDir) {
   const store = new RelayStore(dataDir);
-  for (const role of ["oracle", "hephaestus"]) {
-    assert.equal(store.getRoleConfig(role).customRules, "");
-  }
+  const defaults = Object.fromEntries(["oracle", "hephaestus"].map((role) => [role, store.getRoleConfig(role).customRules]));
+  for (const rule of Object.values(defaults)) assert.match(rule, /命令失败先查原因再重试/);
+  assert.match(defaults.oracle, /严格只读/);
+  assert.match(defaults.hephaestus, /只改工单明确列出的文件/);
+  const oldRules = defaults.oracle.split("\n").slice(0, -1).join("\r\n");
+  store.updateTopSettings({ roles: { oracle: { customRules: oldRules }, hephaestus: { customRules: "" } } });
+  const migrated = new RelayStore(dataDir);
+  assert.equal(migrated.getRoleConfig("oracle").customRules, defaults.oracle);
+  assert.equal(migrated.getRoleConfig("hephaestus").customRules, "");
   const oracleRules = "Read the task brief first.\nCite relevant files.";
   store.updateTopSettings({
     roles: { oracle: { customRules: oracleRules }, hephaestus: { customRules: "x".repeat(4001) } },
@@ -522,9 +528,10 @@ async function testBrowserStrictCspRender(htmlText, realToolResult) {
 
               const rulesToggle = '[data-action="toggle-custom-rules"]';
               const oracleRules = '[data-custom-rules-role="oracle"]';
-              uiChecks.rulesCollapsed = doc.querySelector(rulesToggle)?.getAttribute("aria-expanded") === "false";
-              doc.querySelector(rulesToggle)?.click();
+              uiChecks.rulesExpanded = doc.querySelector(rulesToggle)?.getAttribute("aria-expanded") === "true";
               const field = doc.querySelector(oracleRules);
+              uiChecks.rulesPrefilled = ["oracle", "hephaestus"].every((role) =>
+                doc.querySelector('[data-custom-rules-role="' + role + '"]')?.value.includes("命令失败先查原因再重试"));
               uiChecks.rulesFields = Array.from(doc.querySelectorAll("#custom-rules-editor textarea"))
                 .map((el) => [el.dataset.customRulesRole, el.rows, el.maxLength]);
               field.focus();
@@ -541,7 +548,7 @@ async function testBrowserStrictCspRender(htmlText, realToolResult) {
               doc.querySelector(rulesToggle)?.click();
               uiChecks.rulesDraftPreserved = doc.querySelector(oracleRules)?.value === field.value;
               doc.querySelector('[data-action="save-custom-rules"]')?.click();
-              uiChecks.rulesSaved = (await until(".custom-rules-badge"))?.textContent === "Configured"
+              uiChecks.rulesSaved = (await until('#custom-rules-editor [role="status"]:not(:empty)'))?.textContent === "Saved"
                 && TOOL_RESULT.structuredContent.settings.roles.oracle.customRules === field.value;
               doc.querySelector('[data-tab="team"]')?.click();
               const smartSelection = '[data-action="toggle-role-selection"][data-role="oracle"]';
@@ -619,7 +626,8 @@ async function testBrowserStrictCspRender(htmlText, realToolResult) {
     assert.equal(report.uiChecks?.customIntervalSaved, true);
     assert.equal(report.uiChecks?.smartSelectionSaved, true);
     assert.equal(report.uiChecks?.worktreeOn, true, "Expected the Settings worktree switch to turn on when clicked");
-    assert.equal(report.uiChecks?.rulesCollapsed, true);
+    assert.equal(report.uiChecks?.rulesExpanded, true);
+    assert.equal(report.uiChecks?.rulesPrefilled, true);
     assert.deepEqual(report.uiChecks?.rulesFields, [["oracle", 3, 4000], ["hephaestus", 3, 4000]]);
     assert.equal(report.uiChecks?.rulesPollPreserved, true, "A changed live state must preserve focus while typing");
     assert.equal(report.uiChecks?.rulesDraftPreserved, true);
@@ -1406,8 +1414,8 @@ async function main() {
     assert.ok(!fs.readFileSync(path.join(tmpData, "settings.json"), "utf8").includes(key), "API key leaked into settings.json");
   };
   const migrated = await call("agent_relay_ui_get_state");
-  assert.equal(migrated.settings.roles.oracle.customRules, "");
-  assert.equal(migrated.settings.roles.hephaestus.customRules, "");
+  assert.match(migrated.settings.roles.oracle.customRules, /严格只读/);
+  assert.match(migrated.settings.roles.hephaestus.customRules, /只改工单明确列出的文件/);
   assert.deepEqual(migrated.channels, migrated.settings.channels);
   assert.equal(migrated.channels.length, 2, "Normalize the address and group only models with the same key");
   const [shared, separate] = migrated.channels;

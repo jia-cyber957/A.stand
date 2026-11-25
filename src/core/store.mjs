@@ -85,6 +85,35 @@ function newModelId() {
   return `custom-${crypto.randomUUID()}`;
 }
 
+const ROLE_RULE_BASE = {
+  oracle: [
+    "1. 严格只读，绝不修改工作区文件。",
+    "2. 审查代码必查：需求边界、并发/空值/安全暗雷、测试防作弊，并给出分级（通过/阻塞必改/非阻塞建议）；通用调研与方案评审必给核心结论、利弊权衡与盲区风险。",
+    "3. 结论必须有据可查：审代码附真实文件路径与行号，做调研/评审附具体依据或出处，绝不空泛猜测。",
+  ],
+  hephaestus: [
+    "1. 只改工单明确列出的文件，严禁顺手重构无关代码或私自升级依赖。",
+    "2. 严禁修改 docs/ 活文档与 aoci*.txt 索引文件（由主 Agent 统一收口）。",
+    "3. 严禁删除、跳过或放宽已有测试断言来凑全绿；跑测试必带超时且不常驻前台服务。",
+    "4. 遇到需求模糊或必须越界大改时立即停手回报事实与方案，绝不硬猜。",
+  ],
+};
+
+const CHECK_RULE = "命令失败先查原因再重试。相关代码、配置和环境未变时，复用已通过的检查结果，交卷前完成工单要求的验收。";
+
+function defaultRoleRules(role) {
+  const base = ROLE_RULE_BASE[role];
+  return [...base, `${base.length + 1}. ${CHECK_RULE}`].join("\n");
+}
+
+function loadRoleRules(saved, role) {
+  // Upgrade the exact previous template while preserving edited rules and explicit empty values.
+  if (typeof saved !== "string" || saved.replace(/\r\n/g, "\n").trim() === ROLE_RULE_BASE[role].join("\n")) {
+    return defaultRoleRules(role);
+  }
+  return saved.slice(0, 4000);
+}
+
 export class RelayStore {
   constructor(dataDir) {
     this.dataDir = path.resolve(dataDir);
@@ -124,14 +153,14 @@ export class RelayStore {
           queue: ["cli-codex-default"],
           selectionMode: "ordered",
           effort: "medium",
-          customRules: "",
+          customRules: defaultRoleRules("oracle"),
         },
         hephaestus: {
           modelId: "cli-codex-default",
           queue: ["cli-codex-default"],
           selectionMode: "ordered",
           effort: "medium",
-          customRules: "",
+          customRules: defaultRoleRules("hephaestus"),
         },
       },
       models: structuredClone(DEFAULT_MODELS),
@@ -139,7 +168,7 @@ export class RelayStore {
     };
   }
 
-  #normalizeRole(rawRole, defRole, validIds) {
+  #normalizeRole(rawRole, defRole, validIds, role) {
     const merged = { ...defRole, ...(rawRole || {}) };
     let queue = Array.isArray(merged.queue) ? merged.queue.filter((id) => isValidModelRef(id, validIds)) : [];
     if (queue.length === 0) {
@@ -153,7 +182,7 @@ export class RelayStore {
       queue,
       selectionMode: merged.selectionMode === "smart" ? "smart" : "ordered",
       effort: ["off", "low", "medium", "high"].includes(merged.effort) ? merged.effort : "medium",
-      customRules: String(merged.customRules ?? "").slice(0, 4000),
+      customRules: loadRoleRules(rawRole?.customRules, role),
     };
   }
 
@@ -229,8 +258,8 @@ export class RelayStore {
           ? raw.inspectorModelId
           : "",
       roles: {
-        oracle: this.#normalizeRole(raw.roles?.oracle, def.roles.oracle, validIds),
-        hephaestus: this.#normalizeRole(raw.roles?.hephaestus, def.roles.hephaestus, validIds),
+        oracle: this.#normalizeRole(raw.roles?.oracle, def.roles.oracle, validIds, "oracle"),
+        hephaestus: this.#normalizeRole(raw.roles?.hephaestus, def.roles.hephaestus, validIds, "hephaestus"),
       },
       models: mergedModels,
       channels,

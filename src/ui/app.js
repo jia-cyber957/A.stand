@@ -178,11 +178,11 @@ const I18N = {
     inspectorConfigureBtn: "配置并开启",
     inspectorOff: "关闭（纯代码结构化提取）",
     keepOfficeTitle: "Codex 保留办公插件",
-    customRulesTitle: "角色常驻守则（可选）",
+    customRulesTitle: "角色常驻守则",
     customRulesConfigured: "已配置",
     oracleCustomRules: "白泽（Oracle）常驻守则",
     hephaestusCustomRules: "祝融（Hephaestus）常驻守则",
-    customRulesNote: "仅在新会话第 1 轮注入，续跑不重复拼接、不伤缓存；默认留空",
+    customRulesNote: "默认提供守则，仅在新会话首轮注入。可编辑，清空并保存即可停用该角色的守则。",
     keepOfficeDesc: "开启保留 PDF / Excel / Word / PPT 插件；关闭则前缀最轻、缓存最稳",
     fullAccessTitle: "允许 Hephaestus 无沙箱运行",
     fullAccessDesc: "默认关闭（严格限制在项目目录沙箱内）；仅限信任项目开启，开启后主 Agent 仅在打包/浏览器等需要时才按需放开（Oracle 永久只读）",
@@ -398,11 +398,11 @@ const I18N = {
     inspectorConfigureBtn: "Configure & Enable",
     inspectorOff: "Off (Code structured extraction)",
     keepOfficeTitle: "Keep Codex Office Plugins",
-    customRulesTitle: "Role Custom Rules (Optional)",
+    customRulesTitle: "Role Custom Rules",
     customRulesConfigured: "Configured",
     oracleCustomRules: "Oracle Custom Rules",
     hephaestusCustomRules: "Hephaestus Custom Rules",
-    customRulesNote: "Injected on Turn 1 of new sessions only (preserves Prompt Cache); empty by default",
+    customRulesNote: "Default rules apply on the first turn of a new session. Edit them, or clear and save to disable them for the role.",
     keepOfficeDesc: "Keep PDF / Excel / Word / PPT plugins; off keeps prefix leanest for cache",
     fullAccessTitle: "Allow Hephaestus Full Access (No Sandbox)",
     fullAccessDesc: "Off by default (workspace-write sandbox). Enable only for trusted workspaces so the lead agent can opt out of sandbox for builds/browsers (Oracle is always read-only)",
@@ -805,7 +805,7 @@ let ui = {
   openDropdownRole: null,
   openFallbackRole: null,
   inspectorDropdownOpen: false,
-  customRulesOpen: false,
+  customRulesOpen: true,
   customRulesDraft: {},
   customRulesSaving: false,
   customRulesStatus: "",
@@ -957,8 +957,7 @@ function scheduleNextPoll() {
         if (ui.detailJobId) await refreshJobDetail({ silent: true });
         const sig = computeStateSig(state);
         const uiBusy = ui.modal || ui.openMenu || ui.inspectorDropdownOpen ||
-          document.activeElement?.tagName === "TEXTAREA" ||
-          (ui.tab === "settings" && ui.customRulesOpen);
+          document.activeElement?.tagName === "TEXTAREA";
         if (!uiBusy && sig !== lastRenderedSig) {
           lastRenderedSig = sig;
           render();
