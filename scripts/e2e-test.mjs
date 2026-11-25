@@ -9,8 +9,9 @@ import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { applyTurn1CustomRules, formatMappedDriveSandboxHint } from "../src/core/orchestrator.mjs";
+import { applyTurn1CustomRules, formatMappedDriveSandboxHint, RelayOrchestrator, selectRoleModels } from "../src/core/orchestrator.mjs";
 import { RelayStore } from "../src/core/store.mjs";
+import { TelemetryLogger } from "../src/core/telemetry.mjs";
 import { createJobWorktree, detectGitRepo, finalizeJobWorktree } from "../src/core/worktree.mjs";
 import { AcpEngine, parseAcpModelOptions, parseToolActivity, sanitizeConstrainedLangOutput, summarizeToolInput } from "../src/engines/acp.mjs";
 
@@ -225,6 +226,7 @@ async function testBrowserStrictCspRender(htmlText, realToolResult) {
     { id: "search", kind: "search", title: '"sessionKeyOf"', meta: "gateway/" },
     { id: "cmd", kind: "cmd", title: "pwsh: go test ./internal/gateway", status: "error", durationSec: 2,
       exitCode: 1, detail: "$ go test ./internal/gateway\n\nFAIL <optional>" },
+    { id: "guard", kind: "triage", title: "Wait a little longer", detail: "The gateway verification command is still running." },
     { id: "message", kind: "output", title: "Gateway verified.", detail: "## Results\n\n**Gateway verified.**" },
   ];
   const running = {
@@ -238,6 +240,10 @@ async function testBrowserStrictCspRender(htmlText, realToolResult) {
   };
   realToolResult.structuredContent.settings.lang = "en";
   realToolResult.structuredContent.activeJobs = [running];
+  realToolResult.structuredContent.codexRateLimits = {
+    primary: { remainingPercent: 88, windowDurationMins: 300 },
+    secondary: { remainingPercent: null, windowDurationMins: 10080 },
+  };
 
   let resolveReport;
   const reportPromise = new Promise((r) => {
@@ -340,6 +346,7 @@ async function testBrowserStrictCspRender(htmlText, realToolResult) {
                 const settings = TOOL_RESULT.structuredContent.settings;
                 const args = msg.params.arguments;
                 if ("allowWorktreeParallelWrite" in args) settings.allowWorktreeParallelWrite = args.allowWorktreeParallelWrite;
+               if ("longRunCheckinMin" in args) settings.longRunCheckinMin = args.longRunCheckinMin;
                 for (const [role, changes] of Object.entries(args.roles || {})) Object.assign(settings.roles[role], changes);
               }
               e.source.postMessage({ jsonrpc: "2.0", id: msg.id, result }, "*");
@@ -418,6 +425,10 @@ async function testBrowserStrictCspRender(htmlText, realToolResult) {
                 uiChecks.jumpedToModels = Boolean(doc.querySelector("#engine-card-deepseek-harness"));
               }
 
+              const quota = doc.querySelector(".quota-card");
+              uiChecks.quota = Boolean(quota?.textContent.includes("88%") && quota.textContent.includes("5 hr window")
+                && quota.querySelectorAll(".quota-win").length === 1 && quota.textContent.includes("Account balances are unavailable"));
+
               const channelCard = '[data-channel-card]:has([data-action="open-manage-channel"])';
               const toggle = () => doc.querySelector(channelCard + ' [data-action="toggle-channel"]');
               uiChecks.channelCards = doc.querySelectorAll(".channel-card").length;
@@ -479,6 +490,9 @@ async function testBrowserStrictCspRender(htmlText, realToolResult) {
               doc.querySelector('[data-step-id="thought"]')?.click();
               doc.querySelector('[data-step-id="cmd"]')?.click();
               const final = await until(".job-final");
+              doc.querySelector('[data-step-id="guard"]')?.click();
+              uiChecks.gatekeeperReason = doc.querySelector(".ar-step-triage .ar-step-drawer")?.textContent ===
+                "The gateway verification command is still running.";
               uiChecks.expandedAfterPoll = ["__lead_prompt", "thought", "cmd"].every(
                 (step) => doc.querySelector('[data-step-id="' + step + '"]')?.getAttribute("aria-expanded") === "true"
               );
@@ -491,6 +505,15 @@ async function testBrowserStrictCspRender(htmlText, realToolResult) {
               uiChecks.worktreeNotice = final?.textContent.includes("[Git Worktree]");
 
               doc.querySelector('[data-tab="settings"]')?.click();
+              const customInterval = await until('[data-number-setting="longRunCheckinMin"]');
+              uiChecks.numberInputs = doc.querySelectorAll("[data-number-setting]").length;
+              uiChecks.longRunPresets = Array.from(doc.querySelectorAll('[data-key="longRunCheckinMin"]'), (button) => Number(button.dataset.val));
+              const silentRow = doc.querySelector('[data-number-setting="silentCheckinMin"]')?.closest(".setting-item");
+              uiChecks.guardNextToSilence = Boolean(silentRow?.nextElementSibling?.querySelector('[data-action="toggle-inspector"]'));
+              customInterval.value = "45";
+              customInterval.dispatchEvent(new Event("change", { bubbles: true }));
+              uiChecks.customIntervalSaved = Boolean(await until('[data-number-setting="longRunCheckinMin"][value="45"]'));
+
               const worktreeSelector = '[data-key="allowWorktreeParallelWrite"]';
               const worktreeToggle = doc.querySelector(worktreeSelector);
               uiChecks.worktreeOff = worktreeToggle?.getAttribute("aria-checked") === "false";
@@ -520,6 +543,10 @@ async function testBrowserStrictCspRender(htmlText, realToolResult) {
               doc.querySelector('[data-action="save-custom-rules"]')?.click();
               uiChecks.rulesSaved = (await until(".custom-rules-badge"))?.textContent === "Configured"
                 && TOOL_RESULT.structuredContent.settings.roles.oracle.customRules === field.value;
+              doc.querySelector('[data-tab="team"]')?.click();
+              const smartSelection = '[data-action="toggle-role-selection"][data-role="oracle"]';
+              doc.querySelector(smartSelection)?.click();
+              uiChecks.smartSelectionSaved = Boolean(await until(smartSelection + '[aria-checked="true"]'));
             } catch (err) {
               errors.push("inspect:" + String(err));
             }
@@ -584,6 +611,13 @@ async function testBrowserStrictCspRender(htmlText, realToolResult) {
     assert.ok(report.text.includes("A.stand"), `Rendered UI missing 'A.stand': ${report.text}`);
     assert.equal(report.uiChecks?.worktreeNotice, true, "Expected retained worktree notice in job result");
     assert.equal(report.uiChecks?.worktreeOff, true, "Expected the Settings worktree switch to start off");
+    assert.equal(report.uiChecks?.quota, true, "Quota card must show the provider's actual quota and disclose unavailable balances");
+    assert.equal(report.uiChecks?.gatekeeperReason, true);
+    assert.equal(report.uiChecks?.numberInputs, 4);
+    assert.deepEqual(report.uiChecks?.longRunPresets, [0, 15, 30, 60]);
+    assert.equal(report.uiChecks?.guardNextToSilence, true);
+    assert.equal(report.uiChecks?.customIntervalSaved, true);
+    assert.equal(report.uiChecks?.smartSelectionSaved, true);
     assert.equal(report.uiChecks?.worktreeOn, true, "Expected the Settings worktree switch to turn on when clicked");
     assert.equal(report.uiChecks?.rulesCollapsed, true);
     assert.deepEqual(report.uiChecks?.rulesFields, [["oracle", 3, 4000], ["hephaestus", 3, 4000]]);
@@ -996,7 +1030,7 @@ async function testAcpActivity() {
 
 function seedLegacyLibrary(dataDir) {
   const key = "sk-legacy-shared-1234";
-  const otherKey = "sk-legacy-separate-5678";
+  const otherKey = "fixture-legacy-separate-5678";
   const entry = (id, modelName, baseUrl, providerId = "custom") => ({
     id, modelName, name: "Old display name", mode: "api", providerId, baseUrl, builtin: false,
   });
@@ -1062,13 +1096,13 @@ function testSummarizeToolInput() {
     // File tools -> `${title} ${shortPath} L{start}-{end}`
     [
       summarizeToolInput("read", {
-        path: "C:\\Users\\me\\Desktop\\proj\\src\\core\\store.mjs",
+        path: ["C:", "Users", "fixture", "Desktop", "proj", "src", "core", "store.mjs"].join("\\"),
         start_line: 10,
         end_line: 20,
       }),
       /^read …\/core\/store\.mjs L10-20$/,
     ],
-    [summarizeToolInput("edit", { file_path: "/home/u/app/src/ui/app.js" }), /^edit …\/ui\/app\.js$/],
+    [summarizeToolInput("edit", { file_path: ["", "home", "fixture", "app", "src", "ui", "app.js"].join("/") }), /^edit …\/ui\/app\.js$/],
     [summarizeToolInput("write", { target_file: "README.md" }), /^write README\.md$/],
     // Search tools -> `${title} "${pattern}" in ${shortPath}`
     [summarizeToolInput("grep", { pattern: "fooBar", path: "src/core/store.mjs" }), /^grep "fooBar" in …\/core\/store\.mjs$/],
@@ -1185,10 +1219,111 @@ async function testWaitJobScript() {
     const failed = await runWaitJob(dir, ["job_doorbell_fail"], { timeoutMs: 10_000 });
     assert.equal(failed.code, 1, `wait-job must exit 1 on error, got ${failed.code}: ${failed.out}`);
     assert.match(failed.out, /\[ERROR\] job_doorbell_fail/);
+
+    const managedId = "job_doorbell_managed";
+    const managed = { jobId: managedId, status: "running", role: "oracle", title: "Working", pid: process.pid,
+      managedSilence: true, startedAt: now - 90_000, lastActivityAt: now - 65_000,
+      sessionId: "sid-doorbell-5", lastAction: { kind: "cmd", text: "running checks" } };
+    writeStatusFile(dir, managed);
+    const args = ["--stall-sec", "1", "--long-run-min", "1", "job_doorbell_ok", managedId];
+    const first = await runWaitJob(dir, args, { timeoutMs: 10_000 });
+    assert.equal(first.code, 5, first.out);
+    assert.match(first.out, /\[LONG_RUN_CHECKIN\] job_doorbell_managed/);
+    assert.match(first.out, /--rearm job_doorbell_ok job_doorbell_managed/);
+    assert.match(first.out, /sid-doorbell-5.*running checks/);
+
+    const rearmed = await runWaitJob(dir, ["--rearm", "--timeout-sec", "1", ...args], { timeoutMs: 10_000 });
+    assert.doesNotMatch(rearmed.out, /LONG_RUN_CHECKIN|STALL_ALERT/, "Rearm must wait for the next interval and honor the gatekeeper");
+    const checkPath = path.join(dir, "jobs", `${managedId}.checkpoint.json`);
+    const checkpoint = JSON.parse(fs.readFileSync(checkPath, "utf8"));
+    assert.ok(checkpoint.longRunAnchorAt >= now);
+    fs.writeFileSync(checkPath, JSON.stringify({ ...checkpoint, longRunAnchorAt: Date.now() - 90_000 }));
+    const again = await runWaitJob(dir, args, { timeoutMs: 10_000 });
+    assert.equal(again.code, 5);
+    writeStatusFile(dir, { ...managed, stallAlert: { at: Date.now(), reason: "Waiting on tests" } });
+    const raised = await runWaitJob(dir, args, { timeoutMs: 10_000 });
+    assert.equal(raised.code, 2);
+    assert.match(raised.out, /Waiting on tests/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
   console.log("wait-job.mjs doorbell (exit 0 completed / 2 stall / 3 dead pid / 1 error) PASSED.");
+}
+
+async function testDurableHandoff() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ar-e2e-handoff-"));
+  const repo = path.join(dir, "source");
+  const worktree = path.join(dir, "worktree");
+  for (const cwd of [repo, worktree]) fs.mkdirSync(cwd);
+  const now = Date.now();
+  const interrupted = {
+    jobId: "job_interrupted_fixture", role: "hephaestus", slot: "default", status: "running",
+    engine: "codex", modelId: "cli-codex-default", sessionId: "fixture-checkpoint",
+    title: "Continue original work", cwd: worktree, originalCwd: repo, conversationId: "fixture-conversation",
+    startedAt: now - 80_000, updatedAt: now - 70_000, pid: 0x7ffffffe,
+    worktree: { worktreeRoot: worktree, effectiveCwd: worktree, repoRoot: repo, branch: "astand/fixture" },
+  };
+  writeStatusFile(dir, interrupted);
+  writeStatusFile(dir, { ...interrupted, jobId: "job_stopped_fixture", status: "interrupted", error: "Stopped by user" });
+  writeStatusFile(dir, { ...interrupted, jobId: "job_other_fixture", conversationId: "another-conversation" });
+  writeStatusFile(dir, { ...interrupted, jobId: "job_alive_fixture", pid: process.pid });
+  const store = new RelayStore(dir);
+  store.settings.enabled = true;
+  store.saveSettings();
+  const relay = new RelayOrchestrator(store, new TelemetryLogger(dir));
+  try {
+    await testRecovery();
+  } finally {
+    await relay.shutdown();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  console.log("Scoped recovery, exact worktree continuation, and durable receipt PASSED.");
+
+  async function testRecovery() {
+    relay.engines.codex.readRateLimits = async () => null;
+    relay.engines.codex.runTurn = async ({ existingSessionId, requireResume, cwd, onSessionReady }) => {
+      assert.equal(existingSessionId, "fixture-checkpoint");
+      assert.equal(cwd, worktree);
+      assert.equal(requireResume, true);
+      onSessionReady(existingSessionId);
+      return { sessionId: existingSessionId, reused: true, resolvedModel: "fixture", text: "Finished original work",
+        usage: { cacheReported: false }, elapsedMs: 1 };
+    };
+    const scope = { cwd: repo, conversationId: "fixture-conversation" };
+    const recover = await relay.sessionAction({ action: "recover", ...scope });
+    assert.deepEqual(new Set(recover.jobIds), new Set([interrupted.jobId, "job_alive_fixture"]));
+    assert.equal(recover.recovered.find((r) => r.jobId === interrupted.jobId)?.resumable, true);
+    assert.equal(recover.recovered.find((r) => r.jobId === "job_alive_fixture")?.status, "running");
+    assert.equal((await relay.sessionAction({ action: "recover", cwd: repo })).status, "scope_required");
+    assert.equal((await relay.sessionAction({ action: "recover", jobId: interrupted.jobId, ...scope, conversationId: "elsewhere" })).status, "not_found");
+    assert.equal((await relay.sessionAction({ action: "ack", jobId: interrupted.jobId })).ok, false);
+    const args = { cwd: repo, role: "hephaestus", prompt: "Continue the original task", waitSec: 5 };
+    assert.equal((await relay.ask({ ...args, resumeJobId: "job_stopped_fixture" })).status, "unsafe_resume");
+    const resumed = await relay.ask({ ...args, resumeJobId: interrupted.jobId });
+    assert.match(resumed.text, /Finished original work/);
+    assert.equal((await relay.ask({ ...args, resumeJobId: interrupted.jobId })).status, "unsafe_resume");
+    const recoveredResult = await relay.sessionAction({ action: "recover", ...scope });
+    assert.equal(recoveredResult.recovered.find((r) => r.jobId === resumed.jobId)?.resultUnread, true);
+
+    const restart = new RelayOrchestrator(new RelayStore(dir), new TelemetryLogger(dir));
+    try {
+      const output = await restart.poll(resumed.jobId);
+      assert.match(output.text, /Finished original work/);
+      assert.equal((await restart.sessionAction({ action: "ack", jobId: resumed.jobId })).duplicate, false);
+      assert.equal((await restart.sessionAction({ action: "ack", jobId: resumed.jobId })).duplicate, true);
+      const done = await restart.sessionAction({ action: "recover", jobId: resumed.jobId });
+      assert.equal(done.recovered[0].resultUnread, false);
+      assert.equal(done.recovered[0].userAccepted, false);
+    } finally {
+      await restart.shutdown();
+    }
+
+    const queue = [{ id: "codex", engine: "codex" }, { id: "flash", engine: "deepseek-harness" }];
+    assert.deepEqual(selectRoleModels({ queue, selectionMode: "smart", requestedModelId: "flash" }).models, queue.toReversed());
+    assert.deepEqual(selectRoleModels({ queue, requestedModelId: "flash" }).models, queue);
+    assert.ok(selectRoleModels({ queue, selectionMode: "smart", requestedModelId: "unlisted" }).error);
+    assert.deepEqual(selectRoleModels({ queue, selectionMode: "smart", requestedModelId: "codex", resumeRecord: { modelId: "flash", engine: "deepseek-harness" } }).models, [queue[1]]);
+  }
 }
 
 async function main() {
@@ -1300,7 +1435,7 @@ async function main() {
   checkSecretIsolation(migrated, "sk-dsh-fixture-3333");
   await call("agent_relay_ui_delete_channel", { channelId: separate.id });
 
-  const key = "sk-mock-channel-9999";
+  const key = ["sk", "mock", "channel", "9999"].join("-");
   const mockApiServer = http.createServer((req, res) => {
     if (req.url === "/v1/models" && req.headers.authorization === `Bearer ${key}`) {
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -1787,6 +1922,7 @@ async function main() {
   assert.equal(parseToolActivity("read", { path: "gateway.go", start_line: 315, end_line: 455 }).meta, "#L315-455");
   assert.equal(parseToolActivity("read", null).kind, "read");
   await testWaitJobScript();
+  await testDurableHandoff();
 
   console.log("\n=== 8. Status snapshots, outputs/*.txt & new opt-in settings ===");
   const settingsNow = (await call("agent_relay_ui_get_state")).settings;

@@ -1289,6 +1289,38 @@ html[data-theme="light"] .progress-track {
   color: var(--ar-text-3);
 }
 
+.setting-number-controls,
+.role-selection {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.setting-number-controls {
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
+.setting-number {
+  width: 5ch;
+  min-width: 50px;
+  padding: 4px 6px;
+  border: 1px solid var(--ar-border-strong);
+  border-radius: 6px;
+  background: var(--ar-surface);
+  color: var(--ar-text);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.role-selection {
+  margin-top: 12px;
+}
+
+.role-selection .setting-meta {
+  min-width: 0;
+}
+
 .setting-subrow {
   width: 100%;
   display: flex;

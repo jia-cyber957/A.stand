@@ -147,9 +147,19 @@ const I18N = {
     maxConcTitle: "最大并发数",
     maxConcDesc: "全局并行上限；仅只读 Oracle 支持多开，Hephaestus 同目录严格互斥写",
     silentTitle: "静默巡检间隔",
-    silentDesc: "子 Agent 连续无吐字、无命令、无改文件时，不打断并通知主 Agent 看一眼",
+    silentDesc: "子 Agent 连续没有新进展时触发，可先由下方守门员判断。",
+    customNumber: "自定义",
+    smartSelection: "智能选型",
+    smartSelectionDesc: "主 Agent 可按任务难度从上方队列选模型。",
+    stepGatekeeper: "卡顿守门员 AI",
+    cacheLastStep: "最近一次模型调用样本",
+    quotaUnavailable: "暂未读取到 Codex 额度。",
+    channelQuotaUnavailable: "DeepSeek 与自定义渠道的账户余额暂无可读取的数据。",
+    quotaWindowMinutes: "%s 分钟窗口",
+    quotaWindowHours: "%s 小时窗口",
+    quotaWindowDays: "%s 天窗口",
     longRunTitle: "持续运行巡检",
-    longRunDesc: "大任务持续运行时定期向主 Agent 汇报进展（始终不打断）",
+    longRunDesc: "持续运行达到间隔时，唤醒主 Agent 查看进展并决定下一步。继续等待时重新计时。",
     retentionTitle: "记忆保留天数",
     retentionDesc: "仅清理本插件索引；绝不删除 Codex / Claude 等外部 CLI 原生记录",
     minSuffix: "分",
@@ -233,8 +243,8 @@ const I18N = {
     asyncOffNote: "当前关闭（默认同步等待与巡检）；打开开关即可边干边聊",
     inspectorEnabledTitle: "启用巡检 AI（默认关闭）",
     inspectorEnabledDesc: "默认关闭，直接依赖透视日志与静默超时告警；开启后仅在卡死/报错时调用巡检模型",
-    inspectorEnabledOn: "已开启 · 静默超时时先读最后 30 行透视日志，只判「继续等」或「叫醒主 Agent」",
-    inspectorEnabledOff: "当前关闭（0 费用，静默超时后直接拉响门铃叫醒主 Agent）",
+    inspectorEnabledOn: "静默到时先查看近期进展，判断继续等待还是叫醒主 Agent。",
+    inspectorEnabledOff: "静默到时直接叫醒主 Agent。",
   },
   en: {
     brand: "A.stand",
@@ -357,9 +367,19 @@ const I18N = {
     maxConcTitle: "Max Concurrent Jobs",
     maxConcDesc: "Global cap; only read-only Oracle runs parallel, Hephaestus is write-mutex guarded",
     silentTitle: "Silent Check-in Interval",
-    silentDesc: "Notify lead agent (without interrupting) if no output/cmds/edits happen for N mins",
+    silentDesc: "Triggers after no new progress. The gatekeeper below can check first.",
+    customNumber: "Custom",
+    smartSelection: "Smart model selection",
+    smartSelectionDesc: "The lead agent can choose from the queue based on task complexity.",
+    stepGatekeeper: "Stall Gatekeeper AI",
+    cacheLastStep: "Latest model request sample",
+    quotaUnavailable: "Codex quota is currently unavailable.",
+    channelQuotaUnavailable: "Account balances are unavailable for DeepSeek and custom channels.",
+    quotaWindowMinutes: "%s min window",
+    quotaWindowHours: "%s hr window",
+    quotaWindowDays: "%s day window",
     longRunTitle: "Long-Run Check-in",
-    longRunDesc: "Periodic non-interrupting progress check-in during long tasks",
+    longRunDesc: "Wake the lead agent at each interval to review progress and decide what to do. The interval restarts when waiting continues.",
     retentionTitle: "Session Index Retention",
     retentionDesc: "Prunes A.stand index only; never deletes external CLI transcripts",
     minSuffix: "m",
@@ -443,8 +463,8 @@ const I18N = {
     asyncOffNote: "Off (default blocking waits & check-ins). Toggle on to chat while subagents work",
     inspectorEnabledTitle: "Enable Inspector AI (default off)",
     inspectorEnabledDesc: "Off by default — rely on the X-ray timeline and silent-timeout alerts; when on, the inspector model is only called on stalls/errors.",
-    inspectorEnabledOn: "On · Reads task goal + last 30 X-ray lines on silence to return CONTINUE or ALERT only",
-    inspectorEnabledOff: "Off (zero cost — silence timeout wakes Lead Agent directly)",
+    inspectorEnabledOn: "Reviews recent progress after silence and decides whether to wait or wake the lead agent.",
+    inspectorEnabledOff: "Silence wakes the lead agent directly.",
   },
 };
 
@@ -1408,8 +1428,8 @@ function splitFinalResponse(text) {
 
 const STEP_LABELS = {
   read: "stepAnalyzed", edit: "stepEdited", write: "stepCreated", search: "stepSearched",
-  cmd: "stepRan", error: "stepError", stderr: "stepError", steer: "stepSteer", triage: "stepSteer",
-  triage_alert: "stepSteer", fallback: "stepFallback", interrupt: "stepStop",
+  cmd: "stepRan", error: "stepError", stderr: "stepError", steer: "stepSteer", triage: "stepGatekeeper",
+  triage_alert: "stepGatekeeper", fallback: "stepFallback", interrupt: "stepStop",
 };
 
 function stepDuration(a) {
@@ -1436,7 +1456,8 @@ function stepLineHtml(a, { allowDrawer }) {
   const label = STEP_LABELS[kind];
   if (!label && kind !== "thought") return "";
   const title = String(a.title || a.summary || "").trim();
-  const detail = String(a.detail || "");
+  const gatekeeper = kind === "triage" || kind === "triage_alert";
+  const detail = String(a.detail || (gatekeeper ? title : ""));
   const duration = stepDuration(a);
   const thought = kind === "thought";
   const file = ["read", "edit", "write"].includes(kind);
@@ -1447,7 +1468,7 @@ function stepLineHtml(a, { allowDrawer }) {
     ? (duration ? t(running ? "stepThinking" : "stepThoughtFor").replace("%s", duration) : t(running ? "stepThinkingNow" : "stepThought"))
     : command ? title.replace(/^(?:pwsh|powershell|bash|sh):\s*/i, "") : title;
   const meta = a.meta && a.meta !== target ? (kind === "search" ? t("stepInPath").replace("%s", a.meta) : a.meta) : "";
-  const canExpand = allowDrawer && Boolean(a.id && detail.trim()) && (thought || command || kind === "edit" || kind === "write");
+  const canExpand = allowDrawer && Boolean(a.id && detail.trim()) && (thought || command || gatekeeper || kind === "edit" || kind === "write");
   const open = canExpand && ui.expandedStepIds.has(a.id);
   const row = `
     ${label ? `<span class="ar-verb">${esc(t(label))}</span>` : ""}
@@ -1634,12 +1655,21 @@ function renderLiveActivityPanel() {
   `;
 }
 
-function renderQuotaCard() {
-  const rl = state?.codexRateLimits;
-  if (!rl || (!rl.primary && !rl.secondary)) return "";
-  const winBar = (label, w) => {
-    if (!w) return "";
-    const rem = w.remainingPercent != null ? w.remainingPercent : 0;
+function renderQuotaCard(showChannelQuotaNote) {
+  const rl = state.codexRateLimits;
+  const codex = state.engines?.codex;
+  const showCodex = Boolean(rl || codex?.installed || codex?.status === "ready");
+  if (!showCodex && !showChannelQuotaNote) return "";
+  const winBar = (w, fallbackLabel) => {
+    if (!Number.isFinite(w?.remainingPercent)) return "";
+    const rem = Math.max(0, Math.min(100, w.remainingPercent));
+    const minutes = w.windowDurationMins;
+    let label = t(fallbackLabel);
+    if (Number.isFinite(minutes) && minutes > 0) {
+      const [key, divisor] = minutes % 1440 === 0 ? ["quotaWindowDays", 1440]
+        : minutes % 60 === 0 ? ["quotaWindowHours", 60] : ["quotaWindowMinutes", 1];
+      label = t(key).replace("%s", minutes / divisor);
+    }
     const fillCls = rem <= 10 ? "danger" : rem <= 30 ? "warn" : "";
     return `
       <div class="quota-win">
@@ -1649,22 +1679,23 @@ function renderQuotaCard() {
             ${t("remaining")} ${rem}%${w.resetsAtMs ? ` · ${t("resetsIn")} ${fmtCountdown(w.resetsAtMs)}` : ""}
           </span>
         </div>
-        <div class="progress-track"><div class="progress-fill ${fillCls}" style="width:${Math.max(2, rem)}%"></div></div>
+        <div class="progress-track"><div class="progress-fill ${fillCls}" style="width:${rem}%"></div></div>
       </div>`;
   };
+  const windows = winBar(rl?.primary, "win5h") + winBar(rl?.secondary, "win7d");
   return `
     <div class="quota-card">
+      ${showCodex ? `
       <div class="card-head">
         <div style="display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:600">
           <span>${t("quotaTitle")}</span>
-          ${rl.planType ? `<span class="engine-tag">${esc(String(rl.planType).toUpperCase())}</span>` : ""}
+          ${rl?.planType ? `<span class="engine-tag">${esc(String(rl.planType).toUpperCase())}</span>` : ""}
         </div>
         <button class="btn xs" data-action="refresh-quota">${iconSvg("refresh")}<span>${t("refresh")}</span></button>
       </div>
-      <div class="quota-grid">
-        ${winBar(t("win5h"), rl.primary)}
-        ${winBar(t("win7d"), rl.secondary)}
-      </div>
+      ${windows ? `<div class="quota-grid">${windows}</div>` : `<div class="setting-desc">${t("quotaUnavailable")}</div>`}
+      ` : ""}
+      ${showChannelQuotaNote ? `<div class="setting-desc">${t("channelQuotaUnavailable")}</div>` : ""}
     </div>
   `;
 }
@@ -1835,6 +1866,7 @@ function renderRoleCard(role) {
   const selected = resolveModelMeta(primaryId) || resolveModelMeta("cli-codex-default");
   const fallbackIds = queueIds.slice(1);
   const isOracle = role === "oracle";
+  const smart = cfg.selectionMode === "smart";
   const sessions = recentSessionsForRole(role, 3);
   const open = ui.openDropdownRole === role;
   const openFb = ui.openFallbackRole === role;
@@ -1924,6 +1956,14 @@ function renderRoleCard(role) {
           </div>`
           )
           .join("")}
+      </div>
+
+      <div class="role-selection">
+        <div class="setting-meta">
+          <span class="setting-title">${t("smartSelection")}</span>
+          <span class="setting-desc">${t("smartSelectionDesc")}</span>
+        </div>
+        <button class="switch sm ${smart ? "on" : ""}" data-action="toggle-role-selection" data-role="${role}" role="switch" aria-checked="${smart}" aria-label="${esc(t("smartSelection"))}"></button>
       </div>
 
       <div class="field">
@@ -2081,7 +2121,7 @@ function renderModelsTab() {
   };
 
   return `
-    ${renderQuotaCard()}
+    ${renderQuotaCard(Boolean(dsh?.installed || channels.length))}
 
     <div>
       <div class="section-head">
@@ -2183,8 +2223,8 @@ function renderCacheTab() {
       </div>
       <div class="kpi-card">
         <span class="kpi-label">${t("kpiSaved")}</span>
-        <span class="kpi-value">${fmtNum(tel.totalCachedTokens || 0)}</span>
-        <span class="kpi-sub nums">/ ${fmtNum(tel.totalInputTokens || 0)} in</span>
+        <span class="kpi-value">${tel.reportedTurns ? fmtNum(tel.totalCachedTokens) : "—"}</span>
+        <span class="kpi-sub nums">${tel.reportedTurns ? `/ ${fmtNum(tel.totalInputTokens)} in` : t("unreported")}</span>
       </div>
       <div class="kpi-card">
         <span class="kpi-label">${t("kpiLast")}</span>
@@ -2234,7 +2274,7 @@ function renderCacheTab() {
                     <span class="mono" style="color:var(--ar-text-3)">${fmtTime(r.ts)}</span>
                     <span class="engine-tag" style="text-align:center">${esc(roleDisplayName(r.role))}</span>
                     <span class="truncate">${esc(r.modelName || r.engine)} · <span style="color:var(--ar-text-3)">${modeTag} · ${((r.elapsedMs || 0) / 1000).toFixed(1)}s</span></span>
-                    <span class="log-hit ${hitC}" title="${r.cachedInputTokens ?? 0} / ${r.totalInputTokens ?? 0}">${hitLabel}</span>
+                    <span class="log-hit ${hitC}" title="${r.cacheReported ? esc(`${r.cachedInputTokens} / ${r.totalInputTokens}${["last-provider-step", "last-assistant-step"].includes(r.usageScope) ? ` · ${t("cacheLastStep")}` : ""}`) : t("unreported")}">${hitLabel}</span>
                   </div>`;
                 })
                 .join("")}
@@ -2252,6 +2292,31 @@ function hasConfiguredCustomRules(settings) {
   return Boolean(settings?.roles?.oracle?.customRules?.trim() || settings?.roles?.hephaestus?.customRules?.trim());
 }
 
+const NUMBER_SETTINGS = {
+  maxConcurrency: { title: "maxConcTitle", desc: "maxConcDesc", min: 1, max: 6, presets: [1, 2, 3, 4, 5, 6] },
+  silentCheckinMin: { title: "silentTitle", desc: "silentDesc", min: 1, max: 30, presets: [1, 3, 5, 10], unit: "minSuffix" },
+  longRunCheckinMin: { title: "longRunTitle", desc: "longRunDesc", min: 0, max: 120, presets: [0, 15, 30, 60], unit: "minSuffix", zero: "unlimited" },
+  retentionDays: { title: "retentionTitle", desc: "retentionDesc", min: 0, max: 3650, presets: [7, 30, 0], labels: { 7: "days7", 30: "days30" }, zero: "forever" },
+};
+
+function renderNumberSetting(key) {
+  const { title, desc, min, max, presets, unit, zero, labels } = NUMBER_SETTINGS[key];
+  const value = state.settings[key];
+  const label = (n) => n === 0 && zero ? t(zero) : labels?.[n] ? t(labels[n]) : `${n}${unit ? t(unit) : ""}`;
+  return `<div class="setting-item">
+    <div class="setting-meta">
+      <span class="setting-title">${t(title)}</span>
+      <span class="setting-desc">${t(desc)}</span>
+    </div>
+    <div class="setting-number-controls">
+      <div class="seg">
+        ${presets.map((n) => `<button class="seg-btn ${value === n ? "active" : ""}" data-action="set-num" data-key="${key}" data-val="${n}" aria-pressed="${value === n}">${label(n)}</button>`).join("")}
+      </div>
+      <input class="setting-number" type="number" inputmode="numeric" min="${min}" max="${max}" step="1" required data-number-setting="${key}" value="${value}" aria-label="${esc(`${t(title)} · ${t("customNumber")}`)}" title="${esc(`${t("customNumber")} (${min}–${max})`)}">
+    </div>
+  </div>`;
+}
+
 function renderSettingsTab() {
   const s = state.settings;
   const apiModels = getInspectorApiModels();
@@ -2260,97 +2325,14 @@ function renderSettingsTab() {
     <div>
       <div class="section-head"><span class="section-title">${t("secConcurrency")}</span></div>
       <div class="settings-group">
-        <div class="setting-item">
-          <div class="setting-meta">
-            <span class="setting-title">${t("maxConcTitle")}</span>
-            <span class="setting-desc">${t("maxConcDesc")}</span>
-          </div>
-          <div class="seg">
-            ${[1, 2, 3, 4, 5, 6]
-              .map(
-                (n) => `
-              <button class="seg-btn ${s.maxConcurrency === n ? "active" : ""}" data-action="set-num" data-key="maxConcurrency" data-val="${n}">${n}</button>`
-              )
-              .join("")}
-          </div>
-        </div>
-
-        <div class="setting-item">
-          <div class="setting-meta">
-            <span class="setting-title">${t("silentTitle")}</span>
-            <span class="setting-desc">${t("silentDesc")}</span>
-          </div>
-          <div class="seg">
-            ${[1, 3, 5, 10]
-              .map(
-                (m) => `
-              <button class="seg-btn ${s.silentCheckinMin === m ? "active" : ""}" data-action="set-num" data-key="silentCheckinMin" data-val="${m}">${m}${t("minSuffix")}</button>`
-              )
-              .join("")}
-          </div>
-        </div>
-
-        <div class="setting-item">
-          <div class="setting-meta">
-            <span class="setting-title">${t("longRunTitle")}</span>
-            <span class="setting-desc">${t("longRunDesc")}</span>
-          </div>
-          <div class="seg">
-            ${[0, 5, 10, 15, 30]
-              .map(
-                (m) => `
-              <button class="seg-btn ${s.longRunCheckinMin === m ? "active" : ""}" data-action="set-num" data-key="longRunCheckinMin" data-val="${m}">${m === 0 ? t("unlimited") : `${m}${t("minSuffix")}`}</button>`
-              )
-              .join("")}
-          </div>
-        </div>
-
-        <div class="setting-item">
-          <div class="setting-meta">
-            <span class="setting-title">${t("retentionTitle")}</span>
-            <span class="setting-desc">${t("retentionDesc")}</span>
-          </div>
-          <div class="seg">
-            ${[
-              [7, t("days7")],
-              [30, t("days30")],
-              [0, t("forever")],
-            ]
-              .map(
-                ([d, lbl]) => `
-              <button class="seg-btn ${s.retentionDays === d ? "active" : ""}" data-action="set-num" data-key="retentionDays" data-val="${d}">${lbl}</button>`
-              )
-              .join("")}
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div>
-      <div class="section-head"><span class="section-title">${t("secAutomation")}</span></div>
-      <div class="settings-group">
-        <div class="setting-item">
-          <div class="setting-meta">
-            <span class="setting-title">${t("autoFbTitle")}</span>
-            <span class="setting-desc">${t("autoFbDesc")}</span>
-          </div>
-          <button class="switch sm ${s.autoFallbackOnLimit ? "on" : ""}" data-action="toggle-bool" data-key="autoFallbackOnLimit"></button>
-        </div>
-
-        <div class="setting-item">
-          <div class="setting-meta">
-            <span class="setting-title">${t("asyncTitle")}</span>
-            <span class="setting-desc">${s.asyncBackgroundMode ? t("asyncOnNote") : t("asyncDesc")}</span>
-          </div>
-          <button class="switch sm ${s.asyncBackgroundMode ? "on" : ""}" data-action="toggle-bool" data-key="asyncBackgroundMode" aria-label="async background mode switch"></button>
-        </div>
-
+        ${renderNumberSetting("maxConcurrency")}
+        ${renderNumberSetting("silentCheckinMin")}
         <div class="setting-item">
           <div class="setting-meta">
             <span class="setting-title">${t("inspectorTitle")}</span>
             <span class="setting-desc">${inspectorActive ? t("inspectorEnabledOn") : t("inspectorEnabledOff")}</span>
           </div>
-          <button class="switch sm ${inspectorActive ? "on" : ""}" data-action="toggle-inspector" aria-label="inspector switch"></button>
+          <button class="switch sm ${inspectorActive ? "on" : ""}" data-action="toggle-inspector" role="switch" aria-checked="${inspectorActive}" aria-label="${esc(t("inspectorTitle"))}"></button>
           ${
             apiModels.length > 0 && inspectorActive
               ? (() => {
@@ -2390,6 +2372,30 @@ function renderSettingsTab() {
                 </div>`
               : ""
           }
+        </div>
+
+        ${renderNumberSetting("longRunCheckinMin")}
+        ${renderNumberSetting("retentionDays")}
+      </div>
+    </div>
+
+    <div>
+      <div class="section-head"><span class="section-title">${t("secAutomation")}</span></div>
+      <div class="settings-group">
+        <div class="setting-item">
+          <div class="setting-meta">
+            <span class="setting-title">${t("autoFbTitle")}</span>
+            <span class="setting-desc">${t("autoFbDesc")}</span>
+          </div>
+          <button class="switch sm ${s.autoFallbackOnLimit ? "on" : ""}" data-action="toggle-bool" data-key="autoFallbackOnLimit"></button>
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-meta">
+            <span class="setting-title">${t("asyncTitle")}</span>
+            <span class="setting-desc">${s.asyncBackgroundMode ? t("asyncOnNote") : t("asyncDesc")}</span>
+          </div>
+          <button class="switch sm ${s.asyncBackgroundMode ? "on" : ""}" data-action="toggle-bool" data-key="asyncBackgroundMode" aria-label="async background mode switch"></button>
         </div>
 
         <div class="setting-item">
@@ -2606,6 +2612,7 @@ function render() {
   const lang = state.settings.lang === "en" ? "en" : "zh";
   const hitBadge = state.telemetry?.cumulativeHitRate != null ? `${state.telemetry.cumulativeHitRate}%` : "";
   const liveCount = state.activeJobs?.length || 0;
+  const activeNumber = document.activeElement?.dataset.numberSetting ? document.activeElement : null;
 
   root.innerHTML = `
     <div class="app-shell">
@@ -2659,6 +2666,13 @@ function render() {
   `;
 
   restoreDetailScroll();
+  if (activeNumber) {
+    const current = root.querySelector(`[data-number-setting="${activeNumber.dataset.numberSetting}"]`);
+    if (current) {
+      if (activeNumber.value !== activeNumber.defaultValue) current.value = activeNumber.value;
+      current.focus({ preventScroll: true });
+    }
+  }
 
   const searchEl = document.getElementById("m-prov-search");
   if (searchEl && ui.providerDropdownOpen) {
@@ -2765,7 +2779,36 @@ document.addEventListener("input", (e) => {
   syncModalInputs();
 });
 
+async function saveNumberSetting(key, value) {
+  if (state.settings[key] === value) return;
+  try {
+    const result = await callTool("agent_relay_ui_update_settings", { [key]: value });
+    if (!result?.settings) throw new Error(t("saveFailed"));
+    showToast(t("saved"));
+  } catch {
+    const input = document.querySelector(`[data-number-setting="${key}"]`);
+    if (input && input.valueAsNumber === value) input.value = state.settings[key];
+    showToast(t("saveFailed"));
+  }
+  render();
+}
+
+document.addEventListener("change", (e) => {
+  const input = e.target;
+  const key = input.dataset.numberSetting;
+  if (!key) return;
+  if (input.validity.valid) {
+    void saveNumberSetting(key, input.valueAsNumber);
+  } else {
+    input.value = state.settings[key];
+  }
+});
+
 document.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && e.target.dataset.numberSetting) {
+    e.preventDefault();
+    if (e.target.reportValidity()) e.target.blur();
+  }
   if (e.key === "Enter" && e.target.id === "m-manual-model") {
     e.preventDefault();
     document.querySelector('[data-action="add-manual-model"]')?.click();
@@ -2978,11 +3021,21 @@ document.addEventListener("click", async (e) => {
     return;
   }
   if (act === "set-num") {
-    const key = el.dataset.key;
-    const val = Number(el.dataset.val);
-    await callTool("agent_relay_ui_update_settings", { [key]: val });
-    showToast(t("saved"));
+    await saveNumberSetting(el.dataset.key, Number(el.dataset.val));
+    return;
+  }
+  if (act === "toggle-role-selection") {
+    const role = el.dataset.role;
+    const selectionMode = state.settings.roles[role].selectionMode === "smart" ? "ordered" : "smart";
+    try {
+      const result = await callTool("agent_relay_ui_update_settings", { roles: { [role]: { selectionMode } } });
+      if (result?.settings?.roles?.[role]?.selectionMode !== selectionMode) throw new Error(t("saveFailed"));
+      showToast(t("saved"));
+    } catch {
+      showToast(t("saveFailed"));
+    }
     render();
+    document.querySelector(`[data-action="toggle-role-selection"][data-role="${role}"]`)?.focus({ preventScroll: true });
     return;
   }
   if (act === "toggle-role-dd") {

@@ -458,7 +458,7 @@ export class CodexEngine {
     return err;
   }
 
-  async #ensureThread({ cwd, role, modelName, existingSessionId, sandbox, customRules }) {
+  async #ensureThread({ cwd, role, modelName, existingSessionId, sandbox, customRules, requireResume = false }) {
     await this.ensureConnected();
     const spec = ROLE_SPECS[role] || ROLE_SPECS.oracle;
     const effectiveSandbox = role === "oracle" ? "read-only" : sandbox || spec.sandbox;
@@ -490,7 +490,9 @@ export class CodexEngine {
           resumedFromDisk: true,
           resolvedModel: res?.model || modelName || "",
         };
-      } catch {}
+      } catch (err) {
+        if (requireResume) throw err;
+      }
     }
 
     const rules = !existingSessionId && customRules?.trim();
@@ -521,7 +523,7 @@ export class CodexEngine {
     };
   }
 
-  async runTurn({ cwd, role, model, effort = "medium", sandbox, prompt, existingSessionId, onActivity, onSessionReady }) {
+  async runTurn({ cwd, role, model, effort = "medium", sandbox, prompt, existingSessionId, onActivity, onSessionReady, requireResume }) {
     const t0 = Date.now();
     const threadInfo = await this.#ensureThread({
       cwd,
@@ -529,6 +531,7 @@ export class CodexEngine {
       modelName: model?.modelName || "",
       existingSessionId,
       sandbox,
+      requireResume,
     });
     const threadId = threadInfo.sessionId;
     this.activeTurns.set(threadId, { id: "", interruptPending: false });

@@ -212,6 +212,7 @@ server.registerTool(
           "Optional sandbox mode for hephaestus only. 'danger-full-access' is strictly gated by the user's allowHephaestusFullAccess setting (downgraded to 'workspace-write' if disabled). Ignored for oracle (always read-only)."
         ),
       forceNew: z.boolean().optional(),
+      resumeJobId: z.string().optional().describe("Continue a matching host-interrupted job returned by recover, with its original workspace, role and model."),
       modelId: z
         .string()
         .optional()
@@ -339,7 +340,7 @@ server.registerTool(
     inputSchema: {
       action: z.enum(["status", "recover", "ack", "compact", "fork", "steer", "interrupt", "reset"]),
       cwd: z.string().optional(),
-      role: z.enum(["oracle", "hephaestus"]).optional().default("oracle"),
+      role: z.enum(["oracle", "hephaestus"]).optional(),
       slot: z.string().optional().default("default"),
       sessionId: z.string().optional(),
       jobId: z.string().optional().describe("Optional running jobId for interrupt, or the exact jobId for recover/ack."),
@@ -359,7 +360,8 @@ server.registerTool(
     try {
       const res = await orchestrator.sessionAction(args);
       const text = typeof res.text === "string" ? res.text : JSON.stringify(res, null, 2);
-      return { content: [{ type: "text", text }] };
+      const handoff = args.action === "recover" || args.action === "ack";
+      return { content: [{ type: "text", text }], ...(handoff && { structuredContent: res }) };
     } catch (err) {
       return {
         content: [{ type: "text", text: `Session action error: ${err?.message || String(err)}` }],

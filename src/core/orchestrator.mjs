@@ -278,13 +278,9 @@ export function selectRoleModels({ role, queue = [], selectionMode = "ordered", 
   if (resumeRecord?.modelId && resumeRecord?.engine) {
     const same = models.find((m) => m.id === resumeRecord.modelId);
     if (same) {
-      const rest = models.filter((m) => m.id !== same.id);
-      return { mode, models: [same, ...rest], selected: same, notes, resumeForced: true };
+      if (same.engine === resumeRecord.engine) return { mode, models: [same], selected: same, notes, resumeForced: true };
     }
-    notes.push(
-      `Resume session ${resumeRecord.sessionId || ""} was created on ${resumeRecord.engine}/${resumeRecord.modelId}, ` +
-      `which is no longer in the ${role} queue; starting a fresh session on the queue head.`
-    );
+    return { mode, models: [], notes, error: `Restore the original model ${resumeRecord.modelId} (${resumeRecord.engine}) to the ${role} queue before continuing session ${resumeRecord.sessionId}.` };
   }
 
   if (!requested) return { mode, models, selected: models[0] || null, notes };
@@ -335,7 +331,6 @@ export function decideSilence({
 export function noteRealProgress(job) {
   if (!job || typeof job !== "object") return job;
   job.gatekeeperDeferrals = 0;
-  job.gatekeeperVerdictPending = false;
   job.gatekeeperLastVerdictAt = 0;
   return job;
 }
@@ -424,8 +419,11 @@ export class RelayOrchestrator {
       slot: job.slot,
       title: job.title || "",
       cwd: job.cwd || "",
+      originalCwd: job.originalCwd || job.cwd || "",
       sessionId: job.sessionId || "",
       engine: job.engine,
+      sandbox: job.sandbox || "",
+      taskSummary: sanitizeHandoffText(job.taskSummary || job.promptPreview || "", 1200),
       modelId: job.modelId || "",
       modelDisplayName: job.modelDisplayName || job.engine,
       status,
@@ -442,6 +440,7 @@ export class RelayOrchestrator {
       elapsedSec: Number(((endTs - job.startedAt) / 1000).toFixed(1)),
       error: job.error || null,
       stallAlert: job.stallAlert || null,
+      managedSilence: true,
       logPath: job.logPath || "",
       outputPath: this.#outputPath(job.jobId),
       // Durable handoff fields: lets the Lead recover/ACK exact jobs without guessing.
@@ -531,7 +530,7 @@ export class RelayOrchestrator {
         continue;
       }
       if (!/^[a-zA-Z0-9_-]{3,48}$/.test(snap?.jobId || "")) continue;
-      if (snap.status !== "running" || snap.pid === process.pid) continue;
+      if (snap.status !== "running" || !snap.pid || isProcessAlive(snap.pid)) continue;
       if (this.jobs.has(snap.jobId)) continue;
 
       const finishedAt = Number(snap.updatedAt) || Date.now();
@@ -541,6 +540,7 @@ export class RelayOrchestrator {
         finishedAt,
         updatedAt: Date.now(),
         error: CRASH_RECOVERY_ERROR,
+        hostInterrupted: true,
         elapsedSec: Number(((finishedAt - (Number(snap.startedAt) || finishedAt)) / 1000).toFixed(1)),
       };
       const diskTimeline = this.#readJobEvents(recovered.jobId);
@@ -778,6 +778,7 @@ export class RelayOrchestrator {
 
   formatTelemetryFooter(meta) {
     const u = meta.usage;
+    const cacheLabel = ["last-provider-step", "last-assistant-step"].includes(meta.usageScope) ? "cache (last step)" : "cache";
     const hitStr = u?.cacheReported
       ? `${u.hitRate}% (${u.cachedInputTokens.toLocaleString()} / ${u.totalInputTokens.toLocaleString()})`
       : "N/A (unreported)";
@@ -785,7 +786,7 @@ export class RelayOrchestrator {
     const modeStr = meta.resumedFromDisk ? "resumed" : meta.reused ? "warm" : "new";
     const fbStr = meta.fallbackNote ? ` · ${meta.fallbackNote}` : "";
     const sidStr = meta.sessionId ? ` · sessionId=${meta.sessionId}` : "";
-    return `[A.stand · ${meta.role}${meta.slot && meta.slot !== "default" ? `:${meta.slot}` : ""} · ${meta.resolvedModel} (${meta.engine}) · ${modeStr}${fbStr}${sidStr} · cache ${hitStr}${ctxStr} · ${(meta.elapsedMs / 1000).toFixed(1)}s]`;
+    return `[A.stand · ${meta.role}${meta.slot && meta.slot !== "default" ? `:${meta.slot}` : ""} · ${meta.resolvedModel} (${meta.engine}) · ${modeStr}${fbStr}${sidStr} · ${cacheLabel} ${hitStr}${ctxStr} · ${(meta.elapsedMs / 1000).toFixed(1)}s]`;
   }
 
   async #syncCodexQuotaAndCooldowns(models) {
@@ -936,7 +937,7 @@ export class RelayOrchestrator {
     return `node "${resolveWaitJobScript()}" ${args.join(" ")}`;
   }
 
-  async #buildCheckinReport(job, reason, detail = "summary", allowInspector = true) {
+  async #buildCheckinReport(job, reason, detail = "summary") {
     const elapsedSec = ((Date.now() - job.startedAt) / 1000).toFixed(1);
     const silentSec = ((Date.now() - job.lastActivityAt) / 1000).toFixed(1);
     const labels = this.#checkinLabels();
@@ -1007,35 +1008,9 @@ export class RelayOrchestrator {
       .filter(Boolean)
       .join("\n");
 
-    // Optional Inspector Summarizer AI (opt-in, default OFF): only on silent/stuck, long-running, or errors.
-    // If a gatekeeper verdict already exists for this stall, REUSE it — never issue a second judging call.
-    let aiSummary = "";
-    const inspectorId = this.store.settings.inspectorModelId;
-    const existingVerdict = job.stallAlert?.verdict
+    const aiSummary = job.stallAlert?.verdict
       ? `${this.#isZh() ? "判定" : "verdict"}: ${job.stallAlert.verdict} · ${job.stallAlert.reason}`
       : "";
-    const shouldInvokeInspector =
-      allowInspector &&
-      !existingVerdict &&
-      this.store.settings.inspectorEnabled === true &&
-      Boolean(inspectorId) &&
-      fullLog.trim().length > 0 &&
-      (reason === "silent_checkin" || reason === "long_run_checkin" || errors.length > 0);
-    if (shouldInvokeInspector) {
-      const inspModel = this.store.getModelById(inspectorId);
-      if (inspModel?.mode === "api" && inspModel.apiKey && inspModel.baseUrl && inspModel.modelName) {
-        aiSummary = await this.#summarizeWithInspectorAi(
-          inspModel,
-          job,
-          reason,
-          elapsedSec,
-          silentSec,
-          fullLog,
-          errors
-        );
-      }
-    }
-    if (existingVerdict) aiSummary = existingVerdict;
     const stallLine = job.stallAlert
       ? `${labels.stall}: ${sanitizeHandoffText(job.stallAlert.reason, GATEKEEPER_REASON_MAX)} (${sanitizeHandoffText(job.stallAlert.source || "silence_timeout", 24)})`
       : "";
@@ -1129,13 +1104,6 @@ export class RelayOrchestrator {
     } catch (err) {
       return { verdict: "ALERT", reason: `Gatekeeper check failed (${err?.message || "timeout"})`, summary: "", raw: "" };
     }
-  }
-
-  async #summarizeWithInspectorAi(model, job, _reason, elapsedSec, silentSec) {
-    const t = await this.#triageStallWithGatekeeper(model, job, elapsedSec, silentSec);
-    const parts = [`VERDICT: ${t.verdict}`, `REASON: ${t.reason}`];
-    if (t.summary) parts.push(`SUMMARY: ${t.summary}`);
-    return t.raw || parts.join("\n");
   }
 
   // ---- Silent gatekeeper (opt-in). OFF: silence is surfaced as a plain stall alert. ON: judge first. ----
@@ -1241,7 +1209,11 @@ export class RelayOrchestrator {
           : `Deferred ${GATEKEEPER_MAX_DEFERRALS} times with no new activity; handing off to the Lead (${res.reason})`
         : res.reason;
     const alert = this.#stallAlert(job, reason, { verdict: res.verdict, deferrals });
-    this.#appendJobLog(job, { type: "triage_alert", summary: this.#isZh() ? `守门员拉响警报: ${alert.reason}` : `Gatekeeper alert: ${alert.reason}` });
+    this.#appendJobLog(job, {
+      type: "triage_alert", kind: "triage_alert", status: "done",
+      summary: this.#isZh() ? `守门员拉响警报: ${alert.reason}` : `Gatekeeper alert: ${alert.reason}`,
+      detail: res.summary || alert.reason,
+    });
     this.#writeStatusSnapshot(job, { force: true });
   }
 
@@ -1331,6 +1303,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
     forceNew = false,
     modelId: requestedModelId,
     conversationId: requestedConversationId,
+    resumeJobId,
     onHeartbeat,
   }) {
     const waitSec = this.#effectiveWaitSec(requestedWaitSec);
@@ -1339,21 +1312,34 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
     if (gate.blocked) return { blocked: true, text: gate.message };
     this.#pruneFinishedJobs();
 
+    const checkpoint = resumeJobId ? this.#readHandoffJob(resumeJobId) : null;
+    if (resumeJobId && (!this.#canResumeHandoff(checkpoint) || forceNew || checkpoint.role !== role ||
+      (requestedConversationId && checkpoint.conversationId && checkpoint.conversationId !== sanitizeConversationId(requestedConversationId)) ||
+      (requestedSessionId && checkpoint.sessionId !== requestedSessionId) ||
+      (cwd && !this.#matchesHandoffCwd(checkpoint, cwd)))) {
+      return { blocked: true, status: "unsafe_resume", text: `Job ${resumeJobId} has no matching restart checkpoint. Preserve the original job, workspace, role, and session.` };
+    }
     const effectiveSandbox =
       role === "oracle"
         ? "read-only"
-        : sandbox === "danger-full-access" && this.store.settings.allowHephaestusFullAccess
+        : (checkpoint?.sandbox || sandbox) === "danger-full-access" && this.store.settings.allowHephaestusFullAccess
         ? "danger-full-access"
         : "workspace-write";
 
-    const workDir = path.resolve(cwd || process.cwd());
+    const workDir = path.resolve(checkpoint?.cwd || cwd || process.cwd());
+    if (checkpoint && !fs.existsSync(workDir)) {
+      return { blocked: true, status: "unsafe_resume", text: `Original workspace has been removed: ${workDir}` };
+    }
     const isWriter = role === "hephaestus";
-    const cleanSlot = isWriter ? "default" : (slot || "default").trim() || "default";
+    const cleanSlot = isWriter ? "default" : (checkpoint?.slot || slot || "default").trim() || "default";
     const cleanRequestedSid =
-      !forceNew && typeof requestedSessionId === "string" ? requestedSessionId.trim() : "";
+      checkpoint?.sessionId || (!forceNew && typeof requestedSessionId === "string" ? requestedSessionId.trim() : "");
     const explicitTitle = String(title || "").replace(/\s+/g, " ").trim().slice(0, 60);
     const sessionTitle = deriveSessionTitle(title, prompt);
-    const requestedExisting = cleanRequestedSid ? this.store.getSessionById(cleanRequestedSid) : null;
+    const requestedExisting = cleanRequestedSid ? this.store.getSessionById(cleanRequestedSid) || checkpoint : null;
+    if (requestedExisting?.cwd && normalizeWorkspaceKey(requestedExisting.cwd) !== normalizeWorkspaceKey(workDir)) {
+      return { blocked: true, status: "unsafe_resume", text: `Session ${cleanRequestedSid} belongs to ${requestedExisting.cwd}. Use its original workspace.` };
+    }
 
     const gitRepo = isWriter && this.store.settings.allowWorktreeParallelWrite === true
       ? detectGitRepo(workDir)
@@ -1371,8 +1357,11 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
           text: `Concurrency cap reached (${running.length}/${this.store.settings.maxConcurrency} running: ${running.map((j) => `${j.jobId}:${j.role}`).join(", ")}). Poll or finish an existing job, or raise maxConcurrency in A.stand settings.`,
         };
       }
+      if (cleanRequestedSid && running.some((j) => j.sessionId === cleanRequestedSid || j.requestedSessionId === cleanRequestedSid)) {
+        return { blocked: true, status: "session_busy", text: `Session ${cleanRequestedSid} already has an active job.` };
+      }
       const busyJob = isWriter && busyWriter();
-      if (busyJob && !gitRepo?.isGit) {
+      if (busyJob && (cleanRequestedSid || !gitRepo?.isGit)) {
         return {
           blocked: true,
           text: `Hephaestus is already writing in ${workDir} (job ${busyJob}). Poll/wait for that job first to avoid concurrent write conflicts.`,
@@ -1393,7 +1382,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       return { blocked: true, status: "invalid_model_choice", text: selection.error };
     }
     const queue = selection.models;
-    const conversationId = sanitizeConversationId(requestedConversationId);
+    const conversationId = checkpoint?.conversationId || sanitizeConversationId(requestedConversationId);
 
     await this.#syncCodexQuotaAndCooldowns(queue);
 
@@ -1433,7 +1422,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
     }
 
     // If primary is cooling down and autoFallbackOnLimit is OFF, pause and ask user before switching
-    if (skippedCooldowns.length > 0 && !this.store.settings.autoFallbackOnLimit) {
+    if (skippedCooldowns.some(({ model }) => model.id === queue[0].id) && !this.store.settings.autoFallbackOnLimit) {
       const primary = skippedCooldowns[0];
       const next = available[0];
       return {
@@ -1452,7 +1441,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       `[${new Date().toISOString()}] Job ${jobId} started (${role}:${cleanSlot}, cwd=${workDir})\n`,
       "utf8"
     );
-    const wt = gitRepo?.isGit && (worktree === true || busyWriter())
+    const wt = !cleanRequestedSid && gitRepo?.isGit && (worktree === true || busyWriter())
       ? createJobWorktree({ ...gitRepo, dataDir: this.store.dataDir, jobId })
       : null;
     const effectiveCwd = wt?.effectiveCwd || workDir;
@@ -1469,7 +1458,10 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       promptPreview: String(prompt || "").trim().slice(0, 4000),
       taskSummary: String(prompt || "").replace(/\s+/g, " ").trim().slice(0, 1200),
       cwd: effectiveCwd,
-      ...(wt && { worktree: wt }),
+      originalCwd: checkpoint?.originalCwd || workDir,
+      sandbox: effectiveSandbox,
+      requestedSessionId: cleanRequestedSid,
+      ...(wt || checkpoint?.worktree ? { worktree: wt || checkpoint.worktree } : {}),
       ...(conversationId && { conversationId }),
       selectionMode: selection.mode,
       engine: available[0].engine,
@@ -1489,6 +1481,9 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       error: null,
       waiters: [],
     };
+    if (checkpoint) {
+      writeAtomicJson(this.#statusPath(checkpoint.jobId), { ...checkpoint, resumedBy: jobId });
+    }
     this.jobs.set(jobId, job);
     this.#writeStatusSnapshot(job, { force: true });
     if (isWriter && !wt) {
@@ -1517,7 +1512,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
           job.modelId = model.id;
           job.modelDisplayName = model.name;
 
-          const existing = cleanRequestedSid ? this.store.getSessionById(cleanRequestedSid) : null;
+          const existing = requestedExisting;
           // A resumed engine session can keep its original working directory.
           const canReuse = Boolean(
             !wt && cleanRequestedSid &&
@@ -1541,6 +1536,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
               sandbox: effectiveSandbox,
               prompt: worktreeHint + applyTurn1CustomRules(turnPrompt, roleCfg.customRules, !canReuse),
               existingSessionId,
+              requireResume: Boolean(checkpoint),
               onSessionReady: (sid) => this.#onSessionReady(job, sid),
               onActivity: attachTurnSigToJob(job, (ev) => this.#recordActivity(job, ev)),
             });
@@ -1582,6 +1578,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
               resumedFromDisk: res.resumedFromDisk,
               elapsedMs: res.elapsedMs,
               cacheReported: res.usage.cacheReported,
+              ...(res.usageProvenance?.scope && { usageScope: res.usageProvenance.scope }),
               totalInputTokens: res.usage.totalInputTokens,
               cachedInputTokens: res.usage.cachedInputTokens,
               cacheWriteTokens: res.usage.cacheWriteTokens,
@@ -1605,6 +1602,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
               resumedFromDisk: res.resumedFromDisk,
               fallbackNote: fallbackPrefixNote,
               usage: res.usage,
+              usageScope: res.usageProvenance?.scope,
               elapsedMs: res.elapsedMs,
             });
             const compactHint =
@@ -1716,7 +1714,12 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
     const deadline = Date.now() + MAX_BLOCKING_WAIT_MS;
     const job = this.jobs.get(jobId);
     if (!job) {
-      return { status: "not_found", text: `Job ${jobId} not found.` };
+      const snap = this.#readHandoffJob(jobId);
+      if (snap?.status === "completed") {
+        const text = this.#readFinalText(jobId);
+        if (text) return { status: "completed", jobId, sessionId: snap.sessionId, text: this.#trimOutputIfHuge(text, jobId) };
+      }
+      return { status: "not_found", text: `Job ${jobId} has no available result.` };
     }
     if (job.status === "completed") return job.result;
     if (job.status === "failed") {
@@ -1762,7 +1765,9 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
 
     const deadline = Date.now() + MAX_BLOCKING_WAIT_MS;
     const explicitMs = waitSec && waitSec > 0 ? Math.min(waitSec * 1000, MAX_BLOCKING_WAIT_MS) : MAX_BLOCKING_WAIT_MS;
-    const silentMs = this.store.settings.silentCheckinMin * 60_000;
+    const longRunMs = this.store.settings.longRunCheckinMin * 60_000;
+    const due = (job, now) => job.stallAlert?.at > (job.lastCheckinAt || 0) ? "silent_checkin"
+      : longRunMs && now - (job.lastLongRunAt || job.startedAt) >= longRunMs ? "long_run_checkin" : "";
     const runningSet = () =>
       ids
         .map((id) => this.jobs.get(id))
@@ -1789,7 +1794,6 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
           if (runningSet().length === 0) done();
         };
         for (const job of runningSet()) {
-          job.lastCheckinAt = Date.now();
           const fn = () => checkDone();
           job.waiters.push(fn);
           attached.push({ job, fn });
@@ -1809,7 +1813,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
             } catch {}
           }
           const now = Date.now();
-          if (active.some((j) => now - j.lastActivityAt >= silentMs && now - j.lastCheckinAt >= silentMs)) {
+          if (active.some((job) => due(job, now))) {
             done();
           }
         }, 3000);
@@ -1823,7 +1827,9 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
     for (const id of ids) {
       const job = this.jobs.get(id);
       if (!job) {
-        sections.push(`=== Job ${id} (not_found) ===\nJob ${id} not found.`);
+        const result = await this.poll(id, { waitSec: 0 });
+        if (result.status === "completed") allFailed = false;
+        sections.push(`=== Job ${id} (${result.status}) ===\n${result.text}`);
         continue;
       }
       if (job.status === "completed") {
@@ -1838,7 +1844,11 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       } else {
         anyRunning = true;
         allFailed = false;
-        const report = await this.#buildCheckinReport(job, waitSec === 0 ? "manual_inspect" : "running_checkin", detail);
+        const now = Date.now();
+        const reason = waitSec === 0 ? "manual_inspect" : due(job, now) || "running_checkin";
+        if (reason === "long_run_checkin") job.lastLongRunAt = now;
+        job.lastCheckinAt = now;
+        const report = await this.#buildCheckinReport(job, reason, detail);
         sections.push(`=== Job ${id} (${job.role}:${job.slot} · running) ===\n${report.text}`);
       }
     }
@@ -1859,9 +1869,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
     const longRunMs = longRunMin > 0 ? longRunMin * 60_000 : Number.POSITIVE_INFINITY;
     const remainingMs = Math.max(0, deadline - Date.now());
     const explicitMs = explicitWaitSec ? Math.max(1, explicitWaitSec) * 1000 : Infinity;
-    const inspectorActive = this.#isGatekeeperArmed();
-    const inspectorBudget = detail !== "full" && inspectorActive ? INSPECTOR_TIMEOUT_MS : 0;
-    const checkinMs = Math.min(explicitMs, Math.max(0, remainingMs - inspectorBudget));
+    const checkinMs = Math.min(explicitMs, remainingMs);
     let heartbeatTick = 0;
 
     return new Promise((resolve) => {
@@ -1888,7 +1896,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       };
       const deadlineTimer = setTimeout(async () => {
         job.lastCheckinAt = Date.now();
-        finish(await this.#buildCheckinReport(job, "running_checkin", detail, false));
+        finish(await this.#buildCheckinReport(job, "running_checkin", detail));
       }, remainingMs);
       if (checkinMs < remainingMs) {
         checkinTimer = setTimeout(() => checkIn("running_checkin"), checkinMs);
@@ -2334,41 +2342,46 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
 
   // ---- Durable conditional handoff: disk-only discovery, no quota probes, no live model calls. ----
 
-  // Bounded, disk-only scan of recent (<= 24h) job snapshots. Never guesses across threads.
-  #scanRecentJobs({ role = "", cwd = "", conversationId = "", limit = RECOVER_SCAN_LIMIT } = {}) {
-    const jobsDir = path.join(this.store.dataDir, "jobs");
+  #readHandoffJob(jobId) {
+    if (!/^[a-zA-Z0-9_-]{3,48}$/.test(String(jobId || ""))) return null;
+    let snap;
+    try { snap = JSON.parse(fs.readFileSync(this.#statusPath(jobId), "utf8")); } catch { return null; }
+    if (!snap || snap.jobId !== jobId) return null;
     const cutoff = Date.now() - RECOVER_WINDOW_MS;
-    const cwdKey = cwd ? normalizeWorkspaceKey(cwd) : "";
-    const wantedConv = sanitizeConversationId(conversationId);
-    let names = [];
-    try {
-      names = fs.readdirSync(jobsDir).filter((n) => n.endsWith(".status.json"));
-    } catch {
-      return [];
-    }
-    const rows = [];
-    for (const name of names.slice(0, limit)) {
-      const filePath = path.join(jobsDir, name);
-      let snap;
+    // For an orphan, use the time it actually stopped rather than when startup rewrote it.
+    const recentAt = Number(snap.finishedAt || snap.updatedAt);
+    if (!recentAt || recentAt < cutoff) return null;
+    return snap;
+  }
+
+  #matchesHandoffCwd(snap, cwd) {
+    const key = normalizeWorkspaceKey(cwd);
+    return [snap.cwd, snap.originalCwd, snap.worktree?.repoRoot].some((value) =>
+      value && normalizeWorkspaceKey(value) === key);
+  }
+
+  #canResumeHandoff(snap) {
+    return snap?.status === "interrupted" && Boolean(snap.hostInterrupted || snap.error === CRASH_RECOVERY_ERROR) &&
+      Boolean(snap.sessionId && snap.modelId && snap.cwd && snap.engine) && !snap.resumedBy;
+  }
+
+  // Recovery is only called on demand. Avoid reading out-of-window status files.
+  #scanRecentJobs({ cwd, conversationId }) {
+    const dir = path.join(this.store.dataDir, "jobs");
+    const cutoff = Date.now() - RECOVER_WINDOW_MS;
+    let names;
+    try { names = fs.readdirSync(dir); } catch { return []; }
+    const recent = [];
+    for (const name of names) {
+      if (!name.endsWith(".status.json")) continue;
       try {
-        const st = fs.statSync(filePath);
-        if (st.mtimeMs < cutoff) continue;
-        snap = JSON.parse(fs.readFileSync(filePath, "utf8"));
-      } catch {
-        continue;
-      }
-      if (!snap || !/^[a-zA-Z0-9_-]{3,48}$/.test(String(snap.jobId || ""))) continue;
-      const live = this.jobs.get(snap.jobId);
-      const merged = live ? { ...snap, ...this.#buildStatusSnapshot(live, live.status) } : snap;
-      if (role && merged.role !== role) continue;
-      if (cwdKey && normalizeWorkspaceKey(merged.cwd || "") !== cwdKey) continue;
-      if (wantedConv && String(merged.conversationId || "") !== wantedConv) continue;
-      const updatedAt = Number(merged.updatedAt) || Number(merged.finishedAt) || 0;
-      if (!updatedAt || updatedAt < cutoff) continue;
-      rows.push({ ...merged, updatedAt });
+        const mtime = fs.statSync(path.join(dir, name)).mtimeMs;
+        if (mtime >= cutoff) recent.push({ id: name.slice(0, -12), mtime });
+      } catch {}
     }
-    rows.sort((a, b) => b.updatedAt - a.updatedAt);
-    return rows;
+    return recent.sort((a, b) => b.mtime - a.mtime).slice(0, RECOVER_SCAN_LIMIT)
+      .map(({ id }) => this.#readHandoffJob(id))
+      .filter((snap) => snap && snap.conversationId === conversationId && this.#matchesHandoffCwd(snap, cwd));
   }
 
   #recoverPromptFor(snap) {
@@ -2385,11 +2398,14 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       `原始 cwd=${cwd} · sessionId=${snap.sessionId || "(none)"} · engine=${snap.engine || "?"} · modelId=${snap.modelId || "(unknown)"}${worktree}`,
       action ? `上次有效动作: [${action.kind}] ${sanitizeHandoffText(action.text, RECOVER_ACTION_TEXT_MAX)}` : "上次有效动作: (none)",
       task ? `任务检查点: ${task}` : "任务检查点: (none persisted)",
-      `Resume contract: re-call agent_relay_ask with the ORIGINAL cwd (and worktree above if present), sessionId="${snap.sessionId || ""}", modelId="${snap.modelId || ""}" only when selectionMode=smart, plus the delta prompt. First inspect the workspace diff; never restart an explicitly stopped job.`,
+      this.#canResumeHandoff(snap)
+        ? `Continue through agent_relay_ask(resumeJobId="${snap.jobId}", role="${snap.role}", cwd=${JSON.stringify(cwd)}, prompt="Inspect the existing edits and continue the original task").`
+        : snap.status === "completed" ? `Read the result via agent_relay_poll(jobId="${snap.jobId}") or its saved output, then acknowledge receipt.` : "No automatic restart checkpoint for this state.",
     ].join("\n");
   }
 
   #resultAvailable(snap, ack) {
+    if (snap.status !== "completed") return false;
     if (!ack) return true;
     const ackedAt = Date.parse(ack.createdAt || "") || 0;
     const finishedAt = Number(snap.finishedAt) || Number(snap.updatedAt) || 0;
@@ -2423,6 +2439,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       worktree: snap.worktree || null,
       resultAck: ack || null,
       resultUnread: this.#resultAvailable(snap, ack),
+      resumable: this.#canResumeHandoff(snap),
       userAccepted: Boolean(accepted),
     };
   }
@@ -2436,59 +2453,16 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
     const scopedCwd = cwd ? path.resolve(cwd) : "";
     const wantedConv = sanitizeConversationId(conversationId);
 
-    if (explicitIds.length === 0 && !scopedCwd && !wantedConv) {
-      return {
-        ok: false,
-        status: "scope_required",
-        text: "recover needs exact jobId/jobIds, or a tightly scoped cwd (optionally with conversationId). Refusing to borrow another thread's jobs by guessing.",
-      };
+    if (!explicitIds.length && (!scopedCwd || !wantedConv)) {
+      return { ok: false, status: "scope_required", text: "Recovery needs exact job IDs, or the original cwd and conversationId." };
     }
-
-    let matches;
-    if (explicitIds.length > 0) {
-      const byId = new Map(this.#scanRecentJobs({ limit: RECOVER_SCAN_LIMIT }).map((s) => [s.jobId, s]));
-      matches = explicitIds.map((id) => byId.get(id)).filter(Boolean);
-      const missing = explicitIds.filter((id) => !byId.has(id));
-      if (missing.length) {
-        return {
-          ok: false,
-          status: "not_found",
-          text: `No durable job metadata found for: ${missing.join(", ")} (disk window ~24h). Do not guess; ask the user for the exact jobId or sessionId.`,
-          missing,
-        };
-      }
-    } else {
-      // Scope keys are the exact cwd + optional conversationId (role is metadata, never a guess key).
-      matches = this.#scanRecentJobs({ cwd: scopedCwd, conversationId: wantedConv });
-      if (matches.length === 0) {
-        return {
-          ok: false,
-          status: "not_found",
-          text: `No durable jobs matched cwd=${scopedCwd}${wantedConv ? ` conversationId=${wantedConv}` : ""} within ~24h. Do not borrow an unrelated thread's jobs.`,
-        };
-      }
-      const owners = new Set(matches.map((s) => normalizeWorkspaceKey(s.cwd || "")));
-      if (owners.size > 1) {
-        return {
-          ok: false,
-          status: "ambiguous_ownership",
-          text: `Multiple workspaces (${[...owners].join(", ")}) matched; refusing to guess. Pass exact jobIds or narrow cwd/conversationId.`,
-          candidates: matches.slice(0, 10).map((s) => this.#summarizeRecoverRow(s)),
-        };
-      }
-      if (matches.length > 1 && !wantedConv) {
-        // Same workspace: still ambiguous only when several *unread* results compete for one thread.
-        const unread = matches.filter((s) => this.#resultAvailable(s, this.store.getReceipt(s.jobId, "result_ack")));
-        if (unread.length > 1) {
-          return {
-            ok: false,
-            status: "ambiguous_ownership",
-            text: `${unread.length} jobs in ${scopedCwd} have unread results (${unread.map((s) => s.jobId).join(", ")}). Pass exact jobIds (or conversationId) so a thread never consumes another thread's results.`,
-            candidates: matches.slice(0, 10).map((s) => this.#summarizeRecoverRow(s)),
-          };
-        }
-      }
-    }
+    let matches = explicitIds.length
+      ? explicitIds.map((id) => this.#readHandoffJob(id)).filter(Boolean)
+      : this.#scanRecentJobs({ cwd: scopedCwd, conversationId: wantedConv }).filter((snap) =>
+        this.#canResumeHandoff(snap) || this.#resultAvailable(snap, this.store.getReceipt(snap.jobId, "result_ack")) || snap.status === "running");
+    matches = matches.filter((snap) => (!scopedCwd || this.#matchesHandoffCwd(snap, scopedCwd)) &&
+      (!wantedConv || wantedConv === snap.conversationId) && (!role || snap.role === role));
+    if (!matches.length) return { ok: false, status: "not_found", text: "No outstanding A.stand work matched this scope in the last 24 hours." };
 
     const rows = matches.map((s) => this.#summarizeRecoverRow(s));
     const lines = rows.map((r) => {
@@ -2496,7 +2470,8 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       const unread = r.resultUnread ? " · RESULT_UNREAD" : " · result_ack_recorded";
       const accepted = r.userAccepted ? " · user_accepted" : "";
       const wt = r.worktree ? ` · worktree=${r.worktree.worktreeRoot} (${r.worktree.branch})` : "";
-      return `=== ${r.jobId} (${r.role}:${r.slot} · ${r.status}) ===\n${this.#recoverPromptFor(r)}${sid}${wt}${unread}${accepted}`;
+      const snap = matches.find((s) => s.jobId === r.jobId);
+      return `=== ${r.jobId} (${r.role}:${r.slot} · ${r.status}) ===\n${this.#recoverPromptFor(snap)}${sid}${wt}${r.status === "completed" ? unread : ""}${accepted}`;
     });
     return {
       ok: true,
@@ -2523,7 +2498,8 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
     if (ids.length === 0) {
       return { ok: false, text: "ack requires an explicit jobId or jobIds." };
     }
-    const known = new Map(this.#scanRecentJobs({ limit: RECOVER_SCAN_LIMIT }).map((s) => [s.jobId, s]));
+    const known = new Map(ids.map((id) => [id, this.#readHandoffJob(id)]).filter(([, snap]) =>
+      snap?.status === "completed" && fs.existsSync(this.#outputPath(snap.jobId))));
     const unknown = ids.filter((id) => !known.has(id));
     if (unknown.length) {
       return { ok: false, text: `Cannot ACK unknown job(s): ${unknown.join(", ")}. ACK only jobs you actually recovered.` };
@@ -2561,7 +2537,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
   async sessionAction({
     action,
     cwd,
-    role = "oracle",
+    role,
     slot = "default",
     sessionId,
     jobId,
@@ -2628,7 +2604,8 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       return this.stopJob(jobId);
     }
 
-    // For steer / interrupt, check live running jobs first so Turn 1 sessions can be steered before persisting
+    role ||= "oracle";
+    // Check live jobs first so Turn 1 sessions can be steered before persisting.
     if (action === "steer" || action === "interrupt") {
       const runningJob =
         (jobId ? this.jobs.get(jobId) : null) ||

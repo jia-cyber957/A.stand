@@ -121,7 +121,7 @@ export function isPromptProgressUpdate(update) {
 /**
  * Sliding idle + absolute deadline for one `session/prompt` request.
  * The idle window is renewed only by `touch()` (real progress); the absolute cap never moves.
- * Timers are unref'd so a pending deadline can never keep the host process alive.
+ * The deadline is cleared at turn exit.
  */
 export class PromptDeadline {
   constructor({ idleMs = DEFAULT_PROMPT_IDLE_TIMEOUT_MS, absoluteMs = DEFAULT_PROMPT_ABSOLUTE_TIMEOUT_MS, now = Date.now, onExpire } = {}) {
@@ -149,7 +149,6 @@ export class PromptDeadline {
   touch() {
     if (!this.armed || this.expiredReason) return;
     this.lastProgressAt = this.now();
-    this.#schedule();
   }
 
   stop() {
@@ -900,15 +899,6 @@ export class AcpEngine {
     this.modelsPromise = null;
   }
 
-  #isSessionBusy(sessionId) {
-    return Boolean(sessionId && this.busySessions.has(sessionId));
-  }
-
-  /**
-   * Acquire the per-session busy guard.
-   * Returns `{ acquired: false, guard }` when another turn already owns the session, so callers
-   * can wait for the original RPC to settle instead of racing it.
-   */
   #acquireSessionGuard(sessionId, state) {
     const existing = this.busySessions.get(sessionId);
     if (existing) return { acquired: false, guard: existing };
@@ -1464,6 +1454,7 @@ export class AcpEngine {
     sandbox,
     prompt,
     existingSessionId,
+    requireResume = false,
     onActivity,
     onSessionReady,
     idleTimeoutMs,
@@ -1485,62 +1476,67 @@ export class AcpEngine {
     let reused = false;
     let resumedFromDisk = false;
 
-    if (sessionId && this.#isSessionBusy(sessionId)) {
-      // Never queue a second prompt behind an unacknowledged turn: dsh answers the retry with
-      // `invalid params (a prompt is already in flight)`, which used to look like a protocol fault.
-      throw new AcpSessionBusyError(sessionId, "a prompt is already in flight for this session");
-    }
-
-    if (sessionId && state.loadedSessions.has(sessionId)) {
-      reused = true;
-    } else if (sessionId) {
-      try {
-        await state.request("session/resume", { sessionId, cwd, mcpServers: [] });
-        state.loadedSessions.add(sessionId);
+    const reserve = (id) => {
+      const { acquired, guard } = this.#acquireSessionGuard(id, state);
+      if (!acquired) throw new AcpSessionBusyError(id, "another turn is still active for this session");
+      return guard;
+    };
+    let guard = sessionId ? reserve(sessionId) : null;
+    try {
+      if (sessionId && state.loadedSessions.has(sessionId)) {
         reused = true;
-        resumedFromDisk = true;
-      } catch (err) {
-        // A busy/indeterminate upstream session must NOT silently degrade into a brand-new
-        // session: that loses the delta the caller asked to resume.
-        if (isIndeterminateResumeFailure(err)) {
-          throw new AcpResumeIndeterminateError(sessionId, err);
+      } else if (sessionId) {
+        try {
+          await state.request("session/resume", { sessionId, cwd, mcpServers: [] });
+          state.loadedSessions.add(sessionId);
+          reused = true;
+          resumedFromDisk = true;
+        } catch (err) {
+          if (isIndeterminateResumeFailure(err) || requireResume) {
+            throw new AcpResumeIndeterminateError(sessionId, err);
+          }
+          this.#releaseSessionGuard(guard);
+          guard = null;
+          sessionId = "";
         }
-        sessionId = "";
       }
-    }
 
-    if (!sessionId) {
-      const created = await state.request("session/new", { cwd, mcpServers: [] });
-      sessionId = created?.sessionId;
       if (!sessionId) {
-        throw new UpstreamProtocolError("deepseek-harness", state.agentVersion, "session/new", "missing sessionId");
+        const created = await state.request("session/new", { cwd, mcpServers: [] });
+        sessionId = created?.sessionId;
+        if (!sessionId) {
+          throw new UpstreamProtocolError("deepseek-harness", state.agentVersion, "session/new", "missing sessionId");
+        }
+        guard = reserve(sessionId);
+        state.loadedSessions.add(sessionId);
+        if (model?.source === "dsh" && model?.providerId && model?.modelName) {
+          try {
+            await state.request("session/set_config_option", {
+              sessionId,
+              configId: "model",
+              value: JSON.stringify([model.providerId, model.modelName]),
+            });
+          } catch {}
+        }
       }
-      state.loadedSessions.add(sessionId);
-      if (model?.source === "dsh" && model?.providerId && model?.modelName) {
+      // Keep the configured fallback for providers with no medium effort option.
+      const effortCandidates = effectiveEffort === "medium" ? ["medium", "high", "low"] : [effectiveEffort];
+      for (const candidate of effortCandidates) {
         try {
           await state.request("session/set_config_option", {
             sessionId,
-            configId: "model",
-            value: JSON.stringify([model.providerId, model.modelName]),
+            configId: "reasoning_effort",
+            value: candidate,
           });
+          break;
         } catch {}
       }
+      state.sessionRoles.set(sessionId, role);
+      onSessionReady?.(sessionId);
+    } catch (err) {
+      if (guard) this.#releaseSessionGuard(guard);
+      throw err;
     }
-    // Apply selected reasoning effort; if a native dsh route rejects "medium" (e.g. only offers off/low/high/max),
-    // gracefully fall back to the nearest supported level so thinking still reflects the user's intent.
-    const effortCandidates = effectiveEffort === "medium" ? ["medium", "high", "low"] : [effectiveEffort];
-    for (const candidate of effortCandidates) {
-      try {
-        await state.request("session/set_config_option", {
-          sessionId,
-          configId: "reasoning_effort",
-          value: candidate,
-        });
-        break;
-      } catch {}
-    }
-    state.sessionRoles.set(sessionId, role);
-    onSessionReady?.(sessionId);
 
     const messages = new Map();
     const actions = [];
@@ -1768,16 +1764,12 @@ export class AcpEngine {
     const projectionBaselineRecord = this.#readProjectionCacheRecord(state.dshHome, sessionId);
     const projectionBaseline = captureAcpProjectionBaseline(projectionBaselineRecord?.snapshot);
 
-    let guard = null;
+    let rpcSettled = true;
+    let handedOff = false;
     let drainTimer = null;
     try {
       const prevTurnEnds = this.#countDshTurnEnds(state.dshHome, sessionId);
       const fullPrompt = reused ? prompt : `[Role Instructions]\n${spec.developerInstructions}\n\n[Task]\n${prompt}`;
-      const acquired = this.#acquireSessionGuard(sessionId, state);
-      if (!acquired.acquired) {
-        throw new AcpSessionBusyError(sessionId, "another turn is still awaiting its session/prompt reply");
-      }
-      guard = acquired.guard;
       const drainMs = Math.max(100, Number(drainTimeoutMs) || DEFAULT_PROMPT_DRAIN_TIMEOUT_MS);
       let deadlineReason = "";
       const drainExpired = deferred();
@@ -1810,12 +1802,6 @@ export class AcpEngine {
         this.#sendCancel(state, sessionId, "manual");
         armDrain();
       };
-      // A cancel that arrived before the prompt was dispatched (e.g. session-ready interrupt)
-      // must not be lost: apply it right after dispatch.
-      if (state.earlyCancelSessions?.delete(sessionId)) {
-        guard.cancel();
-      }
-
       const promptRpc = state.request(
         "session/prompt",
         {
@@ -1824,12 +1810,13 @@ export class AcpEngine {
         },
         0
       );
-      // The guard is held exactly until the ORIGINAL RPC settles (reply or client death), so an
-      // unacknowledged cancel can never let a second prompt overlap the still-running turn.
-      promptRpc.then(
-        () => this.#releaseSessionGuard(guard),
-        () => this.#releaseSessionGuard(guard)
-      );
+      rpcSettled = false;
+      const settle = () => {
+        rpcSettled = true;
+        if (handedOff) this.#releaseSessionGuard(guard);
+      };
+      promptRpc.then(settle, settle);
+      if (guard.cancelRequested || state.earlyCancelSessions?.delete(sessionId)) guard.cancel();
       const outcome = await Promise.race([
         promptRpc.then((r) => ({ kind: "reply", result: r }), (e) => ({ kind: "error", error: e })),
         drainExpired.promise,
@@ -1896,8 +1883,8 @@ export class AcpEngine {
         rawUsage = { ...(rawUsage || {}), ...(res.usage || res._meta.usage) };
       }
       let diskSnap = null;
-      const hasRpcCache =
-        rawUsage?.cachedInputTokens !== undefined || rawUsage?.cached_input_tokens !== undefined;
+      const usageEngine = model?.providerId === "deepseek" ? "deepseek" : "openai";
+      const hasRpcCache = normalizeUsage(usageEngine, rawUsage).cacheReported;
       if (!hasRpcCache || !res?.stopReason) {
         diskSnap = await this.#readDshSessionCacheUsage(state.dshHome, sessionId, prevTurnEnds);
         if (!hasRpcCache && diskSnap?.usage) {
@@ -2002,10 +1989,8 @@ export class AcpEngine {
       finishMessage();
       // Close the trailing reasoning block with its exact duration (also on interrupt/error).
       finalizeThought();
-      // The guard is released by the prompt RPC settlement hook (reply, error, or client exit).
-      // When a cancel was never acknowledged the guard intentionally stays held so a retry
-      // cannot overlap the still-running turn; `interruptTurn` can cancel it again.
-      void guard;
+      if (rpcSettled) this.#releaseSessionGuard(guard);
+      else handedOff = true;
     }
   }
   async interruptTurn(sessionId, model) {
@@ -2017,8 +2002,9 @@ export class AcpEngine {
     // Manual cancel goes through the same drain path as a timeout so the busy guard is kept
     // until the original session/prompt reply lands.
     const guard = this.busySessions.get(sessionId);
-    if (guard && typeof guard.cancel === "function") {
-      guard.cancel();
+    if (guard) {
+      if (typeof guard.cancel === "function") guard.cancel();
+      else guard.cancelRequested = true;
       return;
     }
     if (!state) return;

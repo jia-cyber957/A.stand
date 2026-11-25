@@ -27,15 +27,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-
-const SELF_PATH = (() => {
-  try {
-    return fileURLToPath(import.meta.url);
-  } catch {
-    return "wait-job.mjs";
-  }
-})();
 
 const POLL_MS = 1500;
 const DEFAULT_STALL_SEC = 180;
@@ -230,35 +221,24 @@ function makeRearmToken() {
 
 // Atomic claim so two doorbells watching the same job never emit duplicate long-run check-ins.
 function claimLongRunCheckin(dataDir, jobId, anchorAt) {
-  const target = path.join(dataDir, "jobs", `${jobId}.longrun.claim`);
-  const payload = JSON.stringify({ anchorAt, pid: process.pid, at: Date.now() });
+  const target = path.join(dataDir, "jobs", `${jobId}.${anchorAt}.longrun.claim`);
   try {
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(target, payload, { flag: "wx" });
+    fs.writeFileSync(target, String(process.pid), { flag: "wx" });
     return true;
   } catch (err) {
-    if (err?.code !== "EEXIST") return true; // fail open: never suppress a real check-in on IO quirks
-    const prev = readJson(target);
-    if (Number(prev?.anchorAt) === Number(anchorAt)) return false; // same interval already notified
-    try {
-      fs.writeFileSync(target, payload);
-      return true;
-    } catch {
-      return true;
-    }
+    return err?.code !== "EEXIST";
   }
 }
 
-function rearmCommand(opts, jobId, longRunMin) {
-  const stallSec = Math.round(opts.stallSec);
-  // Absolute script path so the command works from any cwd and from the installed dist bundle.
+function rearmCommand(opts) {
   return [
-    `node "${SELF_PATH}"`,
+    `node "${path.resolve(process.argv[1])}"`,
     `--data-dir "${opts.dataDir}"`,
-    `--stall-sec ${stallSec}`,
-    longRunMin > 0 ? `--long-run-min ${longRunMin}` : "",
+    `--stall-sec ${Math.round(opts.stallSec)}`,
+    opts.longRunMin > 0 ? `--long-run-min ${opts.longRunMin}` : "",
+    opts.timeoutSec > 0 ? `--timeout-sec ${opts.timeoutSec}` : "",
     "--rearm",
-    jobId,
+    ...opts.jobIds,
   ].filter(Boolean).join(" ");
 }
 
@@ -357,9 +337,9 @@ function main() {
         return;
       }
 
-      if (snap.stallAlert?.reason) {
+      if (snap.stallAlert?.reason && (!opts.rearm || Number(snap.stallAlert.at) >= startedAt || Date.now() - startedAt >= stallMs)) {
         process.stdout.write(
-          `[STALL_ALERT] ${jobId} ${labels.stall}: ${oneLine(snap.stallAlert.reason, 160)} · source=${oneLine(snap.stallAlert.source || "silence_timeout", 24)} · ${actionLine(snap, labels)} · ${labels.log}=${oneLine(snap.logPath || "(none)", TEXT_MAX)}\n`
+          `[STALL_ALERT] ${jobId} ${labels.stall}: ${oneLine(snap.stallAlert.reason, 160)} · source=${oneLine(snap.stallAlert.source || "silence_timeout", 24)} · ${actionLine(snap, labels)} · ${labels.log}=${oneLine(snap.logPath || "(none)", TEXT_MAX)}\n  ${labels.rearmCmd}: ${rearmCommand(opts)}\n`
         );
         finish(2);
         return;
@@ -367,7 +347,7 @@ function main() {
 
       const lastActivity = normalizeTime(snap.lastActivityAt || snap.updatedAt);
       const silentMs = Date.now() - lastActivity;
-      if (silentMs > stallMs) {
+      if (!snap.managedSilence && Date.now() - Math.max(lastActivity, opts.rearm ? startedAt : 0) > stallMs) {
         process.stdout.write(
           `[STALL_ALERT] ${jobId} silent for ${Math.round(silentMs / 1000)}s · last=${oneLine(snap.lastSummary || "(none)", 120)} · log=${oneLine(snap.logPath || "(none)", TEXT_MAX)}\n`
         );
@@ -382,18 +362,16 @@ function main() {
         const { at, cp } = longRunAnchor(jobId, snap);
         const elapsedMs = Date.now() - at;
         if (elapsedMs >= longRunMs) {
-          // Exactly-once per interval. The claim file (keyed by the interval anchor) is the
-          // authoritative idempotency token: a concurrent waiter that lost the claim must NOT emit.
-          const claimed = claimLongRunCheckin(dataDir, jobId, at);
-          if (!claimed) {
-            blockers.push({ kind: "running", jobId, silentMs });
-            continue;
-          }
           const elapsedSec = Math.round((Date.now() - (Number(snap.startedAt) || Date.now())) / 1000);
           const silentSec = Math.round(silentMs / 1000);
           const now = Date.now();
           const token = makeRearmToken();
-          // Advance the durable anchor so a plain re-run waits a fresh interval.
+          // Advance the durable anchor so a plain re-run waits a fresh interval; the claim file
+          // makes concurrent waiters idempotent for the same interval (no duplicate check-ins).
+          if (!claimLongRunCheckin(dataDir, jobId, at)) {
+            blockers.push({ kind: "running", jobId, silentMs });
+            continue;
+          }
           const persisted = writeCheckpoint(dataDir, jobId, {
             ...(cp || {}),
             version: 1,
@@ -411,7 +389,7 @@ function main() {
             updatedAt: now,
             firstAt: cp?.firstAt || at,
           });
-          const cmd = rearmCommand(opts, jobId, opts.longRunMin);
+          const cmd = rearmCommand(opts);
           const checkpoint = checkpointPath(dataDir, jobId);
           const action = actionLine(snap, labels);
           process.stdout.write([

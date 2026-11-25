@@ -12,7 +12,7 @@ A.stand is a **zero-mutation broker** connecting the lead agent to persistent ex
 Before fanning out parallel tasks or modifying orchestration behavior, call `agent_relay_session(action="status")` to inspect the user's live configuration:
 - `limits.maxConcurrency` (default `3`, configurable `1–6`)
 - `limits.silentCheckinMin` (default `3m`) & `limits.longRunCheckinMin` (default `10m`)
-- `limits.autoFallbackOnLimit` & per-role priority `queue` + cooldowns / Codex 5h & 7d quotas
+- `limits.autoFallbackOnLimit`, per-role `queue` and `selectionMode`, model cooldowns, and reported Codex quota windows
 - `limits.allowWorktreeParallelWrite` (default `false`)
 - `limits.asyncBackgroundMode` (default `false`) and `limits.inspectorEnabled` (default `false`)
 - `limits.waitJobScript` — absolute path of the zero-token doorbell script
@@ -67,32 +67,33 @@ Doorbell (zero-token background wakeup): node "<distDir>/wait-job.mjs" --data-di
 
 **Steps for the Lead Agent**
 
-1. Call `agent_relay_ask` (or `agent_relay_review`) **without `waitSec`** and keep the returned `jobId` + doorbell line.
+1. Call `agent_relay_ask` (or `agent_relay_review`) **without `waitSec`** and keep the returned `jobId` and doorbell command. Include the host's actual `conversationId` when available so an outstanding job can be found in that conversation after a restart.
 2. Immediately launch that exact doorbell line as a **background daemon command** in your host shell (`IsDaemon: true`, `WaitMsBeforeAsync=500`, without `NotificationTimeoutSeconds` — it costs **0 tokens** and ~0% CPU, only statting `<dataDir>/jobs/<jobId>.status.json` every 1.5s, and still wakes you immediately on exit).
-3. End the turn with `⏳ 后台运行中... 请勿关闭 Antigravity` (the doorbell dies if the host exits).
+3. While you wait, you can continue independent work or leave the conversation available for the user. The doorbell process is bound to the host. If the host closes, the next session can recover persisted results or interrupted work.
 4. When the doorbell wakes you:
-   - **User is idle** -> read `<dataDir>/outputs/<jobId>.txt`, auto-verify (run the tests / `git diff`), and report the result.
-   - **User is actively chatting about topic B** -> answer B fully first, then append one line: `🔔 job <jobId> 已完成/失败（<title>），需要我现在复核吗？`
+   - **Completed** → read the result (including the saved output if referenced), acknowledge receipt, verify the work, and report the outcome. Polling and reading the output are lead-agent actions.
+   - **Check-in** → review the elapsed time, time since real activity, and latest useful step. Decide whether to wait, inspect further, steer where supported, or stop. When continuing to wait, run the returned rearm command to start the next interval. You may handle a routine check-in without sending the user a progress message.
 5. Explicit `waitSec > 0` still forces a blocking/check-in wait even in async mode; `agent_relay_poll(jobId=...)` remains the manual fallback.
 
-**Doorbell exit codes** (it always prints a concise 3-line summary per job, never the raw log):
+**Doorbell exit codes** (a brief receipt includes a log locator for deeper inspection):
 
 | Code | Meaning | Lead Agent action |
 | --- | --- | --- |
 | `0` | every watched job `completed` | verify + report |
 | `1` | at least one job `error` / `interrupted` | open the job detail, decide resume or take over |
 | `2` | a running job silent > `--stall-sec` (default 180s) | poll with `detail="full"`, then steer / interrupt |
-| `3` | the MCP process (`pid`) that owned the job exited | treat as crash; offer the resume prompt |
+| `3` | the MCP process that owned the job exited | recover when the conversation resumes |
+| `5` | `long_run_checkin` during continuing execution | review progress and rearm when waiting again |
 
 Optional flags: `--stall-sec 180`, `--timeout-sec 3600`. It can watch many jobs at once: `node wait-job.mjs --data-dir "<dataDir>" job_a job_b`.
 
-**Crash recovery**: `<dataDir>/jobs/<jobId>.status.json` is written atomically on start, on `sessionId` arrival, every ~2.5s of activity and immediately on completion. On the next startup any snapshot still `running` under a dead pid is rewritten as `interrupted`, so `getState().interruptedJobs` and the Team panel show an `⚠ 意外中断` banner with a one-click **复制续跑指令** (`继续上次中断的任务（sessionId=<sid>），先检查当前工作区改动再接着完成。`). Resume with that prompt + the original `sessionId`; dismiss the banner via `agent_relay_ui_dismiss_interrupted`.
+**Crash recovery**: A.stand persists job status, session checkpoints, and terminal output. A running snapshot owned by a dead host becomes interrupted on startup. On “继续” or a status request, look up recovery **once** if the thread shows outstanding A.stand work, a relevant restart, or an explicit job reference. Use known `jobId`s or the actual conversation ID together with the original workspace. Skip recovery on regular conversation and new tasks. Acknowledge a completed result after reading it. Receipt is independent of user acceptance. For a matching interrupted job, use `agent_relay_ask(resumeJobId=...)` with the original role and workspace returned by recovery. The checkpoint supplies the original session and model. Ask only when matching is ambiguous or the checkpoint is insufficient. Main-model quota exhaustion can leave workers active while the host is running. After a restart, the persisted checkpoint determines what can continue.
 
-**Stall Gatekeeper AI is opt-in** (`inspectorEnabled`, default OFF): with it off, diagnosis relies purely on the live timeline, silent-timeout alerts, and doorbell exit codes. When turned on, on silence timeout it reads ONLY the task brief (<=1.2K) + last 30 X-ray lines (never full 200K history) and returns strictly a 2-choice verdict: `CONTINUE` (healthy slow progress — extend timer without waking Lead Agent, up to 3x) or `ALERT` (truly stuck — ring doorbell immediately). It never edits or steers code.
+**Stall Gatekeeper AI** (`inspectorEnabled`, default OFF): At the silence threshold, the lead receives a check-in directly if the gatekeeper is disabled. If enabled, the gatekeeper reads a bounded task brief and recent timeline, then gives a short explanation of current progress in the UI language. `CONTINUE` defers the silence alert up to three times per period of silence. `ALERT` wakes the lead. The timeline row expands to show its explanation. The duration check-in has its own timer.
 
 ## 4. Non-Interrupting Check-in & Control Protocol
 
-A.stand uses zero-token MCP protocol heartbeats during long runs and **never auto-kills** a running subagent. Instead, it triggers non-interrupting check-ins at the user's `silentCheckinMin` (no output/commands/file edits) or `longRunCheckinMin` (periodic check on long tasks):
+A.stand uses zero-token MCP protocol heartbeats. Check-ins leave the subagent running. Silence check-ins use `silentCheckinMin`. Duration check-ins use `longRunCheckinMin` and can recur while the lead continues waiting.
 
 1. When `agent_relay_ask` or `agent_relay_poll` returns `silent_checkin` or `long_run_checkin`, the subagent is **still running undisturbed**.
 2. Review the returned summary (either from the user's configured Inspector Summarizer AI or structured error-prioritized trace).
@@ -103,10 +104,12 @@ A.stand uses zero-token MCP protocol heartbeats during long runs and **never aut
    - **Progressing cleanly / legitimate deep work** -> continue waiting with `agent_relay_poll(jobId="...")`.
    - **Drifting off-track, repeating `exit!=0` errors, or fighting sandbox walls**:
      - On **Codex**: redirect mid-flight via `agent_relay_session(action="steer", sessionId="...", message="...")`.
-     - On **DeepSeek Harness (`dsh`, ACP v1)**: ACP v1 does not support mid-turn steer; call `agent_relay_session(action="interrupt", jobId="...")` and immediately re-call `agent_relay_ask` with the same `sessionId` and a concise corrective delta (retains ~99% Prompt Cache).
+     - On **DeepSeek Harness (`dsh`, ACP v1)**: ACP v1 does not support mid-turn steer; request `agent_relay_session(action="interrupt", jobId="...")`, wait for the turn to clear, then call `agent_relay_ask` with the same `sessionId` and a concise corrective delta.
    - **Truly wedged / endless error loop** -> stop it cleanly via `agent_relay_session(action="interrupt", jobId="...")` and diagnose/take over.
 
-## 5. Quota Exhaustion & Priority Fallback Handling
+## 5. Quota Exhaustion & Model Selection
+
+- `selectionMode: "ordered"` follows the configured role queue. With `"smart"`, the lead can pass a configured `modelId` on a new `ask` or `review`, based on the task and the role’s queue. Use the original model for a continuation. Candidate cooldown and fallback settings still apply.
 
 - When `autoFallbackOnLimit` is ON, A.stand automatically cools down rate-limited models (tracking exact upstream `resetsAt`), fails over to the next AI in the role's priority queue, and automatically restores the primary once its reset window passes.
 - If `agent_relay_ask` returns `fallback_confirmation_needed`, ask the user whether to fall back to the next AI in the queue.
@@ -118,7 +121,7 @@ A.stand uses an **explicit `sessionId` lifecycle** where **clean task isolation 
 
 1. **New or Unrelated Task (Omit `sessionId`)**: Whenever switching to a different task, different module, different problem type, or running an independent review, **always omit `sessionId`**. A.stand guarantees a brand-new, uncontaminated subagent session (never auto-reuses old sessions). Pass a short `title` (e.g. `title="API channel refactor"`). On Turn 1, send goals, constraints, and file pointers rather than raw file dumps.
 2. **Follow-Up on the Exact Same Task (Pass `sessionId`)**: Only when continuing, iterating, or fixing review feedback on the **same ongoing task**, pass the `sessionId` printed in the previous turn's footer (`sessionId="..."`) with a concise **delta-only prompt** (new errors, answers, or next instruction — never summarize or re-paste earlier turns) to get 95%–99% Prompt Cache hit rate.
-3. **Resuming a Prior Session Across Conversations**: Call `agent_relay_session(action="status")` to see recent titled sessions and pass the desired `sessionId` only if resuming that exact workstream.
+3. **Resuming After a Restart or Model Switch**: Use the scoped recovery procedure above when the conversation indicates a prior unfinished handoff. Use `status` for a requested configuration or overall status view.
 4. **Context Hygiene**: Monitor `ctx %` in the footer. Near 70%+, compact that session via `agent_relay_session(action="compact", sessionId="...")` or start fresh for the next subtask.
 
 ## 7. Transparent Setup & Model Selection Advisor

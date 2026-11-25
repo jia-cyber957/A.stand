@@ -278,10 +278,11 @@ When `asyncBackgroundMode` is ON and `waitSec` is omitted:
    | `2` | A running job exceeded `--stall-sec` of silence |
    | `3` | The MCP process that owned a running job exited |
    | `4` | Bad usage, or no status file appeared within the grace period |
+   | `5` | The continuing job reached its duration check-in interval |
 
 4. On exit, the host wakes the Lead Agent with a concise summary — never the raw log. If the user is chatting about something else, the Lead Agent answers that first and appends a one-line notice.
 
-Multiple job ids can be watched by a single doorbell process.
+A waiter can watch one job or a group. Grouped completion waits for every watched job to finish. After a duration check-in, the lead may continue waiting by running the printed rearm command. The waiter starts the next interval and retains the original list of job IDs.
 
 ### 7.2 Stall gatekeeper AI
 
@@ -290,7 +291,11 @@ When `inspectorEnabled` is ON and a job goes silent beyond the timeout, the gate
 - `VERDICT: CONTINUE` — the job is merely slow (e.g. a long build); the silence timer is extended up to three times without waking the Lead Agent.
 - `VERDICT: ALERT` — the job is genuinely stuck; the doorbell exits with code `2`.
 
-The gatekeeper never edits files and never steers code.
+The gatekeeper records a short description of the latest activity in the selected UI language. Its verdict expands in the timeline. Real progress clears deferrals. When the gatekeeper is enabled, the broker sets the silence alert after its verdict.
+
+### 7.3 Restart handoff
+
+For a continuation with evidence of outstanding work, `recover` checks recent disk snapshots by known job IDs or by the original workspace and conversation ID. A completed result stays unread until the lead reads and acknowledges it. An interrupted job supplies `resumeJobId` for the original session, model, and effective worktree. Regular turns use no recovery lookup.
 
 ---
 
