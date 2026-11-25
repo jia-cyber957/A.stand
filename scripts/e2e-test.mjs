@@ -9,9 +9,10 @@ import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { applyTurn1CustomRules, formatMappedDriveSandboxHint } from "../src/core/orchestrator.mjs";
 import { RelayStore } from "../src/core/store.mjs";
 import { createJobWorktree, detectGitRepo, finalizeJobWorktree } from "../src/core/worktree.mjs";
-import { AcpEngine, parseToolActivity, sanitizeConstrainedLangOutput, summarizeToolInput } from "../src/engines/acp.mjs";
+import { AcpEngine, parseAcpModelOptions, parseToolActivity, sanitizeConstrainedLangOutput, summarizeToolInput } from "../src/engines/acp.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -21,6 +22,42 @@ const WAIT_JOB_BUNDLE = path.join(ROOT, "dist", "wait-job.mjs");
 const WAIT_JOB_SRC = path.join(ROOT, "scripts", "wait-job.mjs");
 
 const LONG_CALL_OPTS = { timeout: 240_000 };
+
+function testRoleSettingsAndMappedDriveHint(dataDir) {
+  const store = new RelayStore(dataDir);
+  for (const role of ["oracle", "hephaestus"]) {
+    assert.equal(store.getRoleConfig(role).customRules, "");
+  }
+  const oracleRules = "Read the task brief first.\nCite relevant files.";
+  store.updateTopSettings({
+    roles: { oracle: { customRules: oracleRules }, hephaestus: { customRules: "x".repeat(4001) } },
+  });
+  const reloaded = new RelayStore(dataDir);
+  assert.equal(reloaded.getRoleConfig("oracle").customRules, oracleRules);
+  assert.equal(reloaded.getRoleConfig("hephaestus").customRules, "x".repeat(4000));
+
+  const prompt = "Read the brief.";
+  assert.equal(
+    applyTurn1CustomRules(prompt, ` ${oracleRules} \n`, true),
+    `[Role Custom Rules]\n${oracleRules}\n[/Role Custom Rules]\n\n${prompt}`,
+  );
+  assert.equal(applyTurn1CustomRules(prompt, oracleRules, false), prompt);
+  assert.equal(applyTurn1CustomRules(prompt, " \n", true), prompt);
+
+  const base = { platform: "win32", role: "oracle", engine: "codex", cwd: "Z:\\repo" };
+  const cmdFailure = { activities: [{ kind: "cmd", exitCode: -1 }] };
+  const hint = formatMappedDriveSandboxHint({ ...base, ...cmdFailure });
+  assert.match(hint, /^\[Hint\].*error 267.*local drive checkout.*DeepSeek Harness \(dsh\)\.$/);
+  assert.equal(formatMappedDriveSandboxHint({ ...base, errorText: "CreateProcessWithLogonW failed: 267" }), hint);
+  assert.equal(formatMappedDriveSandboxHint({ ...base, resultText: "ERROR_DIRECTORY" }), hint);
+  assert.equal(formatMappedDriveSandboxHint({ ...base, ...cmdFailure, cwd: "c:\\repo" }), "");
+  assert.equal(formatMappedDriveSandboxHint({ ...base, ...cmdFailure, engine: "dsh" }), "");
+  assert.equal(formatMappedDriveSandboxHint({ ...base, ...cmdFailure, role: "hephaestus" }), "");
+  assert.equal(formatMappedDriveSandboxHint({ ...base, ...cmdFailure, platform: "linux" }), "");
+  assert.equal(formatMappedDriveSandboxHint({ ...base, activities: [{ kind: "cmd", exitCode: 0 }] }), "");
+  assert.equal(formatMappedDriveSandboxHint({ ...base, activities: [{ kind: "edit", exitCode: -1 }] }), "");
+  console.log("Role custom rules defaults, persistence, clamping, Turn 1 injection, and mapped-drive hint PASSED.");
+}
 
 function testWorktrees() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ar-worktree-"));
@@ -235,6 +272,7 @@ async function testBrowserStrictCspRender(htmlText, realToolResult) {
           const LIVE_JOB = ${JSON.stringify(running).replace(/</g, "\\u003c")};
           const DONE_JOB = ${JSON.stringify(complete).replace(/</g, "\\u003c")};
           let detailCalls = 0;
+          let mainStateCalls = 0;
           const events = [];
           const errors = [];
           const fMain = document.getElementById("fMain");
@@ -289,6 +327,9 @@ async function testBrowserStrictCspRender(htmlText, realToolResult) {
               e.source.postMessage({ jsonrpc: "2.0", method: "ui/notifications/tool-result", params: TOOL_RESULT }, "*");
             } else if (msg.method === "tools/call") {
               let result = TOOL_RESULT;
+              if (who === "main" && msg.params?.name === "agent_relay_ui_get_state") {
+                TOOL_RESULT.structuredContent.activeJobs[0].elapsedSec = 12 + ++mainStateCalls;
+              }
               if (msg.params?.name === "agent_relay_ui_fetch_models") {
                 result = { content: [], structuredContent: { ok: true, models: [{ id: "upstream-only" }] } };
               }
@@ -296,8 +337,10 @@ async function testBrowserStrictCspRender(htmlText, realToolResult) {
                 result = { content: [], structuredContent: { ok: true, job: ++detailCalls === 1 ? LIVE_JOB : DONE_JOB } };
               }
               if (msg.params?.name === "agent_relay_ui_update_settings") {
-                TOOL_RESULT.structuredContent.settings.allowWorktreeParallelWrite =
-                  msg.params.arguments.allowWorktreeParallelWrite;
+                const settings = TOOL_RESULT.structuredContent.settings;
+                const args = msg.params.arguments;
+                if ("allowWorktreeParallelWrite" in args) settings.allowWorktreeParallelWrite = args.allowWorktreeParallelWrite;
+                for (const [role, changes] of Object.entries(args.roles || {})) Object.assign(settings.roles[role], changes);
               }
               e.source.postMessage({ jsonrpc: "2.0", id: msg.id, result }, "*");
             }
@@ -453,6 +496,30 @@ async function testBrowserStrictCspRender(htmlText, realToolResult) {
               uiChecks.worktreeOff = worktreeToggle?.getAttribute("aria-checked") === "false";
               worktreeToggle?.click();
               uiChecks.worktreeOn = Boolean(await until(worktreeSelector + '[aria-checked="true"]'));
+
+              const rulesToggle = '[data-action="toggle-custom-rules"]';
+              const oracleRules = '[data-custom-rules-role="oracle"]';
+              uiChecks.rulesCollapsed = doc.querySelector(rulesToggle)?.getAttribute("aria-expanded") === "false";
+              doc.querySelector(rulesToggle)?.click();
+              const field = doc.querySelector(oracleRules);
+              uiChecks.rulesFields = Array.from(doc.querySelectorAll("#custom-rules-editor textarea"))
+                .map((el) => [el.dataset.customRulesRole, el.rows, el.maxLength]);
+              field.focus();
+              field.value = "\\nUse <scope> & cite files.";
+              field.dispatchEvent(new Event("input", { bubbles: true }));
+              const beforePoll = mainStateCalls;
+              const deadline = Date.now() + 3500;
+              while (mainStateCalls === beforePoll && Date.now() < deadline) {
+                await new Promise((resolve) => setTimeout(resolve, 25));
+              }
+              await new Promise((resolve) => setTimeout(resolve, 100));
+              uiChecks.rulesPollPreserved = mainStateCalls > beforePoll && doc.activeElement === field;
+              doc.querySelector(rulesToggle)?.click();
+              doc.querySelector(rulesToggle)?.click();
+              uiChecks.rulesDraftPreserved = doc.querySelector(oracleRules)?.value === field.value;
+              doc.querySelector('[data-action="save-custom-rules"]')?.click();
+              uiChecks.rulesSaved = (await until(".custom-rules-badge"))?.textContent === "Configured"
+                && TOOL_RESULT.structuredContent.settings.roles.oracle.customRules === field.value;
             } catch (err) {
               errors.push("inspect:" + String(err));
             }
@@ -518,6 +585,11 @@ async function testBrowserStrictCspRender(htmlText, realToolResult) {
     assert.equal(report.uiChecks?.worktreeNotice, true, "Expected retained worktree notice in job result");
     assert.equal(report.uiChecks?.worktreeOff, true, "Expected the Settings worktree switch to start off");
     assert.equal(report.uiChecks?.worktreeOn, true, "Expected the Settings worktree switch to turn on when clicked");
+    assert.equal(report.uiChecks?.rulesCollapsed, true);
+    assert.deepEqual(report.uiChecks?.rulesFields, [["oracle", 3, 4000], ["hephaestus", 3, 4000]]);
+    assert.equal(report.uiChecks?.rulesPollPreserved, true, "A changed live state must preserve focus while typing");
+    assert.equal(report.uiChecks?.rulesDraftPreserved, true);
+    assert.equal(report.uiChecks?.rulesSaved, true);
     assert.ok(report.text.includes("Oracle"), `Rendered UI missing 'Oracle': ${report.text}`);
     assert.ok(report.text.includes("Hephaestus"), `Rendered UI missing 'Hephaestus': ${report.text}`);
     assert.equal(report.uiChecks?.codexExpanded, true, "Expected Codex hover to expand sub-models");
@@ -625,7 +697,13 @@ async function runCodexFixture() {
         const brief = fs.readFileSync(path.join(params.cwd, "brief.md"), "utf8");
         const threads = loadThreads();
         const threadId = `fixture-thread-${crypto.randomUUID().slice(0, 8)}`;
-        const thread = { id: threadId, codeword: brief.match(/Codeword: (\S+)/)[1], turns: 0 };
+        const thread = {
+          id: threadId,
+          codeword: brief.match(/Codeword: (\S+)/)[1],
+          turns: 0,
+          developerInstructions: params.developerInstructions,
+          prompts: [],
+        };
         threads[threadId] = thread;
         saveThreads(threads);
         reply({ thread: { id: thread.id }, model });
@@ -637,10 +715,13 @@ async function runCodexFixture() {
         const thread = threads[params.threadId];
         assert.ok(thread, `Unknown fixture threadId: ${params.threadId}`);
         if (method === "thread/resume") {
+          assert.equal(params.developerInstructions, undefined);
           reply({ thread: { id: thread.id }, model });
           break;
         }
         const turn = { id: `fixture-turn-${++thread.turns}`, status: "completed" };
+        const prompt = params.input?.[0]?.text;
+        thread.prompts.push(prompt);
         saveThreads(threads);
         reply({ turn });
         const notify = (m, fields) => send({ method: m, params: { threadId: thread.id, ...fields } });
@@ -650,7 +731,6 @@ async function runCodexFixture() {
         notify("item/reasoning/summaryTextDelta", { itemId: reasoning.id, summaryIndex: 0, delta: "Check " });
         notify("item/reasoning/summaryTextDelta", { itemId: reasoning.id, summaryIndex: 0, delta: "the brief." });
         notify("item/completed", { item: reasoning });
-        const prompt = params.input?.[0]?.text;
         if (prompt === "Fixture interrupt") {
           waitingTurns.set(thread.id, turn.id);
           break;
@@ -750,6 +830,87 @@ function prepareEngineFixtures(tmpData) {
     PATH: [codexHome, ...(windows ? [path.join(process.env.SystemRoot || "C:\\Windows", "System32")] : ["/usr/bin", "/bin"])].join(path.delimiter),
   };
   return { engineEnv, dshConfigPath, dshConfig };
+}
+
+function testAcpModelDiscovery() {
+  const configOptions = [
+    {
+      id: "reasoning_effort",
+      category: "thought_level",
+      options: [{ value: "high", name: "High" }],
+    },
+    {
+      id: "model",
+      category: "model",
+      options: [
+        {
+          group: "deepseek-official",
+          name: "DeepSeek",
+          options: [{ value: '["deepseek-official","deepseek-v4-flash"]', name: "deepseek-v4-flash" }],
+        },
+        {
+          group: "deepseek-account",
+          name: "DeepSeek Account",
+          options: [
+            { value: '["deepseek-account","deepseek-flash"]', name: "DeepSeek-V4.1-Flash" },
+            {
+              value: '["deepseek-account","deepseek-v4-pro"]',
+              name: "DeepSeek-V4-Pro",
+              description: "Flagship reasoning model",
+            },
+          ],
+        },
+      ],
+    },
+  ];
+  const parsed = parseAcpModelOptions(configOptions);
+  assert.deepEqual(parsed.map((m) => m.id), [
+    "dsh:deepseek-account:deepseek-flash",
+    "dsh:deepseek-account:deepseek-v4-pro",
+  ]);
+  assert.ok(parsed.every((m) => m.providerId === "deepseek-account"), "must only extract deepseek-account models");
+  assert.ok(!parsed.some((m) => m.providerId === "deepseek-official"), "must ignore deepseek-official models");
+  const pro = parsed[1];
+  assert.equal(pro.name, "DeepSeek-V4-Pro");
+  assert.equal(pro.displayName, "DeepSeek-V4-Pro");
+  assert.equal(pro.modelName, "deepseek-v4-pro");
+  assert.equal(pro.channelName, "DeepSeek Account");
+  assert.equal(pro.authType, "account");
+  assert.equal(pro.readonly, true);
+  assert.equal(pro.source, "dsh");
+  assert.equal(pro.mode, "api");
+  assert.equal(pro.engine, "deepseek-harness");
+  assert.equal(pro.baseUrl, "");
+  assert.equal(pro.apiKey, "");
+  assert.equal(pro.description, "Flagship reasoning model");
+
+  // Malformed / absent input never throws and never yields partial entries.
+  assert.deepEqual(parseAcpModelOptions(null), []);
+  assert.deepEqual(parseAcpModelOptions([]), []);
+  assert.deepEqual(parseAcpModelOptions([{ id: "model", options: [] }]), []);
+  assert.deepEqual(
+    parseAcpModelOptions([{ id: "model", options: [{ group: "deepseek-account", options: [{ value: "not-json" }] }] }]),
+    []
+  );
+
+  // Account models are not written to static ~/.dsh/ config, so the store must resolve them by id.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ar-dsh-dynamic-"));
+  try {
+    const store = new RelayStore(dir);
+    const dynamic = store.getModelById("dsh:deepseek-account:deepseek-v4-pro");
+    assert.equal(dynamic.id, "dsh:deepseek-account:deepseek-v4-pro");
+    assert.equal(dynamic.modelName, "deepseek-v4-pro");
+    assert.equal(dynamic.providerId, "deepseek-account");
+    assert.equal(dynamic.engine, "deepseek-harness");
+    assert.equal(dynamic.source, "dsh");
+    assert.equal(dynamic.readonly, true);
+    assert.equal(dynamic.authType, "account");
+    assert.equal(dynamic.baseUrl, "");
+    assert.equal(dynamic.apiKey, "");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  console.log("ACP DeepSeek Account model discovery & dynamic dsh id resolution PASSED.");
 }
 
 async function testAcpActivity() {
@@ -1034,6 +1195,7 @@ async function main() {
   testWorktrees();
   const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), "ar-e2e-data-"));
   const tmpWork = fs.mkdtempSync(path.join(os.tmpdir(), "ar-e2e-work-"));
+  testRoleSettingsAndMappedDriveHint(path.join(tmpData, "role-settings-test"));
   fs.writeFileSync(
     path.join(tmpWork, "brief.md"),
     "# A.stand Test Brief\n\nCodeword: RELAY-9041\nRole count: 2 (oracle read-only, hephaestus write).\nZero mutation policy: never modify ~/.codex/config.toml.\n",
@@ -1109,6 +1271,8 @@ async function main() {
     assert.ok(!fs.readFileSync(path.join(tmpData, "settings.json"), "utf8").includes(key), "API key leaked into settings.json");
   };
   const migrated = await call("agent_relay_ui_get_state");
+  assert.equal(migrated.settings.roles.oracle.customRules, "");
+  assert.equal(migrated.settings.roles.hephaestus.customRules, "");
   assert.deepEqual(migrated.channels, migrated.settings.channels);
   assert.equal(migrated.channels.length, 2, "Normalize the address and group only models with the same key");
   const [shared, separate] = migrated.channels;
@@ -1396,6 +1560,11 @@ async function main() {
 
   const isLiveCodex = Boolean(process.env.AGENT_RELAY_E2E_CODEX_HOME);
   const codexTestMode = isLiveCodex ? "Live" : "Isolated fixture";
+  const rules = "Provide concise responses.";
+  if (!isLiveCodex) {
+    const saved = await call("agent_relay_ui_update_settings", { roles: { oracle: { customRules: rules } } });
+    assert.equal(saved.settings.roles.oracle.customRules, rules);
+  }
   console.log(`\n=== 5. ${codexTestMode} Codex persistence & cross-restart cache test ===`);
   const t1Prompt = "读取当前目录下的 brief.md，记住里面的 Codeword 和两个角色名，用一句话极简总结。";
   const getDetail = async (jobId) => (await call("agent_relay_ui_get_job_detail", { jobId })).job;
@@ -1465,11 +1634,12 @@ async function main() {
   assert.equal(legacyDetail.activities[4].status, "error");
   assert.equal(legacyDetail.activities[5].durationSec, 8);
 
+  const t2Prompt = "不要重读文件。只回答刚才 brief.md 里的 Codeword 是什么？";
   const t2Text = await askWithPoll(client, {
     role: "oracle",
     cwd: tmpWork,
     sessionId,
-    prompt: "不要重读文件。只回答刚才 brief.md 里的 Codeword 是什么？",
+    prompt: t2Prompt,
   });
   console.log("\nTurn 2 (warm):\n" + t2Text);
   assert.ok(t2Text.includes("RELAY-9041"));
@@ -1489,11 +1659,12 @@ async function main() {
   assert.deepEqual(reopened.activities, savedTimeline.activities);
   console.log("Structured timeline persistence, disk response, and legacy replay PASSED.");
 
+  const t3Prompt = "不要重读文件。重启后只用 10 个字内回答：Codeword 是什么？";
   const t3Text = await askWithPoll(client, {
     role: "oracle",
     cwd: tmpWork,
     sessionId,
-    prompt: "不要重读文件。重启后只用 10 个字内回答：Codeword 是什么？",
+    prompt: t3Prompt,
   });
   console.log("Turn 3 (after full restart):\n" + t3Text);
   assert.ok(t3Text.includes("RELAY-9041"));
@@ -1548,6 +1719,16 @@ async function main() {
     arguments: { cwd: tmpWork, targetType: "uncommittedChanges" },
   });
   assert.equal(Boolean(revRes.isError), false, `Expected agent_relay_review success, got: ${revRes.content?.[0]?.text}`);
+  if (!isLiveCodex) {
+    const threads = readJson("codex-fixture/fixture-thread.json");
+    const ruleBlock = `[Role Custom Rules]\n${rules}\n[/Role Custom Rules]`;
+    assert.deepEqual(threads[sessionId].prompts, [`${ruleBlock}\n\n${t1Prompt}`, t2Prompt, t3Prompt]);
+    assert.ok(!threads[sessionId].developerInstructions.includes(ruleBlock));
+    const reviewSid = revRes.content[0].text.match(/sessionId=(\S+?)(?:\s*·|\])/)?.[1];
+    assert.ok(threads[reviewSid]?.developerInstructions.endsWith(ruleBlock));
+    await call("agent_relay_ui_update_settings", { roles: { oracle: { customRules: "" } } });
+    console.log("Codex ask and review first-turn rule injection PASSED.");
+  }
   assert.ok(
     fs.readdirSync(jobDir).some((f) => f.startsWith("rev_") && f.endsWith(".log")),
     "Expected tracked rev_*.log created by agent_relay_review"
@@ -1601,6 +1782,7 @@ async function main() {
 
   console.log("\n=== 7. X-Ray summarizeToolInput & zero-token doorbell (wait-job.mjs) ===");
   testSummarizeToolInput();
+  testAcpModelDiscovery();
   await testAcpActivity();
   assert.equal(parseToolActivity("read", { path: "gateway.go", start_line: 315, end_line: 455 }).meta, "#L315-455");
   assert.equal(parseToolActivity("read", null).kind, "read");

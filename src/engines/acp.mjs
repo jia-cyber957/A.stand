@@ -74,6 +74,62 @@ export function sanitizeConstrainedLangOutput(output, exitCode) {
   return { output: stripped || raw, exitCode, falsePositiveCleared: false };
 }
 
+/**
+ * Extract the official DeepSeek Account models that `dsh --profile acp` dynamically
+ * returns in `session/new -> result.configOptions`.
+ *
+ * Only the `"deepseek-account"` group is used: ACP also advertises `"deepseek-official"`
+ * even when no API key is configured, while `"deepseek-account"` requires the logged-in
+ * account session. Returns [] for malformed input and never throws.
+ */
+export function parseAcpModelOptions(configOptions) {
+  if (!Array.isArray(configOptions)) return [];
+  const modelOption = configOptions.find((opt) => opt && (opt.id === "model" || opt.category === "model"));
+  if (!modelOption || !Array.isArray(modelOption.options)) return [];
+
+  const out = [];
+  const seen = new Set();
+  for (const group of modelOption.options) {
+    if (!group || typeof group !== "object") continue;
+    if (String(group.group || "").trim() !== "deepseek-account") continue;
+    const groupName = String(group.name || "").trim() || "DeepSeek Account";
+    const entries = Array.isArray(group.options) ? group.options : [];
+    for (const opt of entries) {
+      let parsed;
+      try {
+        parsed = JSON.parse(opt?.value);
+      } catch {
+        continue;
+      }
+      if (!Array.isArray(parsed) || parsed.length < 2) continue;
+      const providerId = String(parsed[0] || "").trim();
+      const modelName = String(parsed[1] || "").trim();
+      if (!providerId || !modelName) continue;
+      const id = `dsh:${providerId}:${modelName}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const displayName = String(opt?.name || "").trim() || modelName;
+      out.push({
+        id,
+        name: displayName,
+        displayName,
+        modelName,
+        mode: "api",
+        engine: "deepseek-harness",
+        providerId,
+        channelName: groupName,
+        baseUrl: "",
+        source: "dsh",
+        authType: "account",
+        readonly: true,
+        description: String(opt?.description || ""),
+        apiKey: "",
+      });
+    }
+  }
+  return out;
+}
+
 function oneLine(text, max) {
   const clean = String(text ?? "").replace(/\s+/g, " ").trim();
   if (!clean) return "";
@@ -427,6 +483,119 @@ export class AcpEngine {
     this.dataDir = dataDir ? path.resolve(dataDir) : "";
     this.clients = new Map(); // profileKey -> client state
     this.connecting = new Map(); // profileKey -> Promise<client state>
+    this.latestModels = [];
+    this.modelsFetchedAt = 0;
+    this.modelsPromise = null;
+  }
+
+  /**
+   * Discover the logged-in DeepSeek Account models by briefly spawning `dsh --profile acp`
+   * and reading `session/new -> result.configOptions`. Cached for 5 minutes, deduplicated
+   * across concurrent callers, read-only, and never throws.
+   */
+  async listAccountModels(force = false) {
+    if (!force && this.modelsFetchedAt > 0 && Date.now() - this.modelsFetchedAt < 300_000) {
+      return this.latestModels;
+    }
+    if (this.modelsPromise) return this.modelsPromise;
+
+    this.modelsPromise = (async () => {
+      let proc = null;
+      let timer = null;
+      try {
+        const bin = resolveDshBinary(this.dataDir);
+        if (!bin || bin.nodeTooOld) {
+          this.modelsFetchedAt = Date.now();
+          return this.latestModels;
+        }
+
+        proc = spawn(bin.command, [...(bin.prefixArgs || []), "--profile", "acp"], {
+          stdio: ["pipe", "pipe", "pipe"],
+          windowsHide: true,
+          shell: bin.useShell,
+          env: utf8Env({ DSH_PERMISSION_MODE: "read-only" }),
+        });
+
+        const configOptions = await new Promise((resolve) => {
+          let settled = false;
+          let nextId = 1;
+          const pending = new Map();
+          const finish = (value) => {
+            if (settled) return;
+            settled = true;
+            resolve(value);
+          };
+
+          const send = (obj) => {
+            try {
+              if (proc.stdin?.writable) proc.stdin.write(JSON.stringify(obj) + "\n");
+            } catch {
+              finish(null);
+            }
+          };
+
+          const request = (method, params) =>
+            new Promise((resolveReq) => {
+              const id = nextId++;
+              pending.set(id, { method, resolveReq });
+              send({ jsonrpc: "2.0", id, method, params });
+            });
+
+          timer = setTimeout(() => finish(null), 18_000);
+          timer.unref?.();
+
+          proc.on("error", () => finish(null));
+          proc.on("exit", () => finish(null));
+          readline.createInterface({ input: proc.stdout }).on("line", async (line) => {
+            const trimmed = String(line || "").trim();
+            if (!trimmed) return;
+            let msg;
+            try {
+              msg = JSON.parse(trimmed);
+            } catch {
+              return;
+            }
+            if (msg?.id === undefined) return;
+            const pendingReq = pending.get(msg.id);
+            if (!pendingReq) return;
+            pending.delete(msg.id);
+            pendingReq.resolveReq(msg.error ? null : msg.result);
+
+            if (pendingReq.method !== "initialize") return;
+            // initialize replied -> create a throwaway session and read its model catalog.
+            try {
+              const created = await request("session/new", {
+                cwd: this.dataDir || process.cwd(),
+                mcpServers: [],
+              });
+              finish(Array.isArray(created?.configOptions) ? created.configOptions : null);
+            } catch {
+              finish(null);
+            }
+          });
+
+          request("initialize", {
+            protocolVersion: 1,
+            clientCapabilities: {},
+            clientInfo: { name: "agent-relay", version: "1.0.0" },
+          });
+        });
+
+        const parsed = parseAcpModelOptions(configOptions);
+        if (parsed.length > 0) this.latestModels = parsed;
+        this.modelsFetchedAt = Date.now();
+        return this.latestModels;
+      } catch {
+        this.modelsFetchedAt = Date.now();
+        return this.latestModels;
+      } finally {
+        if (timer) clearTimeout(timer);
+        if (proc) await Promise.resolve(safeKill(proc)).catch(() => {});
+        this.modelsPromise = null;
+      }
+    })();
+
+    return this.modelsPromise;
   }
 
   #profileKey(model, permissionMode = "workspace-write") {

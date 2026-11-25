@@ -1297,6 +1297,49 @@ html[data-theme="light"] .progress-track {
   padding-top: 4px;
 }
 
+.custom-rules {
+  display: block;
+}
+
+.custom-rules-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  color: var(--ar-text);
+}
+
+.custom-rules-badge {
+  margin-left: auto;
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: var(--ar-surface-2);
+  color: var(--ar-text-2);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.custom-rules-field {
+  display: grid;
+  gap: 4px;
+  margin-top: 10px;
+}
+
+.custom-rules-field textarea {
+  color: var(--ar-text);
+  font-family: inherit;
+  resize: vertical;
+}
+
+.custom-rules-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 /* 4-Harness Hover-Expand Menu */
 .harness-group {
   display: flex;

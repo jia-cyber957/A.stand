@@ -35,6 +35,7 @@ const roleSettings = z.object({
   modelId: z.string().optional(),
   queue: z.array(z.string()).optional(),
   effort: z.enum(["off", "low", "medium", "high"]).optional(),
+  customRules: z.string().max(4000).optional(),
 });
 const chatSettings = {
   enabled: z.boolean().optional(),

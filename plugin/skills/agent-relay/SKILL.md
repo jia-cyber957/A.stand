@@ -1,6 +1,6 @@
 ---
 name: agent-relay
-description: Orchestrate persistent-context external AI subagents (Oracle read-only advisor/reviewer and Hephaestus deep engineer) through A.stand while maximizing Prompt Cache hit rate, handling non-interrupting check-ins and quota fallbacks, and guiding users through zero-mutation CLI/API setup.
+description: A.stand multi-agent orchestration manual — read when delegating complex or parallel tasks to external subagents (Oracle read-only advisor/reviewer and Hephaestus workspace-write engineer), deciding what to keep vs. delegate across general or coding workflows, passing host Skill rules safely to subagents, using async doorbell/worktree parallelism, or setting up CLI/API engines.
 ---
 
 # A.stand Collaboration & Setup Guide
@@ -32,22 +32,30 @@ Before fanning out parallel tasks or modifying orchestration behavior, call `age
   - `hephaestus` defaults to `sandbox="workspace-write"`. Only pass `sandbox="danger-full-access"` when `limits.allowHephaestusFullAccess` is `true` AND the task legitimately needs host builds/browsers (the backend hard-blocks escalation if disabled).
   - If `limits.allowHephaestusFullAccess` is `false` and a check-in shows `hephaestus` hitting a Windows sandbox wall on build/browser tests (e.g. `esbuild` parent-dir access or nested browser sandbox), steer it immediately (`action="steer"`) to finish code + `node --check` and run the build/browser test yourself on host, adding one brief closing note that the user can enable "Allow Hephaestus Full Access" in Settings for trusted workspaces.
 
-## 2. Decision Rubric (When to Delegate vs. Work Solo)
+## 2. Decision Rubric & Skills Handoff (抓大放小 · 保护主上下文)
 
-### Never Delegate (Handle Directly)
-- Simple Q&A, web searches, documentation lookup, translations, or summaries.
-- Clear 1–3 file edits, config tweaks, or straightforward bug fixes you can finish in 1–2 minutes.
-- Host-native tasks (browser automation, image generation, local host skills).
+Act as the user's chief assistant and tech lead: hold the main thread, define overall framing/architecture, review quality, and keep noisy execution loops out of the main conversation. Pause briefly on non-trivial work to decide whether it is a quick direct win or belongs in a scoped subagent:
 
-### Delegate to `oracle` (Strictly Read-Only)
-- **Architecture & Tradeoffs**: High-impact design choices, concurrency/state-machine review, or security evaluation needing a second frontier brain.
-- **2-Strike Debugging Escalation**: After 2 failed fix attempts on a stubborn bug, stop guessing — send the symptom, ruled-out hypotheses, and exact `file:line` pointers to `oracle`.
-- **Independent Code Review**: Before finalizing major changes, call `agent_relay_review` (or `oracle`) for adversarial review.
+### Track A — Universal Tasks (Research, Planning, Docs, Analysis)
+- **Handle Directly (Lead Agent)**: Simple Q&A, 1–2 step lookups or small rewrites, overall framing/outlines, final synthesis/decisions, and host-native tasks (browser automation, image generation, local host skills).
+- **Delegate to `oracle` (Strictly Read-Only, Parallel OK)**: Multi-angle deep research across many files/sources, tradeoff comparisons, or independent critiques/reviews (fan out 2–3 parallel slots and synthesize on the lead thread).
+- **Delegate to `hephaestus` (Workspace-Write)**: Heavy multi-file workspace organization, drafting, or iterative verification work.
 
-### Delegate to `hephaestus` (Workspace-Write Deep Engineer)
-- **Deep Multi-File Implementation / Refactoring**: Complex backend logic, type systems, protocol code, or algorithms where sustained focused iteration shines.
-- **Long Test-Fix Loops**: Offload verbose multi-round compile/test/debug cycles so massive logs stay isolated in the subagent's thread and do not cause context rot in the lead conversation.
-- **Always spell out test timeouts in the prompt** (e.g. `go test -timeout 30s ./...`, `npm test -- --testTimeout=20000`, `pytest --timeout=30`) plus "never start a dev server or interactive watcher in the foreground" — a hung test is the #1 cause of a silent/stalled job.
+### Track B — Coding Tasks (Primary Token & Context Consumer)
+- **Handle Directly (Lead Agent)**: Architecture/interface planning, slim `docs/` updates, Git/AOCI wrap-up, and clear 1–2 file edits or quick targeted fixes.
+- **Delegate to `hephaestus` (Workspace-Write Deep Engineer)**:
+  - Coordinated edits across >=3 source/script files, feature implementation, or deep refactors.
+  - Long write->compile->test->fix loops so verbose error logs stay isolated in the subagent's thread and never rot the lead context.
+  - **Always spell out test timeouts in the prompt** (e.g. `go test -timeout 30s ./...`, `npm test -- --testTimeout=20000`, `pytest --timeout=30`) plus "never start a dev server or interactive watcher in the foreground" — a hung test is the #1 cause of a silent/stalled job.
+- **Delegate to `oracle` / `agent_relay_review` (Strictly Read-Only)**:
+  - Independent `git diff` review after major edits or parallel worktree merges.
+  - High-impact architecture/concurrency/security tradeoffs.
+  - **2-Strike Debugging Escalation**: After 2 failed fix attempts on a stubborn bug, stop guessing — send the symptom, ruled-out hypotheses, and exact `file:line` pointers to `oracle`.
+
+### Skills & Persistent Role Guardrails Handoff
+- **Containment First**: Subagents do **not** automatically inherit all host Skills (preventing out-of-scope side effects like Git pushes or unrelated scripts).
+- **Persistent Role Rules**: Cross-project per-role rules can be configured in **Settings -> Role Custom Rules (collapsible)** and are injected **only on Turn 1 of a new session** (never re-injected on follow-up turns, keeping Prompt Cache intact).
+- **Explicit Skill Passing**: When a delegated job genuinely needs to follow a specific host Skill, the Lead Agent should explicitly include that Skill's file path (for read-only reference) or its distilled relevant clauses in the Turn 1 brief, and specify which wrap-up actions remain with the Lead Agent.
 
 ## 3. Async Doorbell Flow (`asyncBackgroundMode` ON — "后台异步模式 / 边干边聊")
 
@@ -104,14 +112,14 @@ A.stand uses zero-token MCP protocol heartbeats during long runs and **never aut
 - If `agent_relay_ask` returns `fallback_confirmation_needed`, ask the user whether to fall back to the next AI in the queue.
 - If `agent_relay_ask` returns `[ALL_ENGINES_EXHAUSTED]`, **pause external delegation immediately**, display each model's reset time, and ask the user whether to turn off the A.stand switch (so you continue solo), top up/switch keys in the console, or wait for quota reset.
 
-## 6. Prompt Cache & Session Lifecycle
+## 6. Context Isolation First & Session Lifecycle
 
-A.stand uses an **explicit `sessionId` lifecycle** so unrelated tasks never contaminate each other while multi-turn tasks maintain 95%–99% Prompt Cache hit rates:
+A.stand uses an **explicit `sessionId` lifecycle** where **clean task isolation always takes priority over Prompt Cache hit rate**:
 
-1. **New Unrelated Task**: Omit `sessionId` (always starts a clean fresh session — zero cross-task contamination!) and pass a short `title` (e.g. `title="API channel refactor"`). On Turn 1, send goals, constraints, and file pointers rather than raw file dumps.
-2. **Follow-Up on the Same Task**: Pass the `sessionId` printed in the previous turn's footer (`sessionId="..."`) with a concise **delta-only prompt** (new errors, answers, or next instruction — never summarize or re-paste earlier turns) to maximize 95%–99% Prompt Cache hit rate!
-3. **Resuming a Prior Session Across Conversations**: Call `agent_relay_session(action="status")` to see recent titled sessions and pass the desired `sessionId`.
-4. **Context Hygiene**: Monitor `ctx %` in the footer. Near 70%+, compact that session via `agent_relay_session(action="compact", sessionId="...")`.
+1. **New or Unrelated Task (Omit `sessionId`)**: Whenever switching to a different task, different module, different problem type, or running an independent review, **always omit `sessionId`**. A.stand guarantees a brand-new, uncontaminated subagent session (never auto-reuses old sessions). Pass a short `title` (e.g. `title="API channel refactor"`). On Turn 1, send goals, constraints, and file pointers rather than raw file dumps.
+2. **Follow-Up on the Exact Same Task (Pass `sessionId`)**: Only when continuing, iterating, or fixing review feedback on the **same ongoing task**, pass the `sessionId` printed in the previous turn's footer (`sessionId="..."`) with a concise **delta-only prompt** (new errors, answers, or next instruction — never summarize or re-paste earlier turns) to get 95%–99% Prompt Cache hit rate.
+3. **Resuming a Prior Session Across Conversations**: Call `agent_relay_session(action="status")` to see recent titled sessions and pass the desired `sessionId` only if resuming that exact workstream.
+4. **Context Hygiene**: Monitor `ctx %` in the footer. Near 70%+, compact that session via `agent_relay_session(action="compact", sessionId="...")` or start fresh for the next subtask.
 
 ## 7. Transparent Setup & Model Selection Advisor
 

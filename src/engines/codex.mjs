@@ -134,7 +134,7 @@ function trackCodexItems(onActivity, actions) {
       const id = notified?.id || params?.itemId || type;
       let state = items.get(id);
       if (!state) {
-        state = { id, item: { type }, startedAt: params?.startedAtMs || Date.now(), lastPush: 0,
+        state = { id, item: { type }, startedAt: params?.startedAtMs || notified?.startedAtMs || Date.now(), lastPush: 0,
           parts: { summary: [], reasoning: [] }, text: "", output: "" };
         items.set(id, state);
       }
@@ -158,7 +158,7 @@ function trackCodexItems(onActivity, actions) {
       }
 
       if (completed) {
-        state.completedAt = params?.completedAtMs;
+        state.completedAt = params?.completedAtMs || notified?.completedAtMs || Date.now();
         const { exitCode, status } = state.item;
         const failed = status === "failed" || status === "declined" || (Number.isInteger(exitCode) && exitCode !== 0);
         publish(state, failed ? "error" : "done");
@@ -214,6 +214,8 @@ export class CodexEngine {
       "--stdio",
       "-c",
       "notify=[]",
+      "-c",
+      'model_reasoning_summary="detailed"',
       "-c",
       "mcp_servers.node_repl.enabled=false",
       ...disabled.flatMap((p) => ["-c", `plugins."${p}".enabled=false`]),
@@ -456,7 +458,7 @@ export class CodexEngine {
     return err;
   }
 
-  async #ensureThread({ cwd, role, modelName, existingSessionId, sandbox }) {
+  async #ensureThread({ cwd, role, modelName, existingSessionId, sandbox, customRules }) {
     await this.ensureConnected();
     const spec = ROLE_SPECS[role] || ROLE_SPECS.oracle;
     const effectiveSandbox = role === "oracle" ? "read-only" : sandbox || spec.sandbox;
@@ -491,12 +493,15 @@ export class CodexEngine {
       } catch {}
     }
 
+    const rules = !existingSessionId && customRules?.trim();
     const startParams = {
       cwd,
       sandbox: effectiveSandbox,
       approvalPolicy: "never",
       ephemeral: false,
-      developerInstructions: spec.developerInstructions,
+      developerInstructions: rules
+        ? `${spec.developerInstructions}\n\n[Role Custom Rules]\n${rules}\n[/Role Custom Rules]`
+        : spec.developerInstructions,
     };
     if (modelName) startParams.model = modelName;
 
@@ -572,6 +577,7 @@ export class CodexEngine {
       const startRes = await this.#request("turn/start", {
         threadId,
         effort: codexEffort,
+        summary: "detailed",
         input: [{ type: "text", text: prompt }],
       });
       turnId = startRes?.turn?.id || "";
@@ -611,7 +617,7 @@ export class CodexEngine {
     }
   }
 
-  async runReview({ cwd, model, existingSessionId, target = { type: "uncommittedChanges" }, onActivity, onSessionReady }) {
+  async runReview({ cwd, model, existingSessionId, customRules, target = { type: "uncommittedChanges" }, onActivity, onSessionReady }) {
     const t0 = Date.now();
     const threadInfo = await this.#ensureThread({
       cwd,
@@ -619,6 +625,7 @@ export class CodexEngine {
       modelName: model?.modelName || "",
       existingSessionId,
       sandbox: "read-only",
+      customRules,
     });
     const threadId = threadInfo.sessionId;
     this.activeTurns.set(threadId, { id: "", interruptPending: false });

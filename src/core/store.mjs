@@ -121,11 +121,13 @@ export class RelayStore {
           modelId: "cli-codex-default",
           queue: ["cli-codex-default"],
           effort: "medium",
+          customRules: "",
         },
         hephaestus: {
           modelId: "cli-codex-default",
           queue: ["cli-codex-default"],
           effort: "medium",
+          customRules: "",
         },
       },
       models: structuredClone(DEFAULT_MODELS),
@@ -146,6 +148,7 @@ export class RelayStore {
       modelId: queue[0],
       queue,
       effort: ["off", "low", "medium", "high"].includes(merged.effort) ? merged.effort : "medium",
+      customRules: String(merged.customRules ?? "").slice(0, 4000),
     };
   }
 
@@ -464,6 +467,29 @@ export class RelayStore {
     if (typeof modelId === "string" && modelId.startsWith("dsh:")) {
       const dshMatch = readDshConfigModels().find((m) => m.id === modelId);
       if (dshMatch) return dshMatch;
+      // Dynamic fallback for ACP-discovered account models (e.g. dsh:deepseek-account:deepseek-v4-pro):
+      // those are never written to static config, so resolve them from the id itself.
+      const parts = modelId.slice(4);
+      const sep = parts.indexOf(":");
+      if (sep > 0) {
+        const providerId = parts.slice(0, sep);
+        const modelName = parts.slice(sep + 1);
+        if (providerId && modelName) {
+          return {
+            id: modelId,
+            name: modelName,
+            modelName,
+            mode: "api",
+            engine: "deepseek-harness",
+            providerId,
+            source: "dsh",
+            readonly: true,
+            authType: providerId === "deepseek-account" ? "account" : undefined,
+            baseUrl: "",
+            apiKey: "",
+          };
+        }
+      }
     }
     const fallback = this.settings.models[0];
     if (!fallback) return null;
@@ -480,6 +506,7 @@ export class RelayStore {
     return {
       role,
       effort: r.effort || "medium",
+      customRules: r.customRules || "",
       model: queue[0] || this.getModelById(r.modelId),
       queue,
     };
@@ -544,6 +571,9 @@ export class RelayStore {
         }
         if (["off", "low", "medium", "high"].includes(rp.effort)) {
           this.settings.roles[role].effort = rp.effort;
+        }
+        if (typeof rp.customRules === "string") {
+          this.settings.roles[role].customRules = rp.customRules.slice(0, 4000);
         }
       }
     }

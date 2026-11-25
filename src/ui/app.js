@@ -105,6 +105,7 @@ const I18N = {
     gotoUpgradeNode: "需 Node 24 · 去查看 →",
     sourceDsh: "来自 DSH",
     readOnlyDsh: "DSH 只读",
+    accountChannelHint: "官方账号登录态 · 由 DeepSeek Harness 提供",
     manageChannel: "管理",
     changeModels: "增减模型",
     channelName: "渠道名称（可选）",
@@ -167,6 +168,11 @@ const I18N = {
     inspectorConfigureBtn: "配置并开启",
     inspectorOff: "关闭（纯代码结构化提取）",
     keepOfficeTitle: "Codex 保留办公插件",
+    customRulesTitle: "角色常驻守则（可选）",
+    customRulesConfigured: "已配置",
+    oracleCustomRules: "白泽（Oracle）常驻守则",
+    hephaestusCustomRules: "祝融（Hephaestus）常驻守则",
+    customRulesNote: "仅在新会话第 1 轮注入，续跑不重复拼接、不伤缓存；默认留空",
     keepOfficeDesc: "开启保留 PDF / Excel / Word / PPT 插件；关闭则前缀最轻、缓存最稳",
     fullAccessTitle: "允许 Hephaestus 无沙箱运行",
     fullAccessDesc: "默认关闭（严格限制在项目目录沙箱内）；仅限信任项目开启，开启后主 Agent 仅在打包/浏览器等需要时才按需放开（Oracle 永久只读）",
@@ -309,6 +315,7 @@ const I18N = {
     gotoUpgradeNode: "Node 24 req · Setup →",
     sourceDsh: "From DSH",
     readOnlyDsh: "DSH · Read-only",
+    accountChannelHint: "Official account session · served by DeepSeek Harness",
     manageChannel: "Manage",
     changeModels: "Edit Models",
     channelName: "Channel Name (optional)",
@@ -371,6 +378,11 @@ const I18N = {
     inspectorConfigureBtn: "Configure & Enable",
     inspectorOff: "Off (Code structured extraction)",
     keepOfficeTitle: "Keep Codex Office Plugins",
+    customRulesTitle: "Role Custom Rules (Optional)",
+    customRulesConfigured: "Configured",
+    oracleCustomRules: "Oracle Custom Rules",
+    hephaestusCustomRules: "Hephaestus Custom Rules",
+    customRulesNote: "Injected on Turn 1 of new sessions only (preserves Prompt Cache); empty by default",
     keepOfficeDesc: "Keep PDF / Excel / Word / PPT plugins; off keeps prefix leanest for cache",
     fullAccessTitle: "Allow Hephaestus Full Access (No Sandbox)",
     fullAccessDesc: "Off by default (workspace-write sandbox). Enable only for trusted workspaces so the lead agent can opt out of sandbox for builds/browsers (Oracle is always read-only)",
@@ -773,6 +785,10 @@ let ui = {
   openDropdownRole: null,
   openFallbackRole: null,
   inspectorDropdownOpen: false,
+  customRulesOpen: false,
+  customRulesDraft: {},
+  customRulesSaving: false,
+  customRulesStatus: "",
   expandedHarness: null,
   highlightEngine: null,
   expandedChannels: new Set(),
@@ -895,6 +911,8 @@ function computeStateSig(st) {
     st.telemetry?.cumulativeHitRate ?? "",
     st.codexRateLimits?.updatedAt || "",
     (st.channels || st.settings?.channels || []).length,
+    (st.dshModels || []).length,
+    hasConfiguredCustomRules(st.settings),
     jobsSig,
     sessSig,
   ].join("#");
@@ -918,7 +936,9 @@ function scheduleNextPoll() {
         await callTool("agent_relay_ui_get_state", { forceDetect: false, fetchRateLimits: false });
         if (ui.detailJobId) await refreshJobDetail({ silent: true });
         const sig = computeStateSig(state);
-        const uiBusy = Boolean(ui.modal || ui.openMenu || ui.inspectorDropdownOpen);
+        const uiBusy = ui.modal || ui.openMenu || ui.inspectorDropdownOpen ||
+          document.activeElement?.tagName === "TEXTAREA" ||
+          (ui.tab === "settings" && ui.customRulesOpen);
         if (!uiBusy && sig !== lastRenderedSig) {
           lastRenderedSig = sig;
           render();
@@ -1053,6 +1073,32 @@ function getApiLibraryModels() {
   return [...dshList, ...customList];
 }
 
+// Inspector summarization calls a raw HTTP endpoint, so login-only DeepSeek Account
+// models (authType === "account", no baseUrl) must never be offered there.
+function getInspectorApiModels() {
+  return getApiLibraryModels().filter((m) => Boolean(m.baseUrl) && m.authType !== "account");
+}
+
+function isAccountModel(model) {
+  return model?.authType === "account" || model?.providerId === "deepseek-account";
+}
+
+// Fallback friendly names for account models resolved from an id alone (before ACP sync).
+const ACCOUNT_MODEL_LABELS = {
+  "deepseek-flash": "DeepSeek-V4.1-Flash",
+  "deepseek-v4-pro": "DeepSeek-V4-Pro",
+};
+
+function accountFriendlyName(modelName) {
+  const key = String(modelName || "");
+  return ACCOUNT_MODEL_LABELS[key] || key;
+}
+
+function accountChannelName(model) {
+  if (!isAccountModel(model)) return model?.channelName || model?.providerId || "";
+  return state?.settings?.lang === "en" ? "DeepSeek Account" : "DeepSeek 账号";
+}
+
 function getApiChannels() {
   const custom = state?.channels || state?.settings?.channels;
   let customChannels = Array.isArray(custom) ? custom : [];
@@ -1089,7 +1135,7 @@ function renderChannelGroups(models, renderModel) {
   const groups = new Map();
   for (const model of models) {
     const id = model.channelId || model.providerId;
-    if (!groups.has(id)) groups.set(id, { name: model.channelName || model.providerId, models: [] });
+    if (!groups.has(id)) groups.set(id, { name: accountChannelName(model) || model.providerId, models: [] });
     groups.get(id).models.push(model);
   }
   return Array.from(groups.values(), (group) => `
@@ -1170,14 +1216,19 @@ function resolveModelMeta(modelId) {
     const sep = rest.indexOf(":");
     const providerId = sep > 0 ? rest.slice(0, sep) : "dsh";
     const modelName = sep > 0 ? rest.slice(sep + 1) : rest;
+    const isAccount = providerId === "deepseek-account";
+    const friendly = isAccount ? accountFriendlyName(modelName) : modelName;
     return {
       id: modelId,
-      name: modelName,
+      name: friendly,
+      displayName: friendly,
       mode: "api",
       engine: "deepseek-harness",
       providerId,
       modelName,
       source: "dsh",
+      authType: isAccount ? "account" : undefined,
+      baseUrl: "",
       hasApiKey: true,
       ready: isHarnessReady("deepseek-harness"),
     };
@@ -1201,6 +1252,8 @@ function modelStatusColor(model) {
   const eng = state?.engines?.[model.engine];
   if (!eng) return "var(--ar-text-3)";
   if (model.mode === "api") {
+    // Login-only account models have no API key by design; readiness is the engine status.
+    if (isAccountModel(model)) return eng.status === "ready" ? "var(--ar-emerald)" : "var(--ar-amber)";
     if (!model.hasApiKey && model.source !== "dsh") return "var(--ar-amber)";
     return eng.installed ? "var(--ar-emerald)" : "var(--ar-amber)";
   }
@@ -1211,6 +1264,11 @@ function modelStatusColor(model) {
 
 function modelLabel(model) {
   if (!model) return "—";
+  // DeepSeek Account models carry a friendly ACP display name (DeepSeek-V4.1-Flash, DeepSeek-V4-Pro);
+  // prefer it over the raw wire model id everywhere the user picks or reviews a model.
+  if (isAccountModel(model)) {
+    return model.displayName || model.name || accountFriendlyName(model.modelName) || model.id;
+  }
   return model.name || model.modelName || model.id;
 }
 
@@ -1360,7 +1418,8 @@ function stepDuration(a) {
     const started = Date.parse(a.ts);
     if (Number.isFinite(started)) seconds = Math.max(seconds ?? 0, (Date.now() - started) / 1000);
   }
-  if (!Number.isFinite(seconds) || seconds < 0) return "";
+  if (!Number.isFinite(seconds) || seconds <= 0) return "";
+  if (a.kind === "thought" && seconds < 0.5) return "";
   return seconds >= 60 ? elapsedLabel(seconds) : `${seconds >= 1 ? Math.round(seconds) : Number(seconds.toFixed(1))}s`;
 }
 
@@ -1414,7 +1473,11 @@ function stepLineHtml(a, { allowDrawer }) {
 function timelineStepsHtml(rows, { allowDrawer = true, previewLimit = Infinity, finalBody = "", error = "" } = {}) {
   return (rows || []).filter((a) => {
     const kind = a.kind || a.type;
-    if (kind !== "output") return Boolean(kind === "thought" || (STEP_LABELS[kind] && !(error && a.summary === error)));
+    if (kind === "thought") {
+      if (a.status === "running") return true;
+      return Boolean(String(a.detail || "").trim() || stepDuration(a));
+    }
+    if (kind !== "output") return Boolean(STEP_LABELS[kind] && !(error && a.summary === error));
     if (!a.title && !a.detail) return false;
     if (!finalBody) return true;
     const detail = String(a.detail || "").trim();
@@ -1722,11 +1785,18 @@ function renderHarnessPicker(role, mode, queueIds, activeEngine) {
     const renderModel = (m) => {
       const isSel = mode === "primary" && m.id === primaryId;
       const act = mode === "primary" ? "pick-role-model" : "add-fallback";
+      // Account models get their ACP friendly name; other DSH models keep the compact wire id.
+      const label =
+        eid === "deepseek-harness"
+          ? isAccountModel(m)
+            ? modelLabel(m)
+            : m.modelName
+          : modelLabel(m);
       return `
         <button class="dropdown-item ${isSel ? "selected" : ""}" data-action="${act}" data-role="${role}" data-model="${esc(m.id)}">
           <span class="dropdown-main">
             <span class="dot" style="background:${modelStatusColor(m)}"></span>
-            <span class="dropdown-name">${esc(eid === "deepseek-harness" ? m.modelName : modelLabel(m))}</span>
+            <span class="dropdown-name">${esc(label)}</span>
             ${m.source === "dsh" ? `<span class="source-tag">${t("sourceDsh")}</span>` : ""}
           </span>
           ${isSel ? iconSvg("check") : ""}
@@ -1941,10 +2011,21 @@ function renderTeamTab() {
 }
 
 function renderChannelCard(channel) {
-  const { id, name, models, baseUrl, maskedApiKey } = channel;
+  const { id, models, maskedApiKey } = channel;
   const provider = (state.providers || []).find((p) => p.id === channel.providerId);
   const readOnly = channel.source === "dsh";
   const expanded = ui.expandedChannels.has(id);
+  const isAccount = channel.authType === "account" || channel.providerId === "deepseek-account";
+  // Account channels are login-only: no endpoint URL and no API key, so never show an
+  // empty URL row or a "missing key" hint. Show the DSH readiness dot instead.
+  const name = isAccount ? accountChannelName(channel) : channel.name;
+  const baseUrl = channel.baseUrl || "";
+  const readyDot = isAccount
+    ? `<span class="dot" style="background:${harnessDotColor("deepseek-harness")}"></span>`
+    : "";
+  const subLine = isAccount
+    ? `<span class="model-sub">${readyDot}${t("accountChannelHint")}</span>`
+    : `<span class="model-sub mono truncate" title="${esc(baseUrl)}">${esc(baseUrl)}</span>`;
   return `
     <div class="model-row channel-card" data-channel-card="${esc(id)}">
       <div class="model-row-top channel-card-head">
@@ -1954,9 +2035,9 @@ function renderChannelCard(channel) {
             <span class="channel-title">
               <span class="model-name truncate">${esc(name)}</span>
               <span class="source-tag channel-count">${models.length} ${t("modelCountSuffix")}</span>
-              ${maskedApiKey ? `<span class="mono channel-key">${esc(maskedApiKey)}</span>` : ""}
+              ${!isAccount && maskedApiKey ? `<span class="mono channel-key">${esc(maskedApiKey)}</span>` : ""}
             </span>
-            <span class="model-sub mono truncate" title="${esc(baseUrl)}">${esc(baseUrl)}</span>
+            ${subLine}
           </span>
           <span class="channel-chevron">${iconSvg("chevron")}</span>
         </button>
@@ -1970,7 +2051,11 @@ function renderChannelCard(channel) {
       ${expanded ? `<div class="channel-models">
         ${models.map((model) => `
           <span class="channel-model-chip mono">
-            <span class="truncate" title="${esc(model.modelName)}">${esc(model.modelName)}</span>
+            <span class="truncate" title="${esc(model.modelName)}">${esc(
+              isAccount || model.authType === "account" || model.providerId === "deepseek-account"
+                ? model.name || accountFriendlyName(model.modelName)
+                : model.modelName
+            )}</span>
             ${readOnly ? "" : `<button class="chip-btn danger" data-action="remove-channel-model" data-channel="${esc(id)}" data-model-id="${esc(model.id)}" aria-label="${t("remove")} ${esc(model.modelName)}">×</button>`}
           </span>`).join("")}
         ${readOnly ? "" : `<button class="btn xs" data-action="open-manage-channel" data-channel="${esc(id)}">${iconSvg("plus")} ${t("changeModels")}</button>`}
@@ -2163,9 +2248,13 @@ function renderCacheTab() {
   `;
 }
 
+function hasConfiguredCustomRules(settings) {
+  return Boolean(settings?.roles?.oracle?.customRules?.trim() || settings?.roles?.hephaestus?.customRules?.trim());
+}
+
 function renderSettingsTab() {
   const s = state.settings;
-  const apiModels = getApiLibraryModels();
+  const apiModels = getInspectorApiModels();
   const inspectorActive = Boolean(s.inspectorEnabled && s.inspectorModelId);
   return `
     <div>
@@ -2325,6 +2414,28 @@ function renderSettingsTab() {
             <span class="setting-desc">${t("keepOfficeDesc")}</span>
           </div>
           <button class="switch sm ${s.codexKeepOfficePlugins ? "on" : ""}" data-action="toggle-bool" data-key="codexKeepOfficePlugins"></button>
+        </div>
+
+        <div class="setting-item custom-rules">
+          <button class="custom-rules-toggle setting-title" data-action="toggle-custom-rules" aria-expanded="${ui.customRulesOpen}" aria-controls="custom-rules-editor">
+            <span aria-hidden="true">${ui.customRulesOpen ? "▾" : "▸"}</span>
+            ${t("customRulesTitle")}
+            ${hasConfiguredCustomRules(s) ? `<span class="custom-rules-badge">${t("customRulesConfigured")}</span>` : ""}
+          </button>
+          <div id="custom-rules-editor" ${ui.customRulesOpen ? "" : "hidden"}>
+            ${ui.customRulesOpen ? `
+              ${["oracle", "hephaestus"].map((role) => `
+                <label class="custom-rules-field">
+                  <span class="setting-title">${t(role + "CustomRules")}</span>
+                  <textarea class="text-input" rows="3" maxlength="4000" data-custom-rules-role="${role}" ${ui.customRulesSaving ? "disabled" : ""}>
+${esc(ui.customRulesDraft[role] ?? s.roles?.[role]?.customRules ?? "")}</textarea>
+                </label>`).join("")}
+              <div class="custom-rules-footer">
+                <span class="setting-desc">${t("customRulesNote")}</span>
+                <button class="btn xs" data-action="save-custom-rules" ${ui.customRulesSaving ? "disabled" : ""}>${t("save")}</button>
+              </div>
+              <div class="setting-desc" role="status">${ui.customRulesStatus ? t(ui.customRulesStatus) : ""}</div>` : ""}
+          </div>
         </div>
       </div>
     </div>
@@ -2633,6 +2744,13 @@ function syncModalInputs() {
 }
 
 document.addEventListener("input", (e) => {
+  const rulesRole = e.target.dataset.customRulesRole;
+  if (rulesRole) {
+    ui.customRulesDraft[rulesRole] = e.target.value;
+    ui.customRulesStatus = "";
+    document.querySelector('#custom-rules-editor [role="status"]').textContent = "";
+    return;
+  }
   if (e.target.id === "m-prov-search") {
     ui.providerSearch = e.target.value;
     render();
@@ -2803,7 +2921,7 @@ document.addEventListener("click", async (e) => {
       render();
       return;
     }
-    const apiModels = getApiLibraryModels();
+    const apiModels = getInspectorApiModels();
     if (apiModels.length > 0) {
       const keepExisting = apiModels.some((m) => m.id === state.settings.inspectorModelId);
       await callTool("agent_relay_ui_update_settings", {
@@ -2825,6 +2943,31 @@ document.addEventListener("click", async (e) => {
   if (act === "toggle-master") {
     await callTool("agent_relay_ui_update_settings", { enabled: !state.settings.enabled });
     render();
+    return;
+  }
+  if (act === "toggle-custom-rules") {
+    ui.customRulesOpen = !ui.customRulesOpen;
+    render();
+    document.querySelector('[data-action="toggle-custom-rules"]')?.focus({ preventScroll: true });
+    return;
+  }
+  if (act === "save-custom-rules") {
+    const roles = Object.fromEntries(Object.entries(ui.customRulesDraft).map(([role, customRules]) => [role, { customRules }]));
+    if (ui.customRulesSaving || !Object.keys(roles).length) return;
+    ui.customRulesSaving = true;
+    ui.customRulesStatus = "";
+    render();
+    try {
+      const result = await callTool("agent_relay_ui_update_settings", { roles });
+      if (!result?.settings) throw new Error(t("saveFailed"));
+      ui.customRulesDraft = {};
+      ui.customRulesStatus = "saved";
+    } catch {
+      ui.customRulesStatus = "saveFailed";
+    } finally {
+      ui.customRulesSaving = false;
+      render();
+    }
     return;
   }
   if (act === "toggle-bool") {
@@ -3231,8 +3374,9 @@ async function boot() {
     }
 
     const needBgSync = Boolean(
-      state?.engines?.codex?.status === "ready" &&
-        (!state?.codexRateLimits || (state?.codexModels?.length || 0) <= 1)
+      (state?.engines?.codex?.status === "ready" &&
+        (!state?.codexRateLimits || (state?.codexModels?.length || 0) <= 1)) ||
+        (state?.engines?.["deepseek-harness"]?.status === "ready" && !state?.dshModelsSynced)
     );
     if (needBgSync || !reportedDiag) {
       reportedDiag = true;

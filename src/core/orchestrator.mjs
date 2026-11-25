@@ -19,6 +19,24 @@ const CRASH_RECOVERY_ERROR = "Host/MCP exited while job was running";
 
 const __orchestratorDir = path.dirname(fileURLToPath(import.meta.url));
 
+export function applyTurn1CustomRules(prompt, customRules, isFirstTurn) {
+  if (!isFirstTurn) return prompt;
+  const rules = customRules?.trim();
+  return rules ? `[Role Custom Rules]\n${rules}\n[/Role Custom Rules]\n\n${prompt}` : prompt;
+}
+
+export function formatMappedDriveSandboxHint({ platform, role, engine, cwd, activities, errorText, resultText }) {
+  if (platform !== "win32" || role !== "oracle" || engine !== "codex" || !/^[a-bd-z]:\\/i.test(cwd)) {
+    return "";
+  }
+  const directoryError = /\b(?:CreateProcessWithLogonW failed:\s*267|ERROR_DIRECTORY)\b/i;
+  if (!directoryError.test(errorText || "") && !directoryError.test(resultText || "") &&
+      !activities?.some((step) => (step.kind || step.type) === "cmd" && step.exitCode === -1)) {
+    return "";
+  }
+  return "[Hint] Codex Windows read-only sandbox cannot access mapped network drives (e.g. Z:, error 267). Use a local drive checkout or switch Oracle to DeepSeek Harness (dsh).";
+}
+
 function isWaitJobScript(candidate) {
   try {
     return path.basename(candidate) === "wait-job.mjs" && fs.statSync(candidate).isFile();
@@ -302,6 +320,11 @@ export class RelayOrchestrator {
 
   #markJobTerminal(job, status, error = "") {
     job.status = status;
+    if (status === "failed") {
+      const { role, engine, cwd, activities } = job;
+      const hint = formatMappedDriveSandboxHint({ platform: process.platform, role, engine, cwd, activities, errorText: error });
+      if (hint) error = error ? `${error}\n\n${hint}` : hint;
+    }
     job.error = error || null;
     job.finishedAt = Date.now();
     for (const activity of job.activities || []) {
@@ -1061,7 +1084,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
               model,
               effort: effort || roleCfg.effort || "medium",
               sandbox: effectiveSandbox,
-              prompt: worktreeHint + turnPrompt,
+              prompt: worktreeHint + applyTurn1CustomRules(turnPrompt, roleCfg.customRules, !canReuse),
               existingSessionId,
               onSessionReady: (sid) => this.#onSessionReady(job, sid),
               onActivity: attachTurnSigToJob(job, (ev) => this.#recordActivity(job, ev)),
@@ -1112,7 +1135,11 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
               contextPct: res.usage.contextPct,
             });
 
-            const safeText = this.#trimOutputIfHuge(res.text, jobId);
+            const hint = formatMappedDriveSandboxHint({
+              platform: process.platform, role, engine: engineId, cwd: effectiveCwd, activities: job.activities, resultText: res.text,
+            });
+            const resultText = hint ? `${res.text}\n\n${hint}` : res.text;
+            const safeText = this.#trimOutputIfHuge(resultText, jobId);
             const footer = this.formatTelemetryFooter({
               role,
               slot: cleanSlot,
@@ -1132,7 +1159,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
 
             job.hitRate = res.usage?.cacheReported ? res.usage.hitRate : null;
             job.contextPct = res.usage?.contextPct ?? null;
-            job.finalText = res.text === safeText ? "" : `${res.text}\n\n${footer}`;
+            job.finalText = resultText === safeText ? "" : `${resultText}\n\n${footer}`;
             job.result = {
               status: "completed",
               jobId,
@@ -1614,6 +1641,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
                     cwd: workDir,
                     model,
                     existingSessionId,
+                    customRules: canReuse ? undefined : roleCfg.customRules,
                     target,
                     onSessionReady,
                     onActivity,
@@ -1624,7 +1652,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
                     model,
                     effort: roleCfg.effort || "medium",
                     sandbox: "read-only",
-                    prompt: reviewPrompt,
+                    prompt: applyTurn1CustomRules(reviewPrompt, roleCfg.customRules, !canReuse),
                     existingSessionId,
                     onSessionReady,
                     onActivity,
@@ -1674,7 +1702,11 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
               contextPct: res.usage.contextPct,
             });
 
-            const safeText = this.#trimOutputIfHuge(res.text, jobId);
+            const hint = formatMappedDriveSandboxHint({
+              platform: process.platform, role: "oracle", engine: engineId, cwd: workDir, activities: job.activities, resultText: res.text,
+            });
+            const resultText = hint ? `${res.text}\n\n${hint}` : res.text;
+            const safeText = this.#trimOutputIfHuge(resultText, jobId);
             const footer = this.formatTelemetryFooter({
               role: "oracle",
               slot: "default",
@@ -1689,7 +1721,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
             });
             job.hitRate = res.usage?.cacheReported ? res.usage.hitRate : null;
             job.contextPct = res.usage?.contextPct ?? null;
-            job.finalText = res.text === safeText ? "" : `${res.text}\n\n${footer}`;
+            job.finalText = resultText === safeText ? "" : `${resultText}\n\n${footer}`;
             job.result = {
               status: "completed",
               jobId,
@@ -1983,13 +2015,18 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
 
   async getDashboardState(forceDetect = false, fetchRateLimits = false) {
     const engines = detectEngines(forceDetect, this.store.dataDir);
+    const dshEngine = this.engines["deepseek-harness"];
+    const dshSyncEnabled = engines["deepseek-harness"]?.status === "ready" && (forceDetect || fetchRateLimits);
     let codexRateLimits = this.engines.codex.latestRateLimits;
     if (engines.codex?.status === "ready" && fetchRateLimits) {
       await Promise.allSettled([
         this.engines.codex.readRateLimits(true),
         this.engines.codex.listModels(false),
+        ...(dshSyncEnabled ? [dshEngine.listAccountModels(forceDetect)] : []),
       ]);
       codexRateLimits = this.engines.codex.latestRateLimits;
+    } else if (dshSyncEnabled) {
+      await Promise.allSettled([dshEngine.listAccountModels(forceDetect)]);
     }
 
     const codexModels =
@@ -2007,32 +2044,46 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
           ];
 
     const dshChannelMap = new Map();
-    const dshModels = readDshConfigModels().map(({ apiKey, ...model }) => {
-      const providerId = model.providerId;
+    const dshModels = [];
+    const seenDshModelIds = new Set();
+    // Account models discovered live via ACP first, then static ~/.dsh/ config models.
+    const dshSources = [...(dshEngine.latestModels || []), ...readDshConfigModels()];
+    for (const rawModel of dshSources) {
+      if (!rawModel || typeof rawModel !== "object") continue;
+      const { apiKey, ...model } = rawModel;
+      if (!model.id || seenDshModelIds.has(model.id)) continue;
+      seenDshModelIds.add(model.id);
+      const providerId = model.providerId || "dsh";
+      const isAccount = model.authType === "account" || providerId === "deepseek-account";
       let channel = dshChannelMap.get(providerId);
       if (!channel) {
         channel = {
           id: `dsh:${providerId}`,
-          name: API_PROVIDERS.find((p) => p.id === providerId)?.nameEn || providerId,
+          name:
+            (isAccount ? model.channelName : "") ||
+            API_PROVIDERS.find((p) => p.id === providerId)?.nameEn ||
+            model.channelName ||
+            providerId,
           providerId,
-          baseUrl: model.baseUrl,
+          baseUrl: model.baseUrl || "",
           source: "dsh",
           readOnly: true,
-          hasApiKey: Boolean(apiKey),
-          maskedApiKey: maskSecret(apiKey),
+          authType: isAccount ? "account" : undefined,
+          hasApiKey: isAccount ? true : Boolean(apiKey),
+          maskedApiKey: isAccount ? "" : maskSecret(apiKey),
           models: [],
         };
         dshChannelMap.set(providerId, channel);
       }
-      channel.models.push({ id: model.id, modelName: model.modelName });
-      return {
+      channel.models.push({ id: model.id, modelName: model.modelName, name: model.displayName || model.name });
+      dshModels.push({
         ...model,
         channelId: channel.id,
         channelName: channel.name,
-        hasApiKey: Boolean(apiKey),
-        maskedApiKey: maskSecret(apiKey),
-      };
-    });
+        hasApiKey: isAccount ? true : Boolean(apiKey),
+        maskedApiKey: isAccount ? "" : maskSecret(apiKey),
+      });
+    }
     const settings = this.store.getPublicState();
 
     return {
@@ -2042,6 +2093,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}`;
       codexRateLimits,
       codexModels,
       dshModels,
+      dshModelsSynced: dshEngine.modelsFetchedAt > 0,
       dshChannels: [...dshChannelMap.values()],
       cliSubModels: {
         codex: codexModels,
