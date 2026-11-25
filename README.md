@@ -25,6 +25,18 @@ A.stand lets your Antigravity Lead Agent stay focused on architecture, planning,
 
 ---
 
+## Open the A.stand panel
+
+After installing A.stand, restart Antigravity once. You can open the panel from either location:
+
+1. **Left sidebar** → Under **Plugins**, click **A.stand**.
+
+   ![A.stand listed under Plugins in the Antigravity left sidebar](./docs/screenshots/open-panel-sidebar.png)
+
+2. **Conversation menu** → Click **⋮** in the upper-right corner, open **Plugins**, and select **A.stand**.
+
+   ![The Plugins submenu in the conversation menu, with A.stand available to select](./docs/screenshots/open-panel-conversation-menu.png)
+
 ## Screenshots
 
 ### Team panel — live subagent timeline & Prompt Cache
@@ -107,7 +119,7 @@ Honest, per-engine maturity — what actually works today:
 npm install
 npm run install:antigravity
 ```
-Restart Antigravity once, then open **A.stand** from the left sidebar or the right pane **`+`** button.
+Follow the [panel opening instructions](#open-the-astand-panel) after installation.
 
 ### Verify & Uninstall
 ```bash

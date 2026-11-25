@@ -28,6 +28,18 @@ A.stand 让你的 Antigravity 主 Agent 专注于架构决策、任务拆解与�
 
 ---
 
+## 打开 A.stand 面板
+
+安装完成后重启一次 Antigravity，然后任选一个入口打开面板。
+
+1. **左侧边栏** → 在 **Plugins（插件）** 区域点击 **A.stand**。
+
+   ![Antigravity 左侧边栏的 Plugins 区域显示 A.stand](./docs/screenshots/open-panel-sidebar.png)
+
+2. **会话菜单** → 点击会话右上角的 **⋮**，展开 **Plugins（插件）**，再点击 **A.stand**。
+
+   ![会话右上角菜单展开 Plugins 子菜单后显示 A.stand](./docs/screenshots/open-panel-conversation-menu.png)
+
 ## 界面预览
 
 ### 团队面板 — 子 Agent 实时折叠对话流与 Prompt Cache
@@ -110,7 +122,7 @@ A.stand 让你的 Antigravity 主 Agent 专注于架构决策、任务拆解与�
 npm install
 npm run install:antigravity
 ```
-安装完成后**重启一次 Antigravity**，从左侧插件栏或右侧面板 **`+`** 菜单打开 **A.stand** 即可。
+安装后请按[打开面板的图文说明](#打开-astand-面板)操作。
 
 ### 自检、测试与卸载
 ```bash

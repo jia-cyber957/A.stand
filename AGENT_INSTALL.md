@@ -63,7 +63,7 @@ npm run check:contracts
 
 Tell the user:
 1. **Restart Antigravity once** so the MCP server registers cleanly.
-2. Open **A.stand** from the left sidebar or the right side-pane **`+`** button.
+2. Open **A.stand** under **Plugins** in the left sidebar, or from the conversation’s upper-right **⋮** menu under **Plugins**. See the [two entry points with screenshots](./README.md#open-the-astand-panel).
 3. Keep the top-right **Master Switch** OFF until at least one engine/model is ready, then turn it **ON** to enable autonomous delegation.
 
 ---
