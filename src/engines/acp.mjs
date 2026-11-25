@@ -11,6 +11,23 @@ import { normalizeUsage } from "../core/telemetry.mjs";
 import { proseTitle, safeKill, UpstreamProtocolError, utf8Env } from "./base.mjs";
 
 const SHELL_TOOL_RE = /\b(pwsh|powershell|bash|sh|zsh|shell|exec|execute|run_command|run_terminal|terminal|command)\b/i;
+// Prompt deadlines are progress-based, not wall-clock based: a turn may legitimately run for
+// hours while it streams reasoning/tool activity, but a silent stall must not hold a session forever.
+const DEFAULT_PROMPT_IDLE_TIMEOUT_MS = 30 * 60_000;
+const DEFAULT_PROMPT_ABSOLUTE_TIMEOUT_MS = 4 * 60 * 60_000;
+const DEFAULT_PROMPT_DRAIN_TIMEOUT_MS = 60_000;
+// Projection row schema versions this adapter understands. A version bump means the row shape
+// may have changed, so the projection sample is ignored and the transcript/RPC paths are used.
+const PROJECTION_CACHE_VERSIONS = { tokenUsage: 2, turnBoundary: 2, contextPressure: 5 };
+// dsh only emits these committed-progress updates during a turn. Topology/config
+// notifications and transport keepalives must not extend the prompt idle deadline.
+const PROGRESS_UPDATE_KINDS = new Set([
+  "agent_message_chunk",
+  "agent_thought_chunk",
+  "tool_call",
+  "tool_call_update",
+  "usage_update",
+]);
 const FILE_TOOL_RE = /\b(read|read_file|view|open_file|edit|edit_file|write|write_file|create_file|apply_patch|patch|replace|multiedit|str_replace|insert)\b/i;
 const SEARCH_TOOL_RE = /\b(grep|glob|find|search|search_files|list_dir|ls|tree|codebase_search)\b/i;
 const THOUGHT_EMIT_MS = 1500;
@@ -72,6 +89,398 @@ export function sanitizeConstrainedLangOutput(output, exitCode) {
     return { output: stripped, exitCode: 0, falsePositiveCleared: true };
   }
   return { output: stripped || raw, exitCode, falsePositiveCleared: false };
+}
+
+// ---- Prompt deadline / session busy guard helpers ----
+
+export const ACP_PROMPT_TIMEOUT_DEFAULTS = Object.freeze({
+  idleMs: DEFAULT_PROMPT_IDLE_TIMEOUT_MS,
+  absoluteMs: DEFAULT_PROMPT_ABSOLUTE_TIMEOUT_MS,
+  drainMs: DEFAULT_PROMPT_DRAIN_TIMEOUT_MS,
+});
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+/**
+ * True only for committed agent progress that proves the model is still working.
+ * `config_option_update`, `available_commands_update`, permission requests and any
+ * transport keepalive must NOT extend the prompt idle deadline.
+ */
+export function isPromptProgressUpdate(update) {
+  return Boolean(update && PROGRESS_UPDATE_KINDS.has(String(update.sessionUpdate || "")));
+}
+
+/**
+ * Sliding idle + absolute deadline for one `session/prompt` request.
+ * The idle window is renewed only by `touch()` (real progress); the absolute cap never moves.
+ * Timers are unref'd so a pending deadline can never keep the host process alive.
+ */
+export class PromptDeadline {
+  constructor({ idleMs = DEFAULT_PROMPT_IDLE_TIMEOUT_MS, absoluteMs = DEFAULT_PROMPT_ABSOLUTE_TIMEOUT_MS, now = Date.now, onExpire } = {}) {
+    this.idleMs = Math.max(1, Number(idleMs) || DEFAULT_PROMPT_IDLE_TIMEOUT_MS);
+    this.absoluteMs = Math.max(this.idleMs, Number(absoluteMs) || DEFAULT_PROMPT_ABSOLUTE_TIMEOUT_MS);
+    this.now = now;
+    this.onExpire = typeof onExpire === "function" ? onExpire : null;
+    this.startedAt = 0;
+    this.lastProgressAt = 0;
+    this.expiredReason = "";
+    this.timer = null;
+    this.armed = false;
+  }
+
+  start() {
+    if (this.armed) return this;
+    this.armed = true;
+    this.startedAt = this.now();
+    this.lastProgressAt = this.startedAt;
+    this.#schedule();
+    return this;
+  }
+
+  /** Record meaningful progress; only this renews the idle window. */
+  touch() {
+    if (!this.armed || this.expiredReason) return;
+    this.lastProgressAt = this.now();
+    this.#schedule();
+  }
+
+  stop() {
+    this.armed = false;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+  }
+
+  snapshot() {
+    return {
+      startedAt: this.startedAt,
+      lastProgressAt: this.lastProgressAt,
+      idleMs: this.idleMs,
+      absoluteMs: this.absoluteMs,
+      expiredReason: this.expiredReason,
+      armed: this.armed,
+    };
+  }
+
+  #schedule() {
+    if (this.timer) clearTimeout(this.timer);
+    const now = this.now();
+    const idleRemaining = this.lastProgressAt + this.idleMs - now;
+    const absoluteRemaining = this.startedAt + this.absoluteMs - now;
+    const wait = Math.max(1, Math.min(idleRemaining, absoluteRemaining));
+    // Deliberately NOT unref'd: an in-flight prompt already owns a pending RPC, and the deadline
+    // must fire deterministically so a stalled turn can never be left dangling.
+    this.timer = setTimeout(() => this.#check(), wait);
+  }
+
+  #check() {
+    this.timer = null;
+    if (!this.armed || this.expiredReason) return;
+    const now = this.now();
+    let reason = "";
+    if (now >= this.startedAt + this.absoluteMs) reason = "absolute";
+    else if (now >= this.lastProgressAt + this.idleMs) reason = "idle";
+    if (!reason) {
+      this.#schedule();
+      return;
+    }
+    this.expiredReason = reason;
+    this.armed = false;
+    try {
+      this.onExpire?.(reason);
+    } catch {}
+  }
+}
+
+// ---- DeepSeek Harness projection-cache telemetry ----
+
+function isNonNegInt(value) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function round1(n) {
+  return Math.round(n * 10) / 10;
+}
+
+function cwdKey(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    const resolved = path.resolve(raw);
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  } catch {
+    return raw;
+  }
+}
+
+const PROJECTION_BUCKET_FIELDS = ["uncachedInputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens"];
+
+function validBuckets(buckets) {
+  if (!buckets || typeof buckets !== "object") return false;
+  return PROJECTION_BUCKET_FIELDS.every((field) => isNonNegInt(buckets[field]));
+}
+
+function bucketTotal(buckets) {
+  return buckets.uncachedInputTokens + buckets.cacheReadTokens + buckets.cacheWriteTokens;
+}
+
+/**
+ * Parse one `storages/session_projcache/sessions/<sessionId>.json` document.
+ *
+ * dsh persists `{ version, record: { identity, rows } }`; each row is `{ ver, seq, val }`.
+ * The token usage row is the projection defined in dsh-token-meter:
+ * `record.rows.tokenUsage.val = { totals, last: { turn, step, buckets } }`.
+ * Returns null for anything that is not that shape; never throws.
+ */
+export function parseAcpProjectionRecord(raw) {
+  let doc = raw;
+  if (typeof raw === "string") {
+    try {
+      doc = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (!doc || typeof doc !== "object") return null;
+  const record = doc.record && typeof doc.record === "object" ? doc.record : doc;
+  const rows = record.rows;
+  if (!rows || typeof rows !== "object") return null;
+  const row = (key) => (rows[key] && typeof rows[key] === "object" ? rows[key] : null);
+  const identity = record.identity && typeof record.identity === "object" ? record.identity : {};
+  const tokenUsage = row("tokenUsage");
+  const turnBoundary = row("turnBoundary");
+  const contextPressure = row("contextPressure");
+  return {
+    identity: {
+      formatVersion: isNonNegInt(identity.formatVersion) ? identity.formatVersion : null,
+      cwd: typeof identity.cwd === "string" ? identity.cwd : "",
+      isSeeded: identity.isSeeded === true,
+      inheritedEventCount: isNonNegInt(identity.inheritedEventCount) ? identity.inheritedEventCount : 0,
+    },
+    tokenUsage: tokenUsage ? { ver: tokenUsage.ver, seq: tokenUsage.seq, val: tokenUsage.val } : null,
+    turnBoundary: turnBoundary ? { ver: turnBoundary.ver, seq: turnBoundary.seq, val: turnBoundary.val } : null,
+    contextPressure: contextPressure
+      ? { ver: contextPressure.ver, seq: contextPressure.seq, val: contextPressure.val }
+      : null,
+  };
+}
+
+/** Snapshot the projection watermarks a turn must advance past before its sample is trusted. */
+export function captureAcpProjectionBaseline(snapshot) {
+  if (!snapshot?.tokenUsage) return null;
+  const { seq, val } = snapshot.tokenUsage;
+  const last = val && typeof val === "object" ? val.last : null;
+  if (!last || !isNonNegInt(last.turn) || !isNonNegInt(last.step)) {
+    return {
+      seq: isNonNegInt(seq) ? seq : null,
+      turn: null,
+      step: null,
+      totals: validBuckets(val?.totals) ? { ...val.totals } : null,
+    };
+  }
+  return {
+    seq: isNonNegInt(seq) ? seq : null,
+    turn: last.turn,
+    step: last.step,
+    totals: validBuckets(val?.totals) ? { ...val.totals } : null,
+  };
+}
+
+/**
+ * Decide whether a projection snapshot is a trustworthy sample for the turn that just ran.
+ *
+ * Freshness requires BOTH: the row watermark advanced past the pre-dispatch baseline AND the
+ * provider step advanced. Without a baseline, the sample must match the transcript's last
+ * assistant step or have been written after dispatch. Stale/reused sessions are rejected.
+ *
+ * `usage` is deliberately scoped to the LAST PROVIDER STEP (`tokenUsage.val.last.buckets`),
+ * matching the existing transcript/RPC semantics. Whole-turn numbers, when derivable from the
+ * session-cumulative `totals` delta, are reported separately under `provenance.turnTotals`.
+ */
+export function evaluateAcpProjectionUsage(snapshot, options = {}) {
+  if (!snapshot) return { ok: false, reason: "no-projection-record" };
+  const identity = snapshot.identity || {};
+  if (options.cwd && identity.cwd && cwdKey(identity.cwd) !== cwdKey(options.cwd)) {
+    return { ok: false, reason: "cwd-mismatch" };
+  }
+  const tokenUsage = snapshot.tokenUsage;
+  if (!tokenUsage) return { ok: false, reason: "missing-tokenUsage-row" };
+  if (tokenUsage.ver !== PROJECTION_CACHE_VERSIONS.tokenUsage) {
+    return { ok: false, reason: `unsupported-tokenUsage-version:${tokenUsage.ver}` };
+  }
+  const val = tokenUsage.val;
+  if (!val || typeof val !== "object") return { ok: false, reason: "malformed-tokenUsage-row" };
+  const last = val.last;
+  if (!last || typeof last !== "object") return { ok: false, reason: "no-provider-step-sample" };
+  if (!isNonNegInt(last.turn) || !isNonNegInt(last.step) || last.step < 1) {
+    return { ok: false, reason: "malformed-provider-step" };
+  }
+  if (!validBuckets(last.buckets)) return { ok: false, reason: "malformed-tokenUsage-buckets" };
+
+  const seq = isNonNegInt(tokenUsage.seq) ? tokenUsage.seq : null;
+  const baseline = options.baseline || null;
+  const transcriptLastStep = options.transcriptLastStep || null;
+  let freshness = "";
+  if (baseline) {
+    const advanced =
+      (isNonNegInt(baseline.turn) && last.turn > baseline.turn) ||
+      (baseline.turn === last.turn && isNonNegInt(baseline.step) && last.step > baseline.step);
+    if (!advanced) return { ok: false, reason: "stale-sample" };
+    if (baseline.seq !== null && baseline.seq !== undefined && seq !== null && seq <= baseline.seq) {
+      return { ok: false, reason: "stale-watermark" };
+    }
+    freshness = "advanced-since-dispatch-baseline";
+  } else if (
+    transcriptLastStep &&
+    transcriptLastStep.turn === last.turn &&
+    transcriptLastStep.step === last.step
+  ) {
+    freshness = "matches-transcript-last-step";
+  } else if (
+    isNonNegInt(options.mtimeMs) &&
+    isNonNegInt(options.startedAtMs) &&
+    options.mtimeMs >= options.startedAtMs - 5_000
+  ) {
+    freshness = "projection-mtime-after-dispatch";
+  } else {
+    return { ok: false, reason: "unverified-freshness" };
+  }
+
+  const buckets = last.buckets;
+  const totalInput = bucketTotal(buckets);
+
+  let context = null;
+  const pressureRow = snapshot.contextPressure;
+  if (pressureRow && pressureRow.ver === PROJECTION_CACHE_VERSIONS.contextPressure && pressureRow.val) {
+    const pv = pressureRow.val;
+    const window = isNonNegInt(pv.contextWindow) ? pv.contextWindow : null;
+    const pressure = isNonNegInt(pv.pressureTokens) ? pv.pressureTokens : null;
+    const surface = isNonNegInt(pv.surfaceTokens) ? pv.surfaceTokens : null;
+    const sampled = isNonNegInt(pv.sampledSurfaceTokens) ? pv.sampledSurfaceTokens : null;
+    let tokens = null;
+    let field = "";
+    if (pressure !== null && surface !== null && sampled !== null) {
+      tokens = Math.max(0, pressure + surface - sampled);
+      field = "record.rows.contextPressure.val.{pressureTokens + surfaceTokens - sampledSurfaceTokens}";
+    } else if (pressure !== null) {
+      tokens = pressure;
+      field = "record.rows.contextPressure.val.pressureTokens";
+    }
+    if (tokens !== null && window) {
+      context = { tokens, contextWindow: window, contextPct: round1((tokens / window) * 100), field };
+    }
+  }
+
+  let turnTotals = null;
+  let turnTotalsReason = "";
+  const totals = val.totals;
+  if (!baseline?.totals) {
+    turnTotalsReason = "no cumulative totals captured before dispatch";
+  } else if (!validBuckets(totals)) {
+    turnTotalsReason = "malformed cumulative totals";
+  } else {
+    const delta = {};
+    for (const field of PROJECTION_BUCKET_FIELDS) delta[field] = totals[field] - baseline.totals[field];
+    if (PROJECTION_BUCKET_FIELDS.some((field) => delta[field] < 0)) {
+      turnTotalsReason = "cumulative totals decreased (retry replacement/compaction); whole-turn delta not derivable";
+    } else {
+      const deltaInput = bucketTotal(delta);
+      turnTotals = {
+        ...delta,
+        totalInputTokens: deltaInput,
+        cacheHitRate: deltaInput > 0 ? round1((delta.cacheReadTokens / deltaInput) * 100) : null,
+        scope: "whole-turn",
+        basis: "record.rows.tokenUsage.val.totals after minus before dispatch",
+      };
+    }
+  }
+
+  const usage = {
+    inputTokens: totalInput,
+    cachedInputTokens: buckets.cacheReadTokens,
+    cacheWriteInputTokens: buckets.cacheWriteTokens,
+    outputTokens: buckets.outputTokens,
+    ...(context ? { contextWindow: context.contextWindow } : {}),
+  };
+  const provenance = {
+    source: "projection.session_projcache",
+    scope: "last-provider-step",
+    sessionId: String(options.sessionId || ""),
+    turn: last.turn,
+    step: last.step,
+    seq,
+    tokenUsageSeq: seq,
+    formatVersion: identity.formatVersion,
+    freshness,
+    fields: {
+      inputTokens:
+        "record.rows.tokenUsage.val.last.buckets.{uncachedInputTokens + cacheReadTokens + cacheWriteTokens}",
+      cachedInputTokens: "record.rows.tokenUsage.val.last.buckets.cacheReadTokens",
+      cacheWriteInputTokens: "record.rows.tokenUsage.val.last.buckets.cacheWriteTokens",
+      outputTokens: "record.rows.tokenUsage.val.last.buckets.outputTokens",
+      contextTokens: context ? context.field : null,
+      contextWindow: context ? "record.rows.contextPressure.val.contextWindow" : null,
+    },
+    context,
+    turnTotals,
+    ...(turnTotalsReason ? { turnTotalsReason } : {}),
+    note: "tokenUsage.val.last is the latest provider step; tokenUsage.val.totals is session-cumulative, so it is never reported as a turn total.",
+  };
+  return { ok: true, usage, provenance, turnTotals, context };
+}
+
+/** Raised when a prompt is requested for a session that already has an unacknowledged turn. */
+export class AcpSessionBusyError extends Error {
+  constructor(sessionId, detail = "") {
+    super(
+      `[deepseek-harness] session ${sessionId} is busy: ${detail || "a prompt is already in flight"}. ` +
+        "Wait for the in-flight turn to settle (or cancel it) before sending another prompt."
+    );
+    this.name = "AcpSessionBusyError";
+    this.sessionId = sessionId;
+    this.isSessionBusy = true;
+  }
+}
+
+/** Raised when a delta resume cannot be distinguished from a busy/failed upstream session. */
+export class AcpResumeIndeterminateError extends Error {
+  constructor(sessionId, cause) {
+    const detail = String(cause?.message || cause || "unknown error");
+    super(
+      `[deepseek-harness] session/resume for ${sessionId} failed indeterminately: ${detail}. ` +
+        "Refusing to silently start a new session and drop the resumed delta; retry after the session settles."
+    );
+    this.name = "AcpResumeIndeterminateError";
+    this.sessionId = sessionId;
+    this.isResumeIndeterminate = true;
+    this.cause = cause;
+  }
+}
+
+/**
+ * A resume failure is indeterminate when it may mean "the session is still active" rather than
+ * "the session does not exist". Only an explicit unknown/unresumable/not-found error is treated
+ * as a definitive miss that may fall back to a fresh session.
+ */
+export function isIndeterminateResumeFailure(err) {
+  const detail = String(err?.message || err || "").toLowerCase();
+  if (!detail) return true;
+  if (/\b(unknown session|not resumable|no such session|session not found|does not exist)\b/.test(detail)) {
+    return false;
+  }
+  if (/(already active|in flight|busy|timeout|timed out|aborted|cancelled|canceled|econnreset|epipe|exited)/.test(detail)) {
+    return true;
+  }
+  // Unknown/unclassified upstream errors are treated as indeterminate on purpose: retrying is
+  // recoverable, silently starting a new session is not.
+  return true;
 }
 
 /**
@@ -483,9 +892,54 @@ export class AcpEngine {
     this.dataDir = dataDir ? path.resolve(dataDir) : "";
     this.clients = new Map(); // profileKey -> client state
     this.connecting = new Map(); // profileKey -> Promise<client state>
+    // sessionId -> busy guard. Held from prompt dispatch until the ORIGINAL RPC replies
+    // (or the child dies). Shared across profiles: a session id is globally unique in dsh.
+    this.busySessions = new Map();
     this.latestModels = [];
     this.modelsFetchedAt = 0;
     this.modelsPromise = null;
+  }
+
+  #isSessionBusy(sessionId) {
+    return Boolean(sessionId && this.busySessions.has(sessionId));
+  }
+
+  /**
+   * Acquire the per-session busy guard.
+   * Returns `{ acquired: false, guard }` when another turn already owns the session, so callers
+   * can wait for the original RPC to settle instead of racing it.
+   */
+  #acquireSessionGuard(sessionId, state) {
+    const existing = this.busySessions.get(sessionId);
+    if (existing) return { acquired: false, guard: existing };
+    const guard = {
+      sessionId,
+      state,
+      startedAt: Date.now(),
+      reason: "",
+      settled: deferred(),
+      released: false,
+    };
+    this.busySessions.set(sessionId, guard);
+    return { acquired: true, guard };
+  }
+
+  #releaseSessionGuard(guard) {
+    if (!guard || guard.released) return;
+    guard.released = true;
+    if (this.busySessions.get(guard.sessionId) === guard) this.busySessions.delete(guard.sessionId);
+    guard.settled.resolve();
+  }
+
+  /** Send `session/cancel` for exactly one session on exactly one client. Never kills shared clients. */
+  #sendCancel(state, sessionId, reason = "") {
+    if (!state || !sessionId) return false;
+    try {
+      state.sendRaw({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId } });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -603,6 +1057,56 @@ export class AcpEngine {
     return `${model?.id || "default"}::${model?.source || "custom"}::${model?.baseUrl || ""}::${model?.modelName || ""}::${keyHash}::${permissionMode}`;
   }
 
+  /**
+   * Read the dsh session-projection cache record for one session.
+   * Returns `{ snapshot, path, mtimeMs }` or null; never throws.
+   */
+  #readProjectionCacheRecord(dshHome, sessionId) {
+    if (!dshHome || !sessionId) return null;
+    try {
+      const file = path.join(dshHome, "storages", "session_projcache", "sessions", `${sessionId}.json`);
+      const fsPath = toLongFsPath(file);
+      if (!fs.existsSync(fsPath)) return null;
+      const stat = fs.statSync(fsPath);
+      const text = fs.readFileSync(fsPath, "utf8");
+      const snapshot = parseAcpProjectionRecord(text);
+      if (!snapshot) return null;
+      return { snapshot, path: file, mtimeMs: stat.mtimeMs };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Wait briefly for dsh's write-behind projection cache to publish a sample for this turn.
+   * The `turn/end` checkpoint is mandatory, but the write can land a few ms after the session
+   * log; polling here avoids losing telemetry to a flush race.
+   *
+   * Cost is bounded and self-limiting: no cache file at all (dsh without the cache plugin)
+   * returns immediately, and polling stops as soon as a fresh sample appears.
+   */
+  async #readFreshProjectionSample(dshHome, sessionId, baseline, options) {
+    let best = null;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const record = this.#readProjectionCacheRecord(dshHome, sessionId);
+      if (!record) {
+        // No record file on the first attempt means the cache is not in use: do not poll.
+        if (attempt === 0) return null;
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        continue;
+      }
+      const evaluated = evaluateAcpProjectionUsage(record.snapshot, {
+        ...options,
+        baseline,
+        mtimeMs: record.mtimeMs,
+      });
+      if (evaluated.ok) return { record, evaluated };
+      best = { record, evaluated };
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    }
+    return best;
+  }
+
   async #readDshSessionCacheUsage(dshHome, sessionId, prevTurnCount = 0) {
     if (!dshHome || !sessionId) return null;
     const readOnce = () => {
@@ -629,6 +1133,7 @@ export class AcpEngine {
         let turnEnds = 0;
         let lastStopReason = "";
         let lastUsage = null;
+        let lastStep = null;
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i].trim();
           if (!line) continue;
@@ -646,10 +1151,13 @@ export class AcpEngine {
               if (u && typeof u === "object" && (typeof u.inputTokens === "number" || typeof u.cacheReadTokens === "number")) {
                 lastUsage = u;
               }
+              const turn = obj?.data?.turn;
+              const step = obj?.data?.step;
+              if (Number.isInteger(turn) && Number.isInteger(step)) lastStep = { turn, step };
             } catch {}
           }
         }
-        if (!lastUsage) return { turnEnds, lastStopReason, usage: null };
+        if (!lastUsage) return { turnEnds, lastStopReason, lastStep, usage: null };
         const uncached = typeof lastUsage.inputTokens === "number" ? lastUsage.inputTokens : 0;
         const hasCache = typeof lastUsage.cacheReadTokens === "number";
         const cached = hasCache ? lastUsage.cacheReadTokens : null;
@@ -658,6 +1166,7 @@ export class AcpEngine {
         return {
           turnEnds,
           lastStopReason,
+          lastStep,
           usage: {
             inputTokens: totalInput > 0 ? totalInput : null,
             ...(hasCache ? { cachedInputTokens: cached } : {}),
@@ -825,6 +1334,7 @@ export class AcpEngine {
         loadedSessions: new Set(),
         sessionRoles: new Map(),
         listeners: new Map(), // sessionId -> fn(msg)
+        earlyCancelSessions: new Set(),
         stderrRing: [],
       };
 
@@ -836,18 +1346,24 @@ export class AcpEngine {
       const request = (method, params = {}, timeoutMs = 45_000) => {
         const id = state.nextId++;
         return new Promise((resolve, reject) => {
-          const timer = setTimeout(() => {
-            state.pending.delete(id);
-            reject(new UpstreamProtocolError("deepseek-harness", state.agentVersion, method, `timeout ${timeoutMs}ms`));
-          }, timeoutMs);
+          // timeoutMs <= 0 disables the transport timer; callers that manage their own
+          // progress-based deadline (session/prompt) must not also be killed by a fixed one.
+          const timer =
+            timeoutMs > 0
+              ? setTimeout(() => {
+                  state.pending.delete(id);
+                  reject(new UpstreamProtocolError("deepseek-harness", state.agentVersion, method, `timeout ${timeoutMs}ms`));
+                }, timeoutMs)
+              : null;
+          timer?.unref?.();
           state.pending.set(id, {
             method,
             resolve: (v) => {
-              clearTimeout(timer);
+              if (timer) clearTimeout(timer);
               resolve(v);
             },
             reject: (e) => {
-              clearTimeout(timer);
+              if (timer) clearTimeout(timer);
               reject(e);
             },
           });
@@ -862,6 +1378,10 @@ export class AcpEngine {
         const err = new Error(`dsh --profile acp exited (code=${code}, signal=${signal})`);
         for (const p of state.pending.values()) p.reject(err);
         state.pending.clear();
+        // A dead child genuinely ends its turns: release only THIS client's session guards.
+        for (const [sid, guard] of this.busySessions) {
+          if (guard.state === state) this.#releaseSessionGuard(guard);
+        }
         for (const fn of state.listeners.values()) fn({ method: "__exit__", params: { code } });
         state.listeners.clear();
         this.clients.delete(key);
@@ -936,7 +1456,20 @@ export class AcpEngine {
     }
   }
 
-  async runTurn({ cwd, role, model, effort = "medium", sandbox, prompt, existingSessionId, onActivity, onSessionReady }) {
+  async runTurn({
+    cwd,
+    role,
+    model,
+    effort = "medium",
+    sandbox,
+    prompt,
+    existingSessionId,
+    onActivity,
+    onSessionReady,
+    idleTimeoutMs,
+    absoluteTimeoutMs,
+    drainTimeoutMs,
+  }) {
     const t0 = Date.now();
     const effectiveEffort = ["off", "low", "medium", "high"].includes(effort) ? effort : "medium";
     const permissionMode =
@@ -952,6 +1485,12 @@ export class AcpEngine {
     let reused = false;
     let resumedFromDisk = false;
 
+    if (sessionId && this.#isSessionBusy(sessionId)) {
+      // Never queue a second prompt behind an unacknowledged turn: dsh answers the retry with
+      // `invalid params (a prompt is already in flight)`, which used to look like a protocol fault.
+      throw new AcpSessionBusyError(sessionId, "a prompt is already in flight for this session");
+    }
+
     if (sessionId && state.loadedSessions.has(sessionId)) {
       reused = true;
     } else if (sessionId) {
@@ -960,7 +1499,12 @@ export class AcpEngine {
         state.loadedSessions.add(sessionId);
         reused = true;
         resumedFromDisk = true;
-      } catch {
+      } catch (err) {
+        // A busy/indeterminate upstream session must NOT silently degrade into a brand-new
+        // session: that loses the delta the caller asked to resume.
+        if (isIndeterminateResumeFailure(err)) {
+          throw new AcpResumeIndeterminateError(sessionId, err);
+        }
         sessionId = "";
       }
     }
@@ -1003,6 +1547,8 @@ export class AcpEngine {
     let rawUsage = null;
     let anonymousMessage = 0;
     let currentMessageId = "";
+    // Progress-based deadline: declared before the listener so real updates can renew it.
+    let deadline = null;
 
     // X-ray state: streamed reasoning + per-tool-call lifecycle for the live timeline.
     // Every activity carries a stable `id` so the orchestrator can merge in place instead of
@@ -1106,6 +1652,9 @@ export class AcpEngine {
     state.listeners.set(sessionId, (msg) => {
       if (msg.method !== "session/update") return;
       const update = msg.params?.update || {};
+      // Only committed agent progress renews the idle window; config/topology updates and
+      // transport keepalives do not.
+      if (isPromptProgressUpdate(update)) deadline?.touch();
       if (update.sessionUpdate === "agent_message_chunk" && update.content?.text) {
         finalizeThought();
         const id = update.messageId ? `id_${update.messageId}` : currentMessageId || `part_${++anonymousMessage}`;
@@ -1214,30 +1763,194 @@ export class AcpEngine {
       }
     });
 
+    // Capture the projection watermarks BEFORE dispatch so a stale/reused record can never be
+    // mistaken for this turn's sample.
+    const projectionBaselineRecord = this.#readProjectionCacheRecord(state.dshHome, sessionId);
+    const projectionBaseline = captureAcpProjectionBaseline(projectionBaselineRecord?.snapshot);
+
+    let guard = null;
+    let drainTimer = null;
     try {
       const prevTurnEnds = this.#countDshTurnEnds(state.dshHome, sessionId);
       const fullPrompt = reused ? prompt : `[Role Instructions]\n${spec.developerInstructions}\n\n[Task]\n${prompt}`;
-      const res = await state.request(
+      const acquired = this.#acquireSessionGuard(sessionId, state);
+      if (!acquired.acquired) {
+        throw new AcpSessionBusyError(sessionId, "another turn is still awaiting its session/prompt reply");
+      }
+      guard = acquired.guard;
+      const drainMs = Math.max(100, Number(drainTimeoutMs) || DEFAULT_PROMPT_DRAIN_TIMEOUT_MS);
+      let deadlineReason = "";
+      const drainExpired = deferred();
+      const clearDrain = () => {
+        if (drainTimer) clearTimeout(drainTimer);
+        drainTimer = null;
+      };
+      const armDrain = () => {
+        if (guard.drainArmed) return;
+        guard.drainArmed = true;
+        // Not unref'd: this timer must deterministically settle the timeout path. It is cleared
+        // as soon as the original RPC settles so it can never delay process exit.
+        drainTimer = setTimeout(() => drainExpired.resolve({ kind: "drain-expired" }), drainMs);
+      };
+      deadline = new PromptDeadline({
+        idleMs: Number(idleTimeoutMs) || DEFAULT_PROMPT_IDLE_TIMEOUT_MS,
+        absoluteMs: Number(absoluteTimeoutMs) || DEFAULT_PROMPT_ABSOLUTE_TIMEOUT_MS,
+        onExpire: (reason) => {
+          deadlineReason = reason;
+          guard.reason = `prompt-${reason}-timeout`;
+          guard.timedOut = true;
+          // Ask only this session to stop; the client (and any sibling sessions) stays alive.
+          this.#sendCancel(state, sessionId, reason);
+          armDrain();
+        },
+      }).start();
+      // Manual cancellation from the orchestrator drains the same way a timeout does.
+      guard.cancel = () => {
+        guard.cancelRequested = true;
+        this.#sendCancel(state, sessionId, "manual");
+        armDrain();
+      };
+      // A cancel that arrived before the prompt was dispatched (e.g. session-ready interrupt)
+      // must not be lost: apply it right after dispatch.
+      if (state.earlyCancelSessions?.delete(sessionId)) {
+        guard.cancel();
+      }
+
+      const promptRpc = state.request(
         "session/prompt",
         {
           sessionId,
           prompt: [{ type: "text", text: fullPrompt }],
         },
-        1_800_000
+        0
       );
+      // The guard is held exactly until the ORIGINAL RPC settles (reply or client death), so an
+      // unacknowledged cancel can never let a second prompt overlap the still-running turn.
+      promptRpc.then(
+        () => this.#releaseSessionGuard(guard),
+        () => this.#releaseSessionGuard(guard)
+      );
+      const outcome = await Promise.race([
+        promptRpc.then((r) => ({ kind: "reply", result: r }), (e) => ({ kind: "error", error: e })),
+        drainExpired.promise,
+      ]);
+      clearDrain();
+
+      if (deadlineReason) {
+        deadline.stop();
+        const acknowledged = outcome.kind !== "drain-expired";
+        const timeoutErr = new UpstreamProtocolError(
+          "deepseek-harness",
+          state.agentVersion,
+          "session/prompt",
+          `${deadlineReason} deadline exceeded (idle ${deadline.idleMs}ms / absolute ${deadline.absoluteMs}ms); ` +
+            (acknowledged
+              ? "session/cancel acknowledged by the agent, turn aborted"
+              : `session/cancel not acknowledged within ${drainMs}ms; the per-session busy guard stays held until the original reply or client exit`)
+        );
+        timeoutErr.isPromptTimeout = true;
+        timeoutErr.timeoutReason = deadlineReason;
+        timeoutErr.cancelAcknowledged = acknowledged;
+        timeoutErr.guardHeld = !acknowledged;
+        timeoutErr.partialText = Array.from(messages.values()).at(-1)?.text || "";
+        if (acknowledged && outcome.kind === "error") timeoutErr.cause = outcome.error;
+        throw timeoutErr;
+      }
+      deadline.stop();
+      if (guard.cancelRequested && outcome.kind === "drain-expired") {
+        const cancelErr = new UpstreamProtocolError(
+          "deepseek-harness",
+          state.agentVersion,
+          "session/prompt",
+          `manual session/cancel was not acknowledged within ${drainMs}ms; the per-session busy guard stays held until the original reply or client exit`
+        );
+        cancelErr.isInterrupted = true;
+        cancelErr.cancelAcknowledged = false;
+        cancelErr.guardHeld = true;
+        cancelErr.partialText = Array.from(messages.values()).at(-1)?.text || "";
+        throw cancelErr;
+      }
+      if (outcome.kind === "error") throw outcome.error;
+      const res = outcome.result;
+      if (guard.cancelRequested) {
+        // Manual cancel acknowledged: return the partial transcript as an interruption.
+        finalizeThought();
+        finishMessage();
+        return {
+          sessionId,
+          turnId: "",
+          reused,
+          resumedFromDisk,
+          resolvedModel: model?.modelName || "deepseek-harness",
+          text: Array.from(messages.values()).at(-1)?.text.trim() || "(interrupted)",
+          stopReason: String(res?.stopReason || "cancelled").toLowerCase(),
+          truncated: false,
+          interrupted: true,
+          usage: normalizeUsage(model?.providerId === "deepseek" ? "deepseek" : "openai", rawUsage),
+          usageProvenance: { source: "none", scope: "interrupted", reason: "turn cancelled before telemetry settled" },
+          actions,
+          elapsedMs: Date.now() - t0,
+        };
+      }
       if (res?.usage || res?._meta?.usage) {
         rawUsage = { ...(rawUsage || {}), ...(res.usage || res._meta.usage) };
       }
       let diskSnap = null;
-      if (rawUsage?.cachedInputTokens === undefined && rawUsage?.cached_input_tokens === undefined) {
+      const hasRpcCache =
+        rawUsage?.cachedInputTokens !== undefined || rawUsage?.cached_input_tokens !== undefined;
+      if (!hasRpcCache || !res?.stopReason) {
         diskSnap = await this.#readDshSessionCacheUsage(state.dshHome, sessionId, prevTurnEnds);
-        if (diskSnap?.usage) {
+        if (!hasRpcCache && diskSnap?.usage) {
           rawUsage = { ...(rawUsage || {}), ...diskSnap.usage };
         }
-      } else if (!res?.stopReason && !res?.stop_reason) {
-        diskSnap = await this.#readDshSessionCacheUsage(state.dshHome, sessionId, prevTurnEnds);
       }
-      const usage = normalizeUsage(model?.providerId === "deepseek" ? "deepseek" : "openai", rawUsage);
+
+      // Projection-cache sample: preferred when it is FRESH and strictly more informative than
+      // the transcript/RPC sample. A stale/reused record never overrides a real provider sample.
+      const projectionSample = await this.#readFreshProjectionSample(state.dshHome, sessionId, projectionBaseline, {
+        transcriptLastStep: diskSnap?.lastStep || null,
+        sessionId,
+        cwd,
+        startedAtMs: t0,
+      });
+      // Precedence (strongest first):
+      //   1. RPC `result.usage`      - the provider's own per-turn report; never overridden.
+      //   2. Fresh projection cache  - exact per-step buckets incl. explicit 0 cache reads.
+      //   3. Session transcript      - last assistant/message usage (older samples, unchanged).
+      //   4. Whatever `usage_update` notifications carried.
+      const projectionEval = projectionSample?.evaluated || { ok: false, reason: "no-projection-record" };
+      const transcriptHasCache = !hasRpcCache && diskSnap?.usage?.cachedInputTokens !== undefined;
+      const useProjection = projectionEval.ok && !hasRpcCache;
+      let usageProvenance;
+      let usage;
+      if (hasRpcCache) {
+        usage = normalizeUsage(model?.providerId === "deepseek" ? "deepseek" : "openai", rawUsage);
+        usageProvenance = {
+          source: "rpc",
+          scope: "rpc-usage-field",
+          ...(diskSnap?.lastStep ? { turn: diskSnap.lastStep.turn, step: diskSnap.lastStep.step } : {}),
+          ...(projectionEval.ok ? { projectionSkipReason: "stronger rpc telemetry present" } : { projectionSkipReason: projectionEval.reason }),
+        };
+      } else if (useProjection) {
+        usage = normalizeUsage(model?.providerId === "deepseek" ? "deepseek" : "openai", projectionEval.usage);
+        usageProvenance = projectionEval.provenance;
+      } else if (transcriptHasCache) {
+        usage = normalizeUsage(model?.providerId === "deepseek" ? "deepseek" : "openai", rawUsage);
+        usageProvenance = {
+          source: "transcript",
+          scope: "last-assistant-step",
+          ...(diskSnap?.lastStep ? { turn: diskSnap.lastStep.turn, step: diskSnap.lastStep.step } : {}),
+          projectionSkipReason: projectionEval.reason,
+        };
+      } else {
+        usage = normalizeUsage(model?.providerId === "deepseek" ? "deepseek" : "openai", rawUsage);
+        usageProvenance = { source: "none", scope: "unreported", projectionSkipReason: projectionEval.reason };
+      }
+      if (projectionEval.ok) {
+        // Expose the projection detail (fields, whole-turn totals) regardless of which sample won.
+        usageProvenance.projection = projectionEval.provenance;
+        if (projectionEval.turnTotals) usageProvenance.turnTotals = projectionEval.turnTotals;
+      }
       const stopReason = String(res?.stopReason || res?.stop_reason || diskSnap?.lastStopReason || "").toLowerCase();
       const truncatedByMaxTokens =
         stopReason === "max_tokens" || stopReason === "max-tokens" || stopReason === "length";
@@ -1268,6 +1981,7 @@ export class AcpEngine {
         stopReason: stopReason || undefined,
         truncated: truncatedByMaxTokens,
         usage,
+        usageProvenance,
         actions,
         elapsedMs: Date.now() - t0,
       };
@@ -1282,21 +1996,36 @@ export class AcpEngine {
       }
       throw err;
     } finally {
+      deadline?.stop();
+      if (drainTimer) clearTimeout(drainTimer);
       state.listeners.delete(sessionId);
       finishMessage();
       // Close the trailing reasoning block with its exact duration (also on interrupt/error).
       finalizeThought();
+      // The guard is released by the prompt RPC settlement hook (reply, error, or client exit).
+      // When a cancel was never acknowledged the guard intentionally stays held so a retry
+      // cannot overlap the still-running turn; `interruptTurn` can cancel it again.
+      void guard;
     }
   }
-
   async interruptTurn(sessionId, model) {
     if (!sessionId) return;
     const matchingProfile = this.clients.get(this.#profileKey(model));
     const state = matchingProfile?.listeners.has(sessionId)
       ? matchingProfile
       : [...this.clients.values()].find((client) => client.listeners.has(sessionId)) || matchingProfile;
+    // Manual cancel goes through the same drain path as a timeout so the busy guard is kept
+    // until the original session/prompt reply lands.
+    const guard = this.busySessions.get(sessionId);
+    if (guard && typeof guard.cancel === "function") {
+      guard.cancel();
+      return;
+    }
     if (!state) return;
-    state.sendRaw({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId } });
+    // No turn is registered yet (session-ready race): remember the cancel for the dispatch path.
+    if (!state.earlyCancelSessions) state.earlyCancelSessions = new Set();
+    state.earlyCancelSessions.add(sessionId);
+    this.#sendCancel(state, sessionId, "manual");
   }
 
   async fetchProviderModels({ baseUrl, apiKey }) {
@@ -1423,6 +2152,8 @@ export class AcpEngine {
   async shutdown() {
     const list = Array.from(this.clients.values());
     this.clients.clear();
+    // Clients are being killed: every guard for them is genuinely dead, release it.
+    for (const guard of Array.from(this.busySessions.values())) this.#releaseSessionGuard(guard);
     await Promise.allSettled(list.map((st) => safeKill(st.proc)));
   }
 }
