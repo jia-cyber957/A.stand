@@ -734,10 +734,10 @@ function normalizeClient(raw) {
     connected,
     transport,
     lastSeenAt: c.lastSeenAt || c.lastHandshakeAt || c.lastActiveAt || null,
-    callCount: num(c.callCount ?? c.calls ?? c.requestCount ?? 0) || 0,
+    callCount: num(c.totalCalls ?? c.callCount ?? c.calls ?? c.requestCount ?? 0) || 0,
     maskedToken: c.maskedToken || c.tokenMasked || c.tokenPreview || "",
     detectedClientName: detected,
-    detectedVersion: c.detectedVersion || c.clientVersion || c.version || "",
+    detectedVersion: c.detectedClientVersion || c.detectedVersion || c.clientVersion || c.version || "",
     createdAt: c.createdAt || "",
     raw: c,
   };

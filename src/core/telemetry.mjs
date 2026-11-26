@@ -159,6 +159,9 @@ export class TelemetryLogger {
     if (fs.existsSync(this.logPath)) {
       fs.writeFileSync(this.logPath, "", "utf8");
     }
+    if (fs.existsSync(this.perfLogPath)) {
+      fs.writeFileSync(this.perfLogPath, "", "utf8");
+    }
   }
 
   getSummary(recentLimit = 30) {

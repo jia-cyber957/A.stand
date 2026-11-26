@@ -90,8 +90,18 @@ function parseBooleanFlag(value) {
 }
 
 function splitPath(urlPath) {
-  return urlPath.split("/").filter(Boolean).map((segment) => decodeURIComponent(segment));
+  try {
+    return urlPath.split("/").filter(Boolean).map((segment) => decodeURIComponent(segment));
+  } catch {
+    const err = new Error("Invalid path encoding");
+    err.status = 400;
+    throw err;
+  }
 }
+
+const SESSION_IDLE_TTL_MS = 30 * 60_000;
+const SESSION_SWEEP_MS = 60_000;
+const MAX_SESSIONS = 256;
 
 /**
  * Local daemon HTTP surface:
@@ -198,7 +208,32 @@ export async function createDaemonHttpServer({
     };
   }
 
+  const dataDirHash = crypto.createHash("sha256").update(path.resolve(store.dataDir || "")).digest("hex").slice(0, 16);
+
+  function closeSessionEntry(entry) {
+    try {
+      entry?.server?.close?.()?.catch?.(() => {});
+    } catch {}
+    try {
+      entry?.transport?.close?.()?.catch?.(() => {});
+    } catch {}
+  }
+
   function registerSession({ transport, server, clientId, transportKind, sessionId }) {
+    while (sessions.size >= MAX_SESSIONS) {
+      let oldestId = null;
+      let oldestTs = Infinity;
+      for (const [sid, s] of sessions.entries()) {
+        if (s.lastUsedAt < oldestTs) {
+          oldestTs = s.lastUsedAt;
+          oldestId = sid;
+        }
+      }
+      if (!oldestId) break;
+      const evicted = sessions.get(oldestId);
+      sessions.delete(oldestId);
+      closeSessionEntry(evicted);
+    }
     sessions.set(sessionId, {
       transport,
       server,
@@ -209,12 +244,23 @@ export async function createDaemonHttpServer({
     broadcast("client_session_opened");
   }
 
-  function dropSession(sessionId) {
+  function dropSession(sessionId, closeHandles = false) {
     const entry = sessions.get(sessionId);
     if (!entry) return;
     sessions.delete(sessionId);
+    if (closeHandles) closeSessionEntry(entry);
     broadcast("client_session_closed");
   }
+
+  const sessionSweeper = setInterval(() => {
+    const cutoff = Date.now() - SESSION_IDLE_TTL_MS;
+    for (const [sid, entry] of [...sessions.entries()]) {
+      if (entry.lastUsedAt < cutoff) {
+        dropSession(sid, true);
+      }
+    }
+  }, SESSION_SWEEP_MS);
+  sessionSweeper.unref?.();
 
   async function createSessionFor({ clientId, transportKind }) {
     const holder = { sessionId: "" };
@@ -316,6 +362,7 @@ export async function createDaemonHttpServer({
       }
       session.lastUsedAt = Date.now();
       await session.transport.handleRequest(req, res);
+      if (req.method === "DELETE") dropSession(sessionId, true);
       return;
     }
 
@@ -343,7 +390,7 @@ export async function createDaemonHttpServer({
 
     // /api/health stays unauthenticated so supervisors can probe liveness cheaply.
     if (req.method === "GET" && segments.length === 2 && segments[1] === "health") {
-      sendJson(res, 200, { ok: true, version, pid: process.pid });
+      sendJson(res, 200, { ok: true, version, pid: process.pid, dataDirHash });
       return;
     }
 
@@ -721,7 +768,8 @@ export async function createDaemonHttpServer({
       sendJson(res, 404, { ok: false, error: "Not found" });
     } catch (err) {
       if (!res.headersSent) {
-        sendJson(res, 500, { ok: false, error: err?.message || String(err) });
+        const status = Number.isInteger(err?.status) && err.status >= 400 && err.status < 600 ? err.status : 500;
+        sendJson(res, status, { ok: false, error: err?.message || String(err) });
       } else {
         try {
           res.end();
@@ -742,6 +790,7 @@ export async function createDaemonHttpServer({
   async function close() {
     if (closed) return;
     closed = true;
+    clearInterval(sessionSweeper);
     if (broadcastTimer) {
       clearTimeout(broadcastTimer);
       broadcastTimer = null;

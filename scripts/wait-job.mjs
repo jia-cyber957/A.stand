@@ -38,6 +38,7 @@ function parseArgs(argv) {
   const opts = {
     dataDir: "",
     stallSec: DEFAULT_STALL_SEC,
+    stallSecExplicit: false,
     jobIds: [],
     timeoutSec: 0,
     longRunMin: 0,
@@ -47,9 +48,13 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === "--data-dir" || a === "-d") opts.dataDir = argv[++i] || "";
     else if (a.startsWith("--data-dir=")) opts.dataDir = a.slice("--data-dir=".length);
-    else if (a === "--stall-sec") opts.stallSec = Number(argv[++i]);
-    else if (a.startsWith("--stall-sec=")) opts.stallSec = Number(a.slice("--stall-sec=".length));
-    else if (a === "--long-run-min") opts.longRunMin = Number(argv[++i]);
+    else if (a === "--stall-sec") {
+      opts.stallSec = Number(argv[++i]);
+      opts.stallSecExplicit = true;
+    } else if (a.startsWith("--stall-sec=")) {
+      opts.stallSec = Number(a.slice("--stall-sec=".length));
+      opts.stallSecExplicit = true;
+    } else if (a === "--long-run-min") opts.longRunMin = Number(argv[++i]);
     else if (a.startsWith("--long-run-min=")) opts.longRunMin = Number(a.slice("--long-run-min=".length));
     else if (a === "--timeout-sec") opts.timeoutSec = Number(argv[++i]);
     else if (a.startsWith("--timeout-sec=")) opts.timeoutSec = Number(a.slice("--timeout-sec=".length));
@@ -76,15 +81,21 @@ function readStatus(dataDir, jobId) {
   return readJson(path.join(dataDir, "jobs", `${jobId}.status.json`));
 }
 
-// Re-read settings.json live so mid-flight UI changes (e.g. 5min -> 15min or 0=off) apply immediately.
-function readLiveLimits(dataDir, baseOpts) {
-  const s = readJson(path.join(dataDir, "settings.json"));
+// Re-read settings.json live so mid-flight UI changes (e.g. 5min -> 15min or 0=off) apply immediately,
+// while respecting an explicit CLI --stall-sec unless settings.json is modified mid-flight.
+function readLiveLimits(dataDir, baseOpts, startedAt) {
+  const settingsFile = path.join(dataDir, "settings.json");
+  const s = readJson(settingsFile);
   let stallSec = baseOpts.stallSec;
   let longRunMin = baseOpts.longRunMin;
   if (s && typeof s === "object" && !Array.isArray(s)) {
+    let modifiedAfterStart = false;
+    try {
+      modifiedAfterStart = fs.statSync(settingsFile).mtimeMs > startedAt;
+    } catch {}
     const liveSilent = Number(s.silentCheckinMin);
-    if (Number.isFinite(liveSilent) && liveSilent >= 1 && liveSilent <= 30) {
-      stallSec = Math.round(liveSilent * 60);
+    if ((!baseOpts.stallSecExplicit || modifiedAfterStart) && Number.isFinite(liveSilent) && liveSilent >= 1 && liveSilent <= 30) {
+      stallSec = Math.max(60, Math.round(liveSilent * 60));
     }
     const liveLongRun = Number(s.longRunCheckinMin);
     if (Number.isFinite(liveLongRun) && liveLongRun >= 0 && liveLongRun <= 120) {
@@ -323,7 +334,7 @@ function main() {
   };
 
   const tick = () => {
-    const live = readLiveLimits(dataDir, opts);
+    const live = readLiveLimits(dataDir, opts, startedAt);
     const liveOpts = { ...opts, stallSec: live.stallSec, longRunMin: live.longRunMin };
     const blockers = [];
     const results = [];

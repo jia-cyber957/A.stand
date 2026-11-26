@@ -483,19 +483,30 @@ export class RelayOrchestrator {
       : [];
     const byStatus = {};
     let elapsedMs = 0;
+    let firstOutMs = 0;
+    let firstOutCount = 0;
     let cmdCount = 0;
     let failedCmdCount = 0;
     for (const row of rows) {
       const status = String(row?.status || "unknown");
       byStatus[status] = (byStatus[status] || 0) + 1;
       if (Number.isFinite(Number(row?.elapsedMs))) elapsedMs += Number(row.elapsedMs);
+      const firstVal = row?.firstOutputMs ?? row?.firstActivityMs;
+      if (Number.isFinite(Number(firstVal))) {
+        firstOutMs += Number(firstVal);
+        firstOutCount += 1;
+      }
       if (Number.isFinite(Number(row?.cmdCount))) cmdCount += Number(row.cmdCount);
       if (Number.isFinite(Number(row?.failedCmdCount))) failedCmdCount += Number(row.failedCmdCount);
     }
+    const avgElapsed = rows.length ? Math.round(elapsedMs / rows.length) : 0;
     return {
       total: rows.length,
+      totalJobs: rows.length,
       byStatus,
-      avgElapsedMs: rows.length ? Math.round(elapsedMs / rows.length) : 0,
+      avgElapsedMs: avgElapsed,
+      avgDurationMs: rows.length ? avgElapsed : null,
+      avgFirstOutputMs: firstOutCount ? Math.round(firstOutMs / firstOutCount) : null,
       cmdCount,
       failedCmdCount,
       recent: rows.slice(-10).reverse(),

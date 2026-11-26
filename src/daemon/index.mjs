@@ -71,7 +71,7 @@ function isPidAlive(pid) {
   }
 }
 
-async function healthResponds(port) {
+async function healthResponds(port, expectedDataDirHash) {
   if (!Number.isInteger(port) || port <= 0) return false;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 2000);
@@ -79,12 +79,38 @@ async function healthResponds(port) {
     const res = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: controller.signal });
     if (!res.ok) return false;
     const body = await res.json();
-    return body?.ok === true;
+    if (body?.ok !== true) return false;
+    if (expectedDataDirHash && body.dataDirHash && body.dataDirHash !== expectedDataDirHash) return false;
+    return true;
   } catch {
     return false;
   } finally {
     clearTimeout(timer);
   }
+}
+
+function acquireStartupLock(lockFile) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = fs.openSync(lockFile, "wx", 0o600);
+      fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, at: Date.now() }), "utf8");
+      fs.closeSync(fd);
+      return true;
+    } catch (err) {
+      if (err?.code !== "EEXIST") return false;
+      try {
+        const st = fs.statSync(lockFile);
+        const raw = readDaemonFile(lockFile);
+        const stale = Date.now() - st.mtimeMs > 30_000 || (raw?.pid && !isPidAlive(raw.pid));
+        if (stale) {
+          fs.rmSync(lockFile, { force: true });
+          continue;
+        }
+      } catch {}
+      return false;
+    }
+  }
+  return false;
 }
 
 function writeDaemonFile(daemonFile, info) {
@@ -110,68 +136,91 @@ async function main() {
   const dataDir = resolveDataDir(cli.dataDir);
   fs.mkdirSync(dataDir, { recursive: true });
   const daemonFile = path.join(dataDir, "daemon.json");
+  const lockFile = path.join(dataDir, "daemon.lock");
+  const expectedDataDirHash = crypto.createHash("sha256").update(path.resolve(dataDir)).digest("hex").slice(0, 16);
 
-  // Single-instance guard: reuse a live daemon instead of clobbering it.
-  const existing = readDaemonFile(daemonFile);
-  if (existing && isPidAlive(existing.pid) && existing.pid !== process.pid && (await healthResponds(existing.port))) {
-    if (cli.printReady) emitReady(existing);
-    return 0;
+  // Brief retry if another instance is mid-startup to avoid TOCTOU double-bind.
+  let locked = acquireStartupLock(lockFile);
+  for (let i = 0; !locked && i < 15; i++) {
+    await new Promise((r) => setTimeout(r, 150));
+    locked = acquireStartupLock(lockFile);
   }
 
-  const store = new RelayStore(dataDir);
-  const telemetry = new TelemetryLogger(dataDir);
-  const extensionRegistry = new ExtensionRegistry(dataDir);
-  const orchestrator = new RelayOrchestrator(store, telemetry, { extensionRegistry });
-  const clientRegistry = new ClientRegistry(store, dataDir);
+  let handle;
+  try {
+    // Single-instance guard: reuse a live daemon owning the same dataDir instead of clobbering it.
+    const existing = readDaemonFile(daemonFile);
+    if (
+      existing &&
+      isPidAlive(existing.pid) &&
+      existing.pid !== process.pid &&
+      (await healthResponds(existing.port, expectedDataDirHash))
+    ) {
+      if (cli.printReady) emitReady(existing);
+      return 0;
+    }
 
-  const handle = await createDaemonHttpServer({
-    store,
-    telemetry,
-    orchestrator,
-    clientRegistry,
-    extensionRegistry,
-    port: resolvePort(cli.port),
-    uiToken: crypto.randomBytes(24).toString("hex"),
-    desktopHtmlPath: cli.desktopHtml
-      ? path.resolve(cli.desktopHtml)
-      : path.join(DIST_DIR, "desktop.html"),
-    bridgeScript: path.join(DIST_DIR, "stdio-bridge.mjs"),
-    rulesFile: path.resolve(DIST_DIR, "..", "plugin", "rules", "AGENTS.md"),
-    version: PLUGIN_VERSION,
-  });
+    const store = new RelayStore(dataDir);
+    const telemetry = new TelemetryLogger(dataDir);
+    const extensionRegistry = new ExtensionRegistry(dataDir);
+    const orchestrator = new RelayOrchestrator(store, telemetry, { extensionRegistry });
+    const clientRegistry = new ClientRegistry(store, dataDir);
 
-  const info = {
-    pid: process.pid,
-    host: handle.host,
-    port: handle.port,
-    mcpUrl: handle.mcpUrl(),
-    uiToken: handle.uiToken,
-    startedAt: handle.startedAt,
-    version: PLUGIN_VERSION,
-  };
-  writeDaemonFile(daemonFile, info);
-  if (cli.printReady) emitReady(info);
+    handle = await createDaemonHttpServer({
+      store,
+      telemetry,
+      orchestrator,
+      clientRegistry,
+      extensionRegistry,
+      port: resolvePort(cli.port),
+      uiToken: crypto.randomBytes(24).toString("hex"),
+      desktopHtmlPath: cli.desktopHtml
+        ? path.resolve(cli.desktopHtml)
+        : path.join(DIST_DIR, "desktop.html"),
+      bridgeScript: path.join(DIST_DIR, "stdio-bridge.mjs"),
+      rulesFile: path.resolve(DIST_DIR, "..", "plugin", "rules", "AGENTS.md"),
+      version: PLUGIN_VERSION,
+    });
 
-  let shuttingDown = false;
-  async function shutdown(code = 0) {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    try {
-      await handle.close();
-    } catch {}
-    try {
-      await orchestrator.shutdown();
-    } catch {}
-    // Only remove daemon.json when this process still owns it.
-    try {
-      const current = readDaemonFile(daemonFile);
-      if (current && Number(current.pid) === process.pid) fs.rmSync(daemonFile, { force: true });
-    } catch {}
-    process.exit(code);
+    const info = {
+      pid: process.pid,
+      host: handle.host,
+      port: handle.port,
+      mcpUrl: handle.mcpUrl(),
+      uiToken: handle.uiToken,
+      startedAt: handle.startedAt,
+      version: PLUGIN_VERSION,
+    };
+    writeDaemonFile(daemonFile, info);
+    if (cli.printReady) emitReady(info);
+
+    let shuttingDown = false;
+    async function shutdown(code = 0) {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      try {
+        await handle.close();
+      } catch {}
+      try {
+        await orchestrator.shutdown();
+      } catch {}
+      // Only remove daemon.json when this process still owns it.
+      try {
+        const current = readDaemonFile(daemonFile);
+        if (current && Number(current.pid) === process.pid) fs.rmSync(daemonFile, { force: true });
+      } catch {}
+      process.exit(code);
+    }
+
+    process.on("SIGINT", () => void shutdown(0));
+    process.on("SIGTERM", () => void shutdown(0));
+  } finally {
+    if (locked) {
+      try {
+        fs.rmSync(lockFile, { force: true });
+      } catch {}
+    }
   }
-
-  process.on("SIGINT", () => void shutdown(0));
-  process.on("SIGTERM", () => void shutdown(0));
   return new Promise(() => {});
 }
 
