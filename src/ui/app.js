@@ -1774,6 +1774,15 @@ function positionFloatingMenus() {
     left = Math.max(8, Math.min(left, vw - maxW - 8));
     menu.style.left = `${Math.round(left)}px`;
 
+    // Pre-detach expanded flyout sublist BEFORE measuring menu height, otherwise
+    // an inline sublist inflates mh and erroneously flips the menu far above the trigger.
+    const expanded = menu.querySelector(".harness-group.expanded");
+    const expandedSub = expanded?.querySelector(".harness-sublist");
+    if (expandedSub) {
+      const canFly = vw - (left + maxW) - 8 >= 190 || left - 8 >= 190;
+      expandedSub.classList.toggle("flyout", canFly);
+    }
+
     menu.style.top = "8px";
     const mh = Math.min(vh - 20, menu.offsetHeight || menu.scrollHeight || 180);
     const spaceBelow = vh - tr.bottom - 10;
@@ -1785,7 +1794,6 @@ function positionFloatingMenus() {
     top = Math.max(8, Math.min(top, vh - mh - 8));
     menu.style.top = `${Math.round(top)}px`;
 
-    const expanded = menu.querySelector(".harness-group.expanded");
     if (expanded) positionHarnessFlyout(expanded);
   }
 }

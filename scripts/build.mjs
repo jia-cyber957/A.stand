@@ -103,9 +103,15 @@ if (!bridgeText.includes("X-Astand-Transport") || !bridgeText.includes("stdio-br
   throw new Error("stdio-bridge.mjs integrity check failed");
 }
 
+// 6. Build the v2 Magpie-style standalone desktop console (dist/desktop.html)
+if (fs.existsSync(path.join(ROOT, "scripts", "build-desktop-ui.mjs"))) {
+  await import("./build-desktop-ui.mjs");
+}
+
 console.log(
   `Built dist/server.mjs (${(fs.statSync(path.join(DIST, "server.mjs")).size / 1024).toFixed(1)} KB), ` +
   `dist/console.html (${(Buffer.byteLength(html) / 1024).toFixed(1)} KB, verified OK), ` +
-  `dist/wait-job.mjs, dist/daemon.mjs (${(fs.statSync(path.join(DIST, "daemon.mjs")).size / 1024).toFixed(1)} KB) ` +
-  `and dist/stdio-bridge.mjs (${(fs.statSync(path.join(DIST, "stdio-bridge.mjs")).size / 1024).toFixed(1)} KB)`
+  `dist/wait-job.mjs, dist/daemon.mjs (${(fs.statSync(path.join(DIST, "daemon.mjs")).size / 1024).toFixed(1)} KB), ` +
+  `dist/stdio-bridge.mjs (${(fs.statSync(path.join(DIST, "stdio-bridge.mjs")).size / 1024).toFixed(1)} KB)` +
+  `${fs.existsSync(path.join(DIST, "desktop.html")) ? ` and dist/desktop.html (${(fs.statSync(path.join(DIST, "desktop.html")).size / 1024).toFixed(1)} KB)` : ""}`
 );

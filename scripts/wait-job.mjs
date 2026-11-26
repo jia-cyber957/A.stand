@@ -76,6 +76,24 @@ function readStatus(dataDir, jobId) {
   return readJson(path.join(dataDir, "jobs", `${jobId}.status.json`));
 }
 
+// Re-read settings.json live so mid-flight UI changes (e.g. 5min -> 15min or 0=off) apply immediately.
+function readLiveLimits(dataDir, baseOpts) {
+  const s = readJson(path.join(dataDir, "settings.json"));
+  let stallSec = baseOpts.stallSec;
+  let longRunMin = baseOpts.longRunMin;
+  if (s && typeof s === "object" && !Array.isArray(s)) {
+    const liveSilent = Number(s.silentCheckinMin);
+    if (Number.isFinite(liveSilent) && liveSilent >= 1 && liveSilent <= 30) {
+      stallSec = Math.round(liveSilent * 60);
+    }
+    const liveLongRun = Number(s.longRunCheckinMin);
+    if (Number.isFinite(liveLongRun) && liveLongRun >= 0 && liveLongRun <= 120) {
+      longRunMin = Math.round(liveLongRun);
+    }
+  }
+  return { stallSec, stallMs: stallSec * 1000, longRunMin, longRunMs: longRunMin > 0 ? longRunMin * 60_000 : 0 };
+}
+
 function checkpointPath(dataDir, jobId) {
   return path.join(dataDir, "jobs", `${jobId}.checkpoint.json`);
 }
@@ -252,8 +270,6 @@ function main() {
   }
   const dataDir = path.resolve(opts.dataDir);
   const jobIds = [...new Set(opts.jobIds)];
-  const stallMs = opts.stallSec * 1000;
-  const longRunMs = opts.longRunMin > 0 ? opts.longRunMin * 60_000 : 0;
   const startedAt = Date.now();
   // First observation per job (no durable checkpoint yet) seeds the long-run anchor.
   const observedAt = new Map();
@@ -276,8 +292,8 @@ function main() {
     return { at: seed, cp };
   };
 
-  const maybeRearm = (jobId, snap) => {
-    if (!opts.rearm || rearmedThisRun.has(jobId) || opts.longRunMin <= 0) return null;
+  const maybeRearm = (jobId, snap, live) => {
+    if (!opts.rearm || rearmedThisRun.has(jobId) || live.longRunMin <= 0) return null;
     if (normalizeStatus(snap?.status) !== "running") return null;
     const now = Date.now();
     const prior = readCheckpoint(dataDir, jobId) || {};
@@ -289,8 +305,8 @@ function main() {
       rearmCount: (Number(prior.rearmCount) || 0) + 1,
       rearmAt: now,
       longRunAnchorAt: now,
-      longRunCheckinMin: opts.longRunMin,
-      stallSec: Math.round(opts.stallSec),
+      longRunCheckinMin: live.longRunMin,
+      stallSec: Math.round(live.stallSec),
       lastAction: snap?.lastAction || prior.lastAction || null,
       sessionId: snap?.sessionId || prior.sessionId || "",
       conversationId: snap?.conversationId || prior.conversationId || "",
@@ -307,6 +323,8 @@ function main() {
   };
 
   const tick = () => {
+    const live = readLiveLimits(dataDir, opts);
+    const liveOpts = { ...opts, stallSec: live.stallSec, longRunMin: live.longRunMin };
     const blockers = [];
     const results = [];
     for (const jobId of jobIds) {
@@ -337,9 +355,9 @@ function main() {
         return;
       }
 
-      if (snap.stallAlert?.reason && (!opts.rearm || Number(snap.stallAlert.at) >= startedAt || Date.now() - startedAt >= stallMs)) {
+      if (snap.stallAlert?.reason && (!opts.rearm || Number(snap.stallAlert.at) >= startedAt || Date.now() - startedAt >= live.stallMs)) {
         process.stdout.write(
-          `[STALL_ALERT] ${jobId} ${labels.stall}: ${oneLine(snap.stallAlert.reason, 160)} · source=${oneLine(snap.stallAlert.source || "silence_timeout", 24)} · ${actionLine(snap, labels)} · ${labels.log}=${oneLine(snap.logPath || "(none)", TEXT_MAX)}\n  ${labels.rearmCmd}: ${rearmCommand(opts)}\n`
+          `[STALL_ALERT] ${jobId} ${labels.stall}: ${oneLine(snap.stallAlert.reason, 160)} · source=${oneLine(snap.stallAlert.source || "silence_timeout", 24)} · ${actionLine(snap, labels)} · ${labels.log}=${oneLine(snap.logPath || "(none)", TEXT_MAX)}\n  ${labels.rearmCmd}: ${rearmCommand(liveOpts)}\n`
         );
         finish(2);
         return;
@@ -347,7 +365,7 @@ function main() {
 
       const lastActivity = normalizeTime(snap.lastActivityAt || snap.updatedAt);
       const silentMs = Date.now() - lastActivity;
-      if (!snap.managedSilence && Date.now() - Math.max(lastActivity, opts.rearm ? startedAt : 0) > stallMs) {
+      if (!snap.managedSilence && Date.now() - Math.max(lastActivity, opts.rearm ? startedAt : 0) > live.stallMs) {
         process.stdout.write(
           `[STALL_ALERT] ${jobId} silent for ${Math.round(silentMs / 1000)}s · last=${oneLine(snap.lastSummary || "(none)", 120)} · log=${oneLine(snap.logPath || "(none)", TEXT_MAX)}\n`
         );
@@ -356,12 +374,12 @@ function main() {
       }
 
       // Recurring long-run doorbell: distinct exit 5 + durable checkpoint + explicit re-arm token.
-      if (longRunMs > 0) {
+      if (live.longRunMs > 0) {
         // --rearm restarts the interval from now BEFORE the threshold is evaluated (never re-fire).
-        maybeRearm(jobId, snap);
+        maybeRearm(jobId, snap, live);
         const { at, cp } = longRunAnchor(jobId, snap);
         const elapsedMs = Date.now() - at;
-        if (elapsedMs >= longRunMs) {
+        if (elapsedMs >= live.longRunMs) {
           const elapsedSec = Math.round((Date.now() - (Number(snap.startedAt) || Date.now())) / 1000);
           const silentSec = Math.round(silentMs / 1000);
           const now = Date.now();
@@ -380,8 +398,8 @@ function main() {
             rearmCount: (Number(cp?.rearmCount) || 0) + 1,
             rearmAt: now,
             longRunAnchorAt: now,
-            longRunCheckinMin: opts.longRunMin,
-            stallSec: Math.round(opts.stallSec),
+            longRunCheckinMin: live.longRunMin,
+            stallSec: Math.round(live.stallSec),
             lastAction: snap.lastAction || cp?.lastAction || null,
             sessionId: snap.sessionId || cp?.sessionId || "",
             conversationId: snap.conversationId || cp?.conversationId || "",
@@ -389,13 +407,13 @@ function main() {
             updatedAt: now,
             firstAt: cp?.firstAt || at,
           });
-          const cmd = rearmCommand(opts);
+          const cmd = rearmCommand(liveOpts);
           const checkpoint = checkpointPath(dataDir, jobId);
           const action = actionLine(snap, labels);
           process.stdout.write([
             `[LONG_RUN_CHECKIN] ${jobId} (${labelOf(snap)}) · ${labels.elapsed}=${elapsedSec}s · ${labels.silent}=${silentSec}s · ${labels.role}=${snap.role || "?"} · ${labels.title}=${oneLine(snap.title || "", 60)}`,
             `  ${labels.session}=${oneLine(snap.sessionId || "(none)", 96)} · ${action} · ${labels.log}=${oneLine(snap.logPath || "(none)", TEXT_MAX)}`,
-            `  ${labels.interval}=${opts.longRunMin}min · rearmToken=${token} · ${labels.checkpoint}=${checkpoint}`,
+            `  ${labels.interval}=${live.longRunMin}min · rearmToken=${token} · ${labels.checkpoint}=${checkpoint}`,
             `  ${labels.nextStep}: ${labels.decide}`,
             `  ${labels.rearmCmd}: ${cmd}`,
           ].join("\n") + "\n");
@@ -406,7 +424,7 @@ function main() {
           return;
         }
       } else {
-        maybeRearm(jobId, snap);
+        maybeRearm(jobId, snap, live);
       }
       blockers.push({ kind: "running", jobId, silentMs });
     }

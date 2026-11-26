@@ -30,10 +30,13 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
+    "build:desktop-ui": "node scripts/build-desktop-ui.mjs",
+    "daemon": "node dist/daemon.mjs",
     "install:antigravity": "node scripts/install-antigravity.mjs",
     "uninstall:antigravity": "node scripts/uninstall-antigravity.mjs",
     "check:contracts": "node scripts/check-contracts.mjs",
-    "test:e2e": "node scripts/e2e-test.mjs"
+    "test:e2e": "node scripts/e2e-test.mjs",
+    "test:v2": "node scripts/e2e-v2-daemon.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "^1.0.0",
