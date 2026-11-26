@@ -804,6 +804,7 @@ let ui = {
   tab: "team",
   openDropdownRole: null,
   openFallbackRole: null,
+  openFallbackSlot: null,
   inspectorDropdownOpen: false,
   customRulesOpen: true,
   customRulesDraft: {},
@@ -956,7 +957,7 @@ function scheduleNextPoll() {
         await callTool("agent_relay_ui_get_state", { forceDetect: false, fetchRateLimits: false });
         if (ui.detailJobId) await refreshJobDetail({ silent: true });
         const sig = computeStateSig(state);
-        const uiBusy = ui.modal || ui.openMenu || ui.inspectorDropdownOpen ||
+        const uiBusy = ui.modal || ui.openMenu || ui.openDropdownRole || ui.openFallbackRole || ui.openFallbackSlot || ui.inspectorDropdownOpen ||
           document.activeElement?.tagName === "TEXTAREA";
         if (!uiBusy && sig !== lastRenderedSig) {
           lastRenderedSig = sig;
@@ -1789,7 +1790,7 @@ function positionFloatingMenus() {
   }
 }
 
-function renderHarnessPicker(role, mode, queueIds, activeEngine) {
+function renderHarnessPicker(role, mode, queueIds, activeEngine, slotMeta = null) {
   const activeExpand = ui.expandedHarness || "";
   const primaryId = queueIds[0];
 
@@ -1809,12 +1810,17 @@ function renderHarnessPicker(role, mode, queueIds, activeEngine) {
     }
 
     const rawModels = getModelsForHarness(eid);
-    const items = mode === "fallback" ? rawModels.filter((m) => !queueIds.includes(m.id)) : rawModels;
+    const items =
+      mode === "fallback"
+        ? rawModels.filter((m) => !queueIds.includes(m.id))
+        : mode === "replace"
+          ? rawModels.filter((m) => m.id === slotMeta?.currentId || !queueIds.includes(m.id))
+          : rawModels;
     const isExpanded = activeExpand === eid;
 
     const renderModel = (m) => {
-      const isSel = mode === "primary" && m.id === primaryId;
-      const act = mode === "primary" ? "pick-role-model" : "add-fallback";
+      const isSel = mode === "primary" ? m.id === primaryId : mode === "replace" && m.id === slotMeta?.currentId;
+      const act = mode === "primary" ? "pick-role-model" : mode === "replace" ? "replace-fallback" : "add-fallback";
       // Account models get their ACP friendly name; other DSH models keep the compact wire id.
       const label =
         eid === "deepseek-harness"
@@ -1823,7 +1829,7 @@ function renderHarnessPicker(role, mode, queueIds, activeEngine) {
             : m.modelName
           : modelLabel(m);
       return `
-        <button class="dropdown-item ${isSel ? "selected" : ""}" data-action="${act}" data-role="${role}" data-model="${esc(m.id)}">
+        <button class="dropdown-item ${isSel ? "selected" : ""}" data-action="${act}" data-role="${role}" data-model="${esc(m.id)}"${mode === "replace" ? ` data-slot-index="${slotMeta.slotIndex}"` : ""}>
           <span class="dropdown-main">
             <span class="dot" style="background:${modelStatusColor(m)}"></span>
             <span class="dropdown-name">${esc(label)}</span>
@@ -1927,13 +1933,27 @@ function renderRoleCard(role) {
                   .map((fid, idx) => {
                     const fm = resolveModelMeta(fid);
                     if (!fm) return "";
+                    const slotIdx = idx + 1;
+                    const openSlot = ui.openFallbackSlot?.role === role && ui.openFallbackSlot?.index === slotIdx;
                     return `
                     <div class="queue-chip">
-                      <div class="queue-chip-left">
-                        <span class="queue-rank">②${idx > 0 ? `+${idx}` : ""}</span>
-                        <span class="dot" style="background:${modelStatusColor(fm)}"></span>
-                        <span class="truncate">${esc(modelLabel(fm))}</span>
-                        <span class="engine-tag">${esc(engineBadgeFor(fm))}</span>
+                      <div class="dropdown queue-chip-dd">
+                        <button type="button" class="queue-chip-trigger" data-action="toggle-fb-slot-dd" data-role="${role}" data-slot-index="${slotIdx}" data-pop-trigger="1" aria-expanded="${openSlot}">
+                          <span class="queue-chip-left">
+                            <span class="queue-rank">②${idx > 0 ? `+${idx}` : ""}</span>
+                            <span class="dot" style="background:${modelStatusColor(fm)}"></span>
+                            <span class="truncate">${esc(modelLabel(fm))}</span>
+                            <span class="engine-tag">${esc(engineBadgeFor(fm))}</span>
+                          </span>
+                          ${iconSvg("chevron")}
+                        </button>
+                        ${
+                          openSlot
+                            ? `<div class="dropdown-menu harness-menu fixed-pop" data-min-width="220">
+                                ${renderHarnessPicker(role, "replace", queueIds, fm?.engine, { slotIndex: slotIdx, currentId: fid })}
+                              </div>`
+                            : ""
+                        }
                       </div>
                       <div class="queue-chip-actions">
                         <button class="chip-btn" title="${t("promote")}" data-action="promote-fallback" data-role="${role}" data-model="${esc(fid)}">↑</button>
@@ -2701,6 +2721,7 @@ document.addEventListener(
 function openChannelModal(channel, forInspector = false) {
   ui.openDropdownRole = null;
   ui.openFallbackRole = null;
+  ui.openFallbackSlot = null;
   ui.inspectorDropdownOpen = false;
   ui.expandedHarness = null;
   ui.providerDropdownOpen = false;
@@ -2850,9 +2871,10 @@ document.addEventListener("mouseover", (e) => {
 document.addEventListener("click", async (e) => {
   const el = e.target.closest("[data-action]");
   if (!el) {
-    if ((ui.openDropdownRole || ui.openFallbackRole || ui.inspectorDropdownOpen) && !e.target.closest(".dropdown")) {
+    if ((ui.openDropdownRole || ui.openFallbackRole || ui.openFallbackSlot || ui.inspectorDropdownOpen) && !e.target.closest(".dropdown")) {
       ui.openDropdownRole = null;
       ui.openFallbackRole = null;
+      ui.openFallbackSlot = null;
       ui.inspectorDropdownOpen = false;
       ui.expandedHarness = null;
       render();
@@ -3040,6 +3062,7 @@ document.addEventListener("click", async (e) => {
   if (act === "toggle-role-dd") {
     const r = el.dataset.role;
     ui.openFallbackRole = null;
+    ui.openFallbackSlot = null;
     ui.inspectorDropdownOpen = false;
     ui.expandedHarness = null;
     ui.openDropdownRole = ui.openDropdownRole === r ? null : r;
@@ -3049,9 +3072,22 @@ document.addEventListener("click", async (e) => {
   if (act === "toggle-fb-dd") {
     const r = el.dataset.role;
     ui.openDropdownRole = null;
+    ui.openFallbackSlot = null;
     ui.inspectorDropdownOpen = false;
     ui.expandedHarness = null;
     ui.openFallbackRole = ui.openFallbackRole === r ? null : r;
+    render();
+    return;
+  }
+  if (act === "toggle-fb-slot-dd") {
+    const r = el.dataset.role;
+    const idx = Number(el.dataset.slotIndex);
+    ui.openDropdownRole = null;
+    ui.openFallbackRole = null;
+    ui.inspectorDropdownOpen = false;
+    ui.expandedHarness = null;
+    const same = ui.openFallbackSlot?.role === r && ui.openFallbackSlot?.index === idx;
+    ui.openFallbackSlot = same ? null : { role: r, index: idx };
     render();
     return;
   }
@@ -3059,9 +3095,26 @@ document.addEventListener("click", async (e) => {
     const r = el.dataset.role;
     const mid = el.dataset.model;
     ui.openDropdownRole = null;
+    ui.openFallbackSlot = null;
     ui.expandedHarness = null;
     await callTool("agent_relay_ui_update_settings", { roles: { [r]: { modelId: mid } } });
     showToast(t("saved"));
+    render();
+    return;
+  }
+  if (act === "replace-fallback") {
+    const r = el.dataset.role;
+    const idx = Number(el.dataset.slotIndex);
+    const mid = el.dataset.model;
+    ui.openFallbackSlot = null;
+    ui.expandedHarness = null;
+    const cur = [...(state.settings.roles[r]?.queue || [state.settings.roles[r]?.modelId])];
+    if (Number.isInteger(idx) && idx >= 1 && idx < cur.length) {
+      cur[idx] = mid;
+      const next = [...new Set(cur)];
+      await callTool("agent_relay_ui_update_settings", { roles: { [r]: { queue: next } } });
+      showToast(t("saved"));
+    }
     render();
     return;
   }
@@ -3069,6 +3122,7 @@ document.addEventListener("click", async (e) => {
     const r = el.dataset.role;
     const mid = el.dataset.model;
     ui.openFallbackRole = null;
+    ui.openFallbackSlot = null;
     ui.expandedHarness = null;
     const cur = state.settings.roles[r]?.queue || [state.settings.roles[r]?.modelId];
     const next = [...new Set([...cur, mid])];
@@ -3080,6 +3134,7 @@ document.addEventListener("click", async (e) => {
   if (act === "promote-fallback") {
     const r = el.dataset.role;
     const mid = el.dataset.model;
+    ui.openFallbackSlot = null;
     await callTool("agent_relay_ui_update_settings", { roles: { [r]: { modelId: mid } } });
     showToast(t("saved"));
     render();
@@ -3088,6 +3143,7 @@ document.addEventListener("click", async (e) => {
   if (act === "remove-fallback") {
     const r = el.dataset.role;
     const mid = el.dataset.model;
+    ui.openFallbackSlot = null;
     const cur = state.settings.roles[r]?.queue || [];
     const next = cur.filter((id) => id !== mid);
     if (next.length > 0) {

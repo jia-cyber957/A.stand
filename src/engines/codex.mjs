@@ -608,6 +608,7 @@ export class CodexEngine {
         reused: threadInfo.reused,
         resumedFromDisk: threadInfo.resumedFromDisk,
         resolvedModel: threadInfo.resolvedModel || model?.modelName || "gpt-6.2-sol",
+        appliedEffort: codexEffort,
         text: finalText || streamedText || "(no response text)",
         usage,
         actions,

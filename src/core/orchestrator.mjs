@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { API_PROVIDERS, CLI_DEFAULT_MODELS_MAP } from "./constants.mjs";
+import { API_PROVIDERS, CLI_DEFAULT_MODELS_MAP, PLUGIN_VERSION } from "./constants.mjs";
 import { detectEngines, normalizeWorkspaceKey, readDshConfigModels } from "./paths.mjs";
 import { assertCanReuseApiKey, maskSecret } from "./store.mjs";
 import { createJobWorktree, detectGitRepo, finalizeJobWorktree } from "./worktree.mjs";
@@ -234,6 +234,73 @@ export function sanitizeHandoffText(value, max = 160) {
 }
 
 const NON_MEANINGFUL_ACTIVITY = new Set(["start", "touch", "log", "triage", "triage_alert", "steer", "interrupt", "fallback"]);
+
+const TOOL_ACTIVITY_KINDS = new Set(["cmd", "read", "search", "edit", "write"]);
+const EDIT_ACTIVITY_KINDS = new Set(["edit", "write"]);
+
+/** Compact per-job performance & timing record written locally to `job-perf.jsonl`. */
+export function summarizeJobPerf(job, pluginVersion = PLUGIN_VERSION) {
+  const startedAt = Number(job.startedAt) || 0;
+  const finishedAt = Number(job.finishedAt) || Date.now();
+  const elapsedMs = startedAt > 0 ? Math.max(0, finishedAt - startedAt) : 0;
+  const deltaOrNull = (ts) => (startedAt > 0 && Number.isFinite(ts) && ts >= startedAt ? ts - startedAt : null);
+
+  let cmdCount = 0;
+  let failedCmdCount = 0;
+  let cmdDurationMs = 0;
+  let thoughtCount = 0;
+  let thoughtDurationMs = 0;
+  let readSearchCount = 0;
+  let editWriteCount = 0;
+  for (const a of job.activities || []) {
+    const kind = a?.kind || a?.type || "";
+    const durSec = Number(a?.durationSec);
+    if (kind === "cmd") {
+      cmdCount++;
+      if (a.status === "error" || (Number.isInteger(a.exitCode) && a.exitCode !== 0)) failedCmdCount++;
+      if (Number.isFinite(durSec) && durSec > 0) cmdDurationMs += Math.round(durSec * 1000);
+    } else if (kind === "thought") {
+      thoughtCount++;
+      if (Number.isFinite(durSec) && durSec > 0) thoughtDurationMs += Math.round(durSec * 1000);
+    } else if (kind === "read" || kind === "search") {
+      readSearchCount++;
+    } else if (kind === "edit" || kind === "write") {
+      editWriteCount++;
+    }
+  }
+
+  return {
+    pluginVersion: String(pluginVersion || PLUGIN_VERSION),
+    jobId: job.jobId || "",
+    role: job.role || "",
+    slot: job.slot || "default",
+    title: sanitizeHandoffText(job.title || "", 80),
+    engine: job.engine || "",
+    modelId: job.modelId || "",
+    modelName: job.resolvedModel || job.modelDisplayName || job.engine || "",
+    selectionMode: job.selectionMode || "ordered",
+    requestedEffort: job.requestedEffort || "",
+    appliedEffort: job.appliedEffort || job.requestedEffort || "",
+    status: job.status || "unknown",
+    elapsedMs,
+    firstActivityMs: deltaOrNull(job.firstActivityAt),
+    firstToolMs: deltaOrNull(job.firstToolAt),
+    firstEditMs: deltaOrNull(job.firstEditAt),
+    cmdCount,
+    failedCmdCount,
+    cmdDurationMs,
+    thoughtCount,
+    thoughtDurationMs,
+    readSearchCount,
+    editWriteCount,
+    reused: Boolean(job.reused),
+    resumedFromDisk: Boolean(job.resumedFromDisk),
+    cacheReported: Boolean(job.cacheReported),
+    hitRate: job.hitRate ?? null,
+    contextPct: job.contextPct ?? null,
+    ...(job.error ? { error: sanitizeHandoffText(job.error, 160) } : {}),
+  };
+}
 
 // Last real action a job performed (read/edit/write/search/cmd/thought/output), sanitized + bounded.
 export function lastMeaningfulAction(activities, max = 160) {
@@ -487,6 +554,12 @@ export class RelayOrchestrator {
     this.#saveJobOutput(job);
     this.#saveJobEvents(job);
     this.#writeStatusSnapshot(job, { force: true, status });
+    if (!job.perfRecorded && typeof this.telemetry?.recordJobPerf === "function") {
+      job.perfRecorded = true;
+      try {
+        this.telemetry.recordJobPerf(summarizeJobPerf(job));
+      } catch {}
+    }
   }
 
   #finalizeWorktree(job, wt) {
@@ -697,8 +770,15 @@ export class RelayOrchestrator {
   // Streamed activity from engines: refresh liveness, log it, then publish a (throttled) status snapshot.
   #recordActivity(job, ev) {
     if (job.status !== "running") return;
-    job.lastActivityAt = Date.now();
-    if (ev?.type && ev.type !== "touch") this.#noteRealProgress(job);
+    const now = Date.now();
+    job.lastActivityAt = now;
+    if (ev?.type && ev.type !== "touch") {
+      this.#noteRealProgress(job);
+      const kind = ev.kind || ev.type;
+      if (!job.firstActivityAt && !NON_MEANINGFUL_ACTIVITY.has(kind)) job.firstActivityAt = now;
+      if (!job.firstToolAt && TOOL_ACTIVITY_KINDS.has(kind)) job.firstToolAt = now;
+      if (!job.firstEditAt && EDIT_ACTIVITY_KINDS.has(kind)) job.firstEditAt = now;
+    }
     this.#appendJobLog(job, ev);
     this.#writeStatusSnapshot(job);
   }
@@ -1464,6 +1544,8 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       ...(wt || checkpoint?.worktree ? { worktree: wt || checkpoint.worktree } : {}),
       ...(conversationId && { conversationId }),
       selectionMode: selection.mode,
+      requestedEffort: effort || roleCfg.effort || "medium",
+      appliedEffort: "",
       engine: available[0].engine,
       modelId: available[0].id,
       modelDisplayName: available[0].name,
@@ -1542,6 +1624,11 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
             });
 
             if (job.status !== "running") return;
+            job.resolvedModel = res.resolvedModel || model.name;
+            job.appliedEffort = res.appliedEffort || job.requestedEffort;
+            job.reused = Boolean(res.reused);
+            job.resumedFromDisk = Boolean(res.resumedFromDisk);
+            job.cacheReported = Boolean(res.usage?.cacheReported);
             if (job.interruptRequested || res.interrupted) {
               terminalStatus = "interrupted";
               terminalError = "";
@@ -1573,6 +1660,8 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
               engine: engineId,
               modelId: model.id,
               modelName: res.resolvedModel,
+              requestedEffort: job.requestedEffort,
+              appliedEffort: job.appliedEffort,
               sessionId: res.sessionId,
               reused: res.reused,
               resumedFromDisk: res.resumedFromDisk,
@@ -2112,6 +2201,8 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       cwd: workDir,
       ...(conversationId && { conversationId }),
       selectionMode: selection.mode,
+      requestedEffort: roleCfg.effort || "medium",
+      appliedEffort: "",
       engine: available[0].engine,
       modelId: available[0].id,
       modelDisplayName: available[0].name,
@@ -2186,6 +2277,11 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
                   });
 
             if (job.status !== "running") return;
+            job.resolvedModel = res.resolvedModel || model.name;
+            job.appliedEffort = res.appliedEffort || job.requestedEffort;
+            job.reused = Boolean(res.reused);
+            job.resumedFromDisk = Boolean(res.resumedFromDisk);
+            job.cacheReported = Boolean(res.usage?.cacheReported);
             if (job.interruptRequested || res.interrupted) {
               this.#markJobTerminal(job, "interrupted");
               return;
@@ -2216,6 +2312,8 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
               engine: engineId,
               modelId: model.id,
               modelName: res.resolvedModel,
+              requestedEffort: job.requestedEffort,
+              appliedEffort: job.appliedEffort,
               sessionId: res.sessionId,
               reused: res.reused,
               resumedFromDisk: Boolean(res.resumedFromDisk),

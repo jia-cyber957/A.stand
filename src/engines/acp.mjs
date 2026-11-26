@@ -538,6 +538,62 @@ export function parseAcpModelOptions(configOptions) {
   return out;
 }
 
+/**
+ * Extract supported `reasoning_effort` values advertised in ACP `configOptions`.
+ * Returns null if `reasoning_effort` is absent or empty.
+ */
+export function parseAcpEffortOptions(configOptions) {
+  if (!Array.isArray(configOptions)) return null;
+  const opt = configOptions.find((o) => o && (o.id === "reasoning_effort" || o.category === "reasoning_effort"));
+  if (!opt || !Array.isArray(opt.options)) return null;
+  const values = [];
+  const seen = new Set();
+  for (const entry of opt.options) {
+    const items = Array.isArray(entry?.options) ? entry.options : [entry];
+    for (const item of items) {
+      const val = typeof item === "string" ? item : typeof item?.value === "string" ? item.value : "";
+      const norm = val.trim().toLowerCase();
+      if (!norm || seen.has(norm)) continue;
+      seen.add(norm);
+      values.push(norm);
+    }
+  }
+  return values.length > 0 ? values : null;
+}
+
+/**
+ * Dynamically map A.stand's 4-tier effort (`off` / `low` / `medium` / `high`) to upstream ACP values.
+ * When upstream omits `medium` and offers `low / high / max` (3-tier scale), map:
+ *   low -> low, medium -> high, high -> max.
+ */
+export function resolveAcpEffortCandidates(requestedEffort, supportedOptions = null) {
+  const eff = ["off", "low", "medium", "high"].includes(requestedEffort) ? requestedEffort : "medium";
+  if (Array.isArray(supportedOptions) && supportedOptions.length > 0) {
+    const supported = new Set(supportedOptions.map((v) => String(v || "").trim().toLowerCase()).filter(Boolean));
+    const hasMedium = supported.has("medium");
+    const hasMax = supported.has("max");
+    const preferred =
+      !hasMedium && hasMax
+        ? eff === "off"
+          ? ["off", "low"]
+          : eff === "low"
+            ? ["low", "off"]
+            : eff === "medium"
+              ? ["high", "low"]
+              : ["max", "high"]
+        : eff === "off"
+          ? ["off", "low"]
+          : eff === "low"
+            ? ["low", "medium", "off"]
+            : eff === "medium"
+              ? ["medium", "high", "low"]
+              : ["high", "max", "medium"];
+    const matched = preferred.filter((v) => supported.has(v));
+    if (matched.length > 0) return matched;
+  }
+  return eff === "medium" ? ["medium", "high", "low"] : eff === "high" ? ["high", "max"] : [eff];
+}
+
 function oneLine(text, max) {
   const clean = String(text ?? "").replace(/\s+/g, " ").trim();
   if (!clean) return "";
@@ -1323,6 +1379,7 @@ export class AcpEngine {
         pending: new Map(),
         loadedSessions: new Set(),
         sessionRoles: new Map(),
+        sessionEffortOptions: new Map(),
         listeners: new Map(), // sessionId -> fn(msg)
         earlyCancelSessions: new Set(),
         stderrRing: [],
@@ -1482,13 +1539,23 @@ export class AcpEngine {
       return guard;
     };
     let guard = sessionId ? reserve(sessionId) : null;
+    let appliedEffort = "";
     try {
+      const recordEffortOpts = (sid, cfgOpts) => {
+        const parsed = parseAcpEffortOptions(cfgOpts);
+        if (parsed) {
+          if (!state.sessionEffortOptions) state.sessionEffortOptions = new Map();
+          state.sessionEffortOptions.set(sid, parsed);
+        }
+      };
+
       if (sessionId && state.loadedSessions.has(sessionId)) {
         reused = true;
       } else if (sessionId) {
         try {
-          await state.request("session/resume", { sessionId, cwd, mcpServers: [] });
+          const resumed = await state.request("session/resume", { sessionId, cwd, mcpServers: [] });
           state.loadedSessions.add(sessionId);
+          recordEffortOpts(sessionId, resumed?.configOptions);
           reused = true;
           resumedFromDisk = true;
         } catch (err) {
@@ -1509,18 +1576,21 @@ export class AcpEngine {
         }
         guard = reserve(sessionId);
         state.loadedSessions.add(sessionId);
+        recordEffortOpts(sessionId, created?.configOptions);
         if (model?.source === "dsh" && model?.providerId && model?.modelName) {
           try {
-            await state.request("session/set_config_option", {
+            const setModelRes = await state.request("session/set_config_option", {
               sessionId,
               configId: "model",
               value: JSON.stringify([model.providerId, model.modelName]),
             });
+            recordEffortOpts(sessionId, setModelRes?.configOptions);
           } catch {}
         }
       }
-      // Keep the configured fallback for providers with no medium effort option.
-      const effortCandidates = effectiveEffort === "medium" ? ["medium", "high", "low"] : [effectiveEffort];
+      // Dynamically map low/medium/high onto low/high/max when upstream omits medium.
+      const advertisedEfforts = state.sessionEffortOptions?.get(sessionId) || null;
+      const effortCandidates = resolveAcpEffortCandidates(effectiveEffort, advertisedEfforts);
       for (const candidate of effortCandidates) {
         try {
           await state.request("session/set_config_option", {
@@ -1528,6 +1598,7 @@ export class AcpEngine {
             configId: "reasoning_effort",
             value: candidate,
           });
+          appliedEffort = candidate;
           break;
         } catch {}
       }
@@ -1869,6 +1940,7 @@ export class AcpEngine {
           reused,
           resumedFromDisk,
           resolvedModel: model?.modelName || "deepseek-harness",
+          appliedEffort: appliedEffort || effectiveEffort,
           text: Array.from(messages.values()).at(-1)?.text.trim() || "(interrupted)",
           stopReason: String(res?.stopReason || "cancelled").toLowerCase(),
           truncated: false,
@@ -1964,6 +2036,7 @@ export class AcpEngine {
         reused,
         resumedFromDisk,
         resolvedModel: model?.modelName || "deepseek-harness",
+        appliedEffort: appliedEffort || effectiveEffort,
         text: finalText,
         stopReason: stopReason || undefined,
         truncated: truncatedByMaxTokens,

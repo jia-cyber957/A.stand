@@ -9,11 +9,11 @@ import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { applyTurn1CustomRules, formatMappedDriveSandboxHint, RelayOrchestrator, selectRoleModels } from "../src/core/orchestrator.mjs";
+import { applyTurn1CustomRules, formatMappedDriveSandboxHint, RelayOrchestrator, selectRoleModels, summarizeJobPerf } from "../src/core/orchestrator.mjs";
 import { RelayStore } from "../src/core/store.mjs";
 import { TelemetryLogger } from "../src/core/telemetry.mjs";
 import { createJobWorktree, detectGitRepo, finalizeJobWorktree } from "../src/core/worktree.mjs";
-import { AcpEngine, parseAcpModelOptions, parseToolActivity, sanitizeConstrainedLangOutput, summarizeToolInput } from "../src/engines/acp.mjs";
+import { AcpEngine, parseAcpEffortOptions, parseAcpModelOptions, parseToolActivity, resolveAcpEffortCandidates, sanitizeConstrainedLangOutput, summarizeToolInput } from "../src/engines/acp.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -409,6 +409,23 @@ async function testBrowserStrictCspRender(htmlText, realToolResult) {
               uiChecks.dshFixedFlyout = dshFlyout && fMain.contentWindow.getComputedStyle(dshFlyout).position === "fixed";
               uiChecks.dshAddChannel = Boolean(dshFlyout?.querySelector('[data-action="open-add-modal"]'));
 
+              // Interactive check 2b: add fallback via UI, then click fallback chip to replace it in place
+              doc.querySelector('[data-action="toggle-fb-dd"][data-role="oracle"]')?.click();
+              const addFbMenu = doc.querySelector('.field-label .dropdown-menu.harness-menu');
+              addFbMenu?.querySelector('[data-harness-hover="deepseek-harness"]')?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+              addFbMenu?.querySelector('[data-action="add-fallback"][data-model="dsh:fixture-relay:dsh-alpha"]')?.click();
+              await new Promise((resolve) => setTimeout(resolve, 60));
+              const fbSlotBtn = doc.querySelector('[data-action="toggle-fb-slot-dd"][data-role="oracle"][data-slot-index="1"]');
+              fbSlotBtn?.click();
+              const replaceMenu = doc.querySelector(".queue-chip .dropdown-menu.harness-menu");
+              replaceMenu?.querySelector('[data-harness-hover="deepseek-harness"]')?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+              const replaceItem = replaceMenu?.querySelector('[data-action="replace-fallback"][data-slot-index="1"][data-model="dsh:fixture-relay:dsh-beta"]');
+              uiChecks.fbSlotPickerOpened = Boolean(replaceMenu && replaceItem);
+              replaceItem?.click();
+              await new Promise((resolve) => setTimeout(resolve, 60));
+              uiChecks.fbSlotReplaced = JSON.stringify(TOOL_RESULT.structuredContent.settings.roles.oracle.queue) ===
+                JSON.stringify(["cli-codex-default", "dsh:fixture-relay:dsh-beta"]);
+
               doc.querySelector('[data-action="set-tab"][data-tab="settings"]')?.click();
               uiChecks.hasNativeSelect = Boolean(doc.querySelector("#s-inspector-model"));
               doc.querySelector('[data-action="toggle-inspector-dd"]')?.click();
@@ -647,6 +664,8 @@ async function testBrowserStrictCspRender(htmlText, realToolResult) {
     assert.deepEqual(report.uiChecks?.flyoutGroups, report.uiChecks.inspectorGroups);
     assert.equal(report.uiChecks?.dshFixedFlyout, true);
     assert.equal(report.uiChecks?.dshAddChannel, true);
+    assert.equal(report.uiChecks?.fbSlotPickerOpened, true, "Clicking fallback slot must open replacement picker");
+    assert.equal(report.uiChecks?.fbSlotReplaced, true, "Picking a replacement model must swap fallback slot in place");
     assert.equal(report.uiChecks?.channelCards, 2);
     assert.equal(report.uiChecks?.channelInitiallyCollapsed, true);
     assert.equal(report.uiChecks?.channelExpanded, true);
@@ -952,7 +971,25 @@ function testAcpModelDiscovery() {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
-  console.log("ACP DeepSeek Account model discovery & dynamic dsh id resolution PASSED.");
+  // Dynamic reasoning_effort mapping: 3-tier low/high/max vs standard 4-tier off/low/medium/high.
+  const threeTier = parseAcpEffortOptions([
+    { id: "reasoning_effort", options: [{ value: "off" }, { value: "low" }, { value: "high" }, { value: "max" }] },
+  ]);
+  assert.deepEqual(threeTier, ["off", "low", "high", "max"]);
+  assert.deepEqual(resolveAcpEffortCandidates("off", threeTier), ["off", "low"]);
+  assert.deepEqual(resolveAcpEffortCandidates("low", threeTier), ["low", "off"]);
+  assert.deepEqual(resolveAcpEffortCandidates("medium", threeTier), ["high", "low"]);
+  assert.deepEqual(resolveAcpEffortCandidates("high", threeTier), ["max", "high"]);
+
+  const fourTier = parseAcpEffortOptions([
+    { id: "reasoning_effort", options: [{ value: "off" }, { value: "low" }, { value: "medium" }, { value: "high" }] },
+  ]);
+  assert.deepEqual(resolveAcpEffortCandidates("low", fourTier), ["low", "medium", "off"]);
+  assert.deepEqual(resolveAcpEffortCandidates("medium", fourTier), ["medium", "high", "low"]);
+  assert.deepEqual(resolveAcpEffortCandidates("high", fourTier), ["high", "medium"]);
+  assert.equal(parseAcpEffortOptions([]), null);
+
+  console.log("ACP DeepSeek Account model discovery, dynamic effort mapping & dsh id resolution PASSED.");
 }
 
 async function testAcpActivity() {
@@ -1331,6 +1368,52 @@ async function testDurableHandoff() {
     assert.deepEqual(selectRoleModels({ queue, requestedModelId: "flash" }).models, queue);
     assert.ok(selectRoleModels({ queue, selectionMode: "smart", requestedModelId: "unlisted" }).error);
     assert.deepEqual(selectRoleModels({ queue, selectionMode: "smart", requestedModelId: "codex", resumeRecord: { modelId: "flash", engine: "deepseek-harness" } }).models, [queue[1]]);
+
+    // Per-job local performance telemetry (job-perf.jsonl) must record timing & effort fields.
+    const perfRows = relay.telemetry.readJobPerf(10);
+    const resumedPerf = perfRows.find((r) => r.jobId === resumed.jobId);
+    assert.ok(resumedPerf, "Expected resumed job to append a job-perf.jsonl row");
+    assert.equal(resumedPerf.status, "completed");
+    assert.equal(resumedPerf.role, "hephaestus");
+    assert.equal(resumedPerf.requestedEffort, "medium");
+    assert.ok(Number.isFinite(resumedPerf.elapsedMs));
+    const synth = summarizeJobPerf({
+      jobId: "job_perf_synth",
+      role: "hephaestus",
+      slot: "default",
+      title: "Timing test",
+      engine: "deepseek-harness",
+      modelId: "dsh:x",
+      resolvedModel: "deepseek-v4",
+      selectionMode: "smart",
+      requestedEffort: "high",
+      appliedEffort: "max",
+      status: "completed",
+      startedAt: 1000,
+      finishedAt: 9000,
+      firstActivityAt: 1800,
+      firstToolAt: 2500,
+      firstEditAt: 4500,
+      activities: [
+        { kind: "thought", durationSec: 2.5 },
+        { kind: "cmd", durationSec: 3.0, exitCode: 0 },
+        { kind: "cmd", durationSec: 1.5, exitCode: 1 },
+        { kind: "read" },
+        { kind: "edit" },
+      ],
+    });
+    assert.equal(synth.elapsedMs, 8000);
+    assert.equal(synth.firstActivityMs, 800);
+    assert.equal(synth.firstToolMs, 1500);
+    assert.equal(synth.firstEditMs, 3500);
+    assert.equal(synth.cmdCount, 2);
+    assert.equal(synth.failedCmdCount, 1);
+    assert.equal(synth.cmdDurationMs, 4500);
+    assert.equal(synth.thoughtDurationMs, 2500);
+    assert.equal(synth.readSearchCount, 1);
+    assert.equal(synth.editWriteCount, 1);
+    assert.equal(synth.requestedEffort, "high");
+    assert.equal(synth.appliedEffort, "max");
   }
 }
 

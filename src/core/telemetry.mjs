@@ -106,6 +106,7 @@ export class TelemetryLogger {
     this.dataDir = path.resolve(dataDir);
     fs.mkdirSync(this.dataDir, { recursive: true });
     this.logPath = path.join(this.dataDir, "telemetry.jsonl");
+    this.perfLogPath = path.join(this.dataDir, "job-perf.jsonl");
   }
 
   record(entry) {
@@ -115,6 +116,29 @@ export class TelemetryLogger {
     };
     fs.appendFileSync(this.logPath, JSON.stringify(line) + "\n", "utf8");
     return line;
+  }
+
+  recordJobPerf(entry) {
+    const line = {
+      ts: new Date().toISOString(),
+      ...entry,
+    };
+    fs.appendFileSync(this.perfLogPath, JSON.stringify(line) + "\n", "utf8");
+    return line;
+  }
+
+  readJobPerf(limit = 50) {
+    if (!fs.existsSync(this.perfLogPath)) return [];
+    const text = fs.readFileSync(this.perfLogPath, "utf8");
+    const rows = [];
+    for (const line of text.split(/\r?\n/)) {
+      const t = line.trim();
+      if (!t) continue;
+      try {
+        rows.push(JSON.parse(t));
+      } catch {}
+    }
+    return limit > 0 ? rows.slice(-limit) : rows;
   }
 
   readAll() {

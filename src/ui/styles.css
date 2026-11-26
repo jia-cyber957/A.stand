@@ -1183,15 +1183,45 @@ html[data-theme="light"] .progress-track {
 }
 
 .queue-chip {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 6px;
-  padding: 5px 8px;
+  padding: 4px 6px;
   background: var(--ar-surface-2);
   border: 1px solid var(--ar-border);
   border-radius: 7px;
   font-size: 11.5px;
+}
+
+.queue-chip-dd {
+  flex: 1;
+  min-width: 0;
+}
+
+.queue-chip-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 2px 4px;
+  border-radius: 5px;
+  color: var(--ar-text);
+  text-align: left;
+  transition: background 0.15s ease;
+}
+
+.queue-chip-trigger:hover {
+  background: var(--ar-surface-hover);
+}
+
+.queue-chip-trigger > svg {
+  width: 12px;
+  height: 12px;
+  color: var(--ar-text-3);
+  flex-shrink: 0;
 }
 
 .queue-chip-left {
@@ -1199,6 +1229,7 @@ html[data-theme="light"] .progress-track {
   align-items: center;
   gap: 6px;
   min-width: 0;
+  flex: 1;
 }
 
 .queue-rank {
