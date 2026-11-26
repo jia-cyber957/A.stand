@@ -12,7 +12,13 @@ import { createDaemonHttpServer } from "./http-server.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const DIST_DIR = path.resolve(__dirname, "..", "..", "dist");
+// Works both when run from bundled dist/daemon.mjs (__dirname IS dist/) and from src/daemon/index.mjs.
+const DIST_DIR =
+  path.basename(__dirname) === "dist" ||
+  fs.existsSync(path.join(__dirname, "desktop.html")) ||
+  fs.existsSync(path.join(__dirname, "stdio-bridge.mjs"))
+    ? __dirname
+    : path.resolve(__dirname, "..", "..", "dist");
 const DEFAULT_PORT = 3426;
 
 export function parseDaemonArgs(argv = []) {

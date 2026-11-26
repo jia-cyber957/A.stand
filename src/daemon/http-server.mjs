@@ -394,22 +394,34 @@ export async function createDaemonHttpServer({
     }
 
     if (resource === "clients") {
+      const setupOpts = () => ({
+        httpUrl: mcpUrl(),
+        bridgeScript: resolvedBridge,
+        rulesFile: resolvedRules,
+      });
       if (req.method === "POST" && segments.length === 2) {
         const body = await readJsonBody(req);
         if (!body.ok) return sendJson(res, body.status, { ok: false, error: body.error });
         const created = clientRegistry.create(body.value || {});
+        const setup = clientRegistry.buildSetupBundle(created.client.id, setupOpts());
         broadcast("client_created");
-        sendJson(res, 201, { ok: true, ...created });
+        sendJson(res, 201, {
+          ok: true,
+          ...created,
+          setup,
+          state: await buildStatePayload(false, false),
+        });
         return;
       }
       if (req.method === "GET" && id && action === "setup") {
-        const bundle = clientRegistry.buildSetupBundle(id, {
-          httpUrl: mcpUrl(),
-          bridgeScript: resolvedBridge,
-          rulesFile: resolvedRules,
-        });
+        const bundle = clientRegistry.buildSetupBundle(id, setupOpts());
         if (!bundle) return sendJson(res, 404, { ok: false, error: "Client not found" });
-        sendJson(res, 200, { ok: true, client: clientRegistry.getPublic(id), ...bundle });
+        sendJson(res, 200, {
+          ok: true,
+          client: clientRegistry.getPublic(id),
+          ...bundle,
+          setup: bundle,
+        });
         return;
       }
       if (req.method === "PATCH" && id) {
@@ -417,15 +429,21 @@ export async function createDaemonHttpServer({
         if (!body.ok) return sendJson(res, body.status, { ok: false, error: body.error });
         const updated = clientRegistry.update(id, body.value || {});
         if (!updated) return sendJson(res, 404, { ok: false, error: "Client not found" });
+        const setup = updated.token ? clientRegistry.buildSetupBundle(id, setupOpts()) : undefined;
         broadcast("client_updated");
-        sendJson(res, 200, { ok: true, ...updated });
+        sendJson(res, 200, {
+          ok: true,
+          ...updated,
+          ...(setup ? { setup } : {}),
+          state: await buildStatePayload(false, false),
+        });
         return;
       }
       if (req.method === "DELETE" && id) {
         const removed = clientRegistry.delete(id);
         if (!removed) return sendJson(res, 404, { ok: false, error: "Client not found" });
         broadcast("client_deleted");
-        sendJson(res, 200, { ok: true });
+        sendJson(res, 200, { ok: true, state: await buildStatePayload(false, false) });
         return;
       }
     }
@@ -435,7 +453,7 @@ export async function createDaemonHttpServer({
       if (!body.ok) return sendJson(res, body.status, { ok: false, error: body.error });
       const settings = store.updateTopSettings(body.value || {});
       broadcast("settings_changed");
-      sendJson(res, 200, { ok: true, settings });
+      sendJson(res, 200, { ok: true, settings, state: await buildStatePayload(false, false) });
       return;
     }
 
@@ -459,14 +477,24 @@ export async function createDaemonHttpServer({
           store.updateTopSettings({ inspectorModelId: lastSavedModelId });
         }
         broadcast("settings_changed");
-        sendJson(res, 200, { ok: true, lastSavedModelId, savedIds, settings: store.getPublicState() });
+        sendJson(res, 200, {
+          ok: true,
+          lastSavedModelId,
+          savedIds,
+          settings: store.getPublicState(),
+          state: await buildStatePayload(false, false),
+        });
         return;
       }
       if (req.method === "DELETE" && id) {
         const deleted = store.deleteModel(id);
         if (!deleted) return sendJson(res, 404, { ok: false, error: "Model not found or builtin" });
         broadcast("settings_changed");
-        sendJson(res, 200, { ok: true, settings: store.getPublicState() });
+        sendJson(res, 200, {
+          ok: true,
+          settings: store.getPublicState(),
+          state: await buildStatePayload(false, false),
+        });
         return;
       }
     }
@@ -477,14 +505,24 @@ export async function createDaemonHttpServer({
         if (!body.ok) return sendJson(res, body.status, { ok: false, error: body.error });
         const channel = store.upsertChannel(body.value || {});
         broadcast("settings_changed");
-        sendJson(res, 200, { ok: true, channel, settings: store.getPublicState() });
+        sendJson(res, 200, {
+          ok: true,
+          channel,
+          lastSavedChannelId: channel.id,
+          settings: store.getPublicState(),
+          state: await buildStatePayload(false, false),
+        });
         return;
       }
       if (req.method === "DELETE" && id && !action) {
         const deleted = store.deleteChannel(id);
         if (!deleted) return sendJson(res, 404, { ok: false, error: "Channel not found" });
         broadcast("settings_changed");
-        sendJson(res, 200, { ok: true, settings: store.getPublicState() });
+        sendJson(res, 200, {
+          ok: true,
+          settings: store.getPublicState(),
+          state: await buildStatePayload(false, false),
+        });
         return;
       }
       if (req.method === "POST" && id && action === "remove-model") {
@@ -497,7 +535,11 @@ export async function createDaemonHttpServer({
         const removed = store.removeChannelModel(id, modelName, modelId);
         if (!removed) return sendJson(res, 404, { ok: false, error: "Channel or model not found" });
         broadcast("settings_changed");
-        sendJson(res, 200, { ok: true, settings: store.getPublicState() });
+        sendJson(res, 200, {
+          ok: true,
+          settings: store.getPublicState(),
+          state: await buildStatePayload(false, false),
+        });
         return;
       }
     }
@@ -530,7 +572,11 @@ export async function createDaemonHttpServer({
         result = await orchestrator.sessionAction({ action: sessionAction, sessionId });
       }
       broadcast("orchestrator_state");
-      sendJson(res, 200, { ok: true, actionResult: result });
+      sendJson(res, 200, {
+        ok: true,
+        actionResult: result,
+        state: await buildStatePayload(false, false),
+      });
       return;
     }
 
@@ -539,14 +585,18 @@ export async function createDaemonHttpServer({
       if (!body.ok) return sendJson(res, body.status, { ok: false, error: body.error });
       const result = orchestrator.dismissInterrupted(body.value?.jobId);
       broadcast("orchestrator_state");
-      sendJson(res, 200, { ok: true, actionResult: result });
+      sendJson(res, 200, {
+        ok: true,
+        actionResult: result,
+        state: await buildStatePayload(false, false),
+      });
       return;
     }
 
     if (req.method === "POST" && resource === "clear-logs") {
       telemetry.clear();
       broadcast("telemetry_cleared");
-      sendJson(res, 200, { ok: true });
+      sendJson(res, 200, { ok: true, state: await buildStatePayload(false, false) });
       return;
     }
 
