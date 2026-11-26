@@ -23,7 +23,35 @@ await esbuild.build({
   },
 });
 
-// 2. Bundle UI script with @modelcontextprotocol/ext-apps and inline CSS + JS into single HTML
+// 2. Bundle the v2 resident daemon (Streamable HTTP MCP + local REST/SSE console API)
+await esbuild.build({
+  entryPoints: [path.join(ROOT, "src", "daemon", "index.mjs")],
+  outfile: path.join(DIST, "daemon.mjs"),
+  bundle: true,
+  platform: "node",
+  target: "node20",
+  format: "esm",
+  sourcemap: false,
+  banner: {
+    js: 'import { createRequire as __arCreateRequire } from "node:module"; const require = __arCreateRequire(import.meta.url);',
+  },
+});
+
+// 3. Bundle the stdio -> Streamable HTTP fallback bridge
+await esbuild.build({
+  entryPoints: [path.join(ROOT, "src", "bridge", "stdio-bridge.mjs")],
+  outfile: path.join(DIST, "stdio-bridge.mjs"),
+  bundle: true,
+  platform: "node",
+  target: "node20",
+  format: "esm",
+  sourcemap: false,
+  banner: {
+    js: 'import { createRequire as __arCreateRequire } from "node:module"; const require = __arCreateRequire(import.meta.url);',
+  },
+});
+
+// 4. Bundle UI script with @modelcontextprotocol/ext-apps and inline CSS + JS into single HTML
 const uiBuild = await esbuild.build({
   entryPoints: [path.join(ROOT, "src", "ui", "app.js")],
   bundle: true,
@@ -57,7 +85,7 @@ if (
 
 fs.writeFileSync(path.join(DIST, "console.html"), html, "utf8");
 
-// 3. Ship the zero-token doorbell waiter so the Lead Agent can run it from the installed plugin dir
+// 5. Ship the zero-token doorbell waiter so the Lead Agent can run it from the installed plugin dir
 const waitJobSrc = path.join(ROOT, "scripts", "wait-job.mjs");
 const waitJobText = fs.readFileSync(waitJobSrc, "utf8");
 if (!waitJobText.includes("process.exit(") || !waitJobText.includes("status.json")) {
@@ -65,6 +93,19 @@ if (!waitJobText.includes("process.exit(") || !waitJobText.includes("status.json
 }
 fs.writeFileSync(path.join(DIST, "wait-job.mjs"), waitJobText, "utf8");
 
+// Post-build integrity assertions for the v2 bundles.
+const daemonText = fs.readFileSync(path.join(DIST, "daemon.mjs"), "utf8");
+const bridgeText = fs.readFileSync(path.join(DIST, "stdio-bridge.mjs"), "utf8");
+if (!daemonText.includes("ASTAND_DAEMON_READY") || !daemonText.includes("StreamableHTTPServerTransport")) {
+  throw new Error("daemon.mjs integrity check failed");
+}
+if (!bridgeText.includes("X-Astand-Transport") || !bridgeText.includes("stdio-bridge")) {
+  throw new Error("stdio-bridge.mjs integrity check failed");
+}
+
 console.log(
-  `Built dist/server.mjs (${(fs.statSync(path.join(DIST, "server.mjs")).size / 1024).toFixed(1)} KB), dist/console.html (${(Buffer.byteLength(html) / 1024).toFixed(1)} KB, verified OK) and dist/wait-job.mjs`
+  `Built dist/server.mjs (${(fs.statSync(path.join(DIST, "server.mjs")).size / 1024).toFixed(1)} KB), ` +
+  `dist/console.html (${(Buffer.byteLength(html) / 1024).toFixed(1)} KB, verified OK), ` +
+  `dist/wait-job.mjs, dist/daemon.mjs (${(fs.statSync(path.join(DIST, "daemon.mjs")).size / 1024).toFixed(1)} KB) ` +
+  `and dist/stdio-bridge.mjs (${(fs.statSync(path.join(DIST, "stdio-bridge.mjs")).size / 1024).toFixed(1)} KB)`
 );

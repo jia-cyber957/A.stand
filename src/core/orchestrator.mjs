@@ -332,6 +332,18 @@ function sanitizeModelChoice(value) {
   return typeof value === "string" ? value.trim().slice(0, 200) : "";
 }
 
+// Upstream MCP client attribution carried on a job (v2 daemon). Purely informational.
+export function sanitizeClientContext(clientContext) {
+  if (!clientContext || typeof clientContext !== "object") return null;
+  const clientId = typeof clientContext.clientId === "string" ? clientContext.clientId.trim().slice(0, 64) : "";
+  if (!clientId) return null;
+  return {
+    clientId,
+    clientLabel: typeof clientContext.clientLabel === "string" ? clientContext.clientLabel.trim().slice(0, 80) : "",
+    iconKey: typeof clientContext.iconKey === "string" ? clientContext.iconKey.trim().slice(0, 40) : "generic",
+  };
+}
+
 // Ordered (default) keeps the configured priority queue untouched. Smart promotes one explicit
 // configured model to the front and keeps the remaining order as fallbacks. No judging call here.
 // Resumes are pinned to the original engine/model so the session (and its Prompt Cache) stays reusable.
@@ -435,7 +447,49 @@ export class RelayOrchestrator {
     };
     this.jobs = new Map(); // jobId -> job state
     this.activeWriters = new Map(); // workspaceKey -> jobId
+    this.stateListeners = new Set();
     this.#recoverOrphanedJobs();
+  }
+
+  // ---- Lightweight state-change emitter (SSE consumers subscribe here) ----
+  subscribe(fn) {
+    if (typeof fn !== "function") return () => {};
+    this.stateListeners.add(fn);
+    return () => this.stateListeners.delete(fn);
+  }
+
+  #emitStateChange(reason = "orchestrator_state", extra = {}) {
+    for (const fn of this.stateListeners) {
+      try {
+        fn({ reason, ts: Date.now(), ...extra });
+      } catch {}
+    }
+  }
+
+  // Compact perf rollup for the console API (reads job-perf.jsonl written at job end).
+  getPerfSummary(limit = 50) {
+    const rows = typeof this.telemetry?.readJobPerf === "function"
+      ? this.telemetry.readJobPerf(limit)
+      : [];
+    const byStatus = {};
+    let elapsedMs = 0;
+    let cmdCount = 0;
+    let failedCmdCount = 0;
+    for (const row of rows) {
+      const status = String(row?.status || "unknown");
+      byStatus[status] = (byStatus[status] || 0) + 1;
+      if (Number.isFinite(Number(row?.elapsedMs))) elapsedMs += Number(row.elapsedMs);
+      if (Number.isFinite(Number(row?.cmdCount))) cmdCount += Number(row.cmdCount);
+      if (Number.isFinite(Number(row?.failedCmdCount))) failedCmdCount += Number(row.failedCmdCount);
+    }
+    return {
+      total: rows.length,
+      byStatus,
+      avgElapsedMs: rows.length ? Math.round(elapsedMs / rows.length) : 0,
+      cmdCount,
+      failedCmdCount,
+      recent: rows.slice(-10).reverse(),
+    };
   }
 
   // ---- Status snapshots (zero-token doorbell for scripts/wait-job.mjs) ----
@@ -512,6 +566,7 @@ export class RelayOrchestrator {
       outputPath: this.#outputPath(job.jobId),
       // Durable handoff fields: lets the Lead recover/ACK exact jobs without guessing.
       ...(job.conversationId && { conversationId: job.conversationId }),
+      ...(job.client && { client: job.client }),
       ...(job.worktree && { worktree: job.worktree }),
     };
   }
@@ -525,6 +580,7 @@ export class RelayOrchestrator {
       fs.mkdirSync(path.dirname(target), { recursive: true });
       writeAtomicJson(target, this.#buildStatusSnapshot(job, status));
       job.statusFileAt = now;
+      this.#emitStateChange("job_status", { jobId: job.jobId });
     } catch {}
   }
 
@@ -842,6 +898,7 @@ export class RelayOrchestrator {
       logPath: j.logPath,
       outputPath: j.outputPath || (running ? "" : this.#outputPath(j.jobId)),
       ...(j.conversationId && { conversationId: j.conversationId }),
+      ...(j.client && { client: j.client }),
       ...(j.worktree && { worktree: j.worktree }),
       error: j.error || "",
     };
@@ -1384,6 +1441,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
     modelId: requestedModelId,
     conversationId: requestedConversationId,
     resumeJobId,
+    clientContext,
     onHeartbeat,
   }) {
     const waitSec = this.#effectiveWaitSec(requestedWaitSec);
@@ -1391,7 +1449,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
     const gate = this.#checkEnabled();
     if (gate.blocked) return { blocked: true, text: gate.message };
     this.#pruneFinishedJobs();
-
+    const clientAttribution = sanitizeClientContext(clientContext);
     const checkpoint = resumeJobId ? this.#readHandoffJob(resumeJobId) : null;
     if (resumeJobId && (!this.#canResumeHandoff(checkpoint) || forceNew || checkpoint.role !== role ||
       (requestedConversationId && checkpoint.conversationId && checkpoint.conversationId !== sanitizeConversationId(requestedConversationId)) ||
@@ -1543,6 +1601,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       requestedSessionId: cleanRequestedSid,
       ...(wt || checkpoint?.worktree ? { worktree: wt || checkpoint.worktree } : {}),
       ...(conversationId && { conversationId }),
+      ...(clientAttribution && { client: clientAttribution }),
       selectionMode: selection.mode,
       requestedEffort: effort || roleCfg.effort || "medium",
       appliedEffort: "",
@@ -2092,6 +2151,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
     waitSec: requestedWaitSec,
     modelId: requestedModelId,
     conversationId: requestedConversationId,
+    clientContext,
     onHeartbeat,
   }) {
     const waitSec = this.#effectiveWaitSec(requestedWaitSec);
@@ -2099,6 +2159,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
     const gate = this.#checkEnabled();
     if (gate.blocked) return { blocked: true, text: gate.message };
     this.#pruneFinishedJobs();
+    const clientAttribution = sanitizeClientContext(clientContext);
 
     const workDir = path.resolve(cwd || process.cwd());
     const cleanRequestedSid = typeof requestedSessionId === "string" ? requestedSessionId.trim() : "";
@@ -2200,6 +2261,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       taskSummary: String(instructions || sessionTitle || `Review ${targetType}`).replace(/\s+/g, " ").trim().slice(0, 1200),
       cwd: workDir,
       ...(conversationId && { conversationId }),
+      ...(clientAttribution && { client: clientAttribution }),
       selectionMode: selection.mode,
       requestedEffort: roleCfg.effort || "medium",
       appliedEffort: "",
@@ -3014,6 +3076,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
         title: snapshot?.title || "",
         cwd: snapshot?.cwd || "",
         ...(snapshot?.worktree && { worktree: snapshot.worktree }),
+        ...(snapshot?.client && { client: snapshot.client }),
         sessionId: snapshot?.sessionId || "",
         conversationId: snapshot?.conversationId || checkpoint?.conversationId || "",
         engine: snapshot?.engine || "",

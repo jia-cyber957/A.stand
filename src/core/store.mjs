@@ -292,9 +292,15 @@ export class RelayStore {
           || Object.values(apiKeys).some((key) => typeof key !== "string")) {
         throw new Error("Invalid API keys format");
       }
-      return { ...raw, apiKeys };
+      // v2: per-client upstream tokens live beside apiKeys (same 0600 secrets file, never in settings.json).
+      const clientTokens = raw.clientTokens === undefined ? {} : raw.clientTokens;
+      if (!clientTokens || typeof clientTokens !== "object" || Array.isArray(clientTokens)
+          || Object.values(clientTokens).some((token) => typeof token !== "string")) {
+        throw new Error("Invalid client tokens format");
+      }
+      return { ...raw, apiKeys, clientTokens };
     } catch (error) {
-      if (error.code === "ENOENT") return { apiKeys: {} };
+      if (error.code === "ENOENT") return { apiKeys: {}, clientTokens: {} };
       throw new Error("Cannot read secrets.json. Restore a readable secrets file before starting A.stand.");
     }
   }
