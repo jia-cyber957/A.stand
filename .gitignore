@@ -1,6 +1,9 @@
 node_modules/
 dist/
+dist-desktop/
 data/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
 .tmp-shots/
 scripts/tmp-*.mjs
 *.log

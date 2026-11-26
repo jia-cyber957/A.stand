@@ -1,0 +1,38 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "A.stand",
+  "version": "2.0.0",
+  "identifier": "dev.astand.desktop",
+  "build": {
+    "frontendDist": "./loading"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "A.stand",
+        "width": 1120,
+        "height": 740,
+        "minWidth": 860,
+        "minHeight": 580,
+        "center": true,
+        "visible": true,
+        "resizable": true,
+        "focus": true,
+        "decorations": true,
+        "backgroundColor": "#111827"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline' http://127.0.0.1:* http://localhost:*; script-src 'unsafe-inline' http://127.0.0.1:* http://localhost:*; connect-src ipc: http://ipc.localhost http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*; font-src data: http://127.0.0.1:* http://localhost:*"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/icon.png", "icons/icon.ico"],
+    "shortDescription": "A.stand desktop shell",
+    "longDescription": "Native Windows tray shell that supervises the A.stand resident daemon and renders its console in WebView2."
+  }
+}
