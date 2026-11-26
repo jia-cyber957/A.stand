@@ -32,6 +32,15 @@ export function applyTurn1CustomRules(prompt, customRules, isFirstTurn) {
   return rules ? `[Role Custom Rules]\n${rules}\n[/Role Custom Rules]\n\n${prompt}` : prompt;
 }
 
+// Merges the role's hand-written custom rules with compiled skill/template rules.
+// Kept pure so Turn 2+ (session reuse) stays byte-identical and Prompt Cache safe.
+export function mergeTurn1Rules(customRules, extensionText) {
+  const base = String(customRules || "").trim();
+  const extra = String(extensionText || "").trim();
+  if (!extra) return base;
+  return base ? `${base}\n\n${extra}` : extra;
+}
+
 export function formatMappedDriveSandboxHint({ platform, role, engine, cwd, activities, errorText, resultText }) {
   if (platform !== "win32" || role !== "oracle" || engine !== "codex" || !/^[a-bd-z]:\\/i.test(cwd)) {
     return "";
@@ -436,9 +445,10 @@ function safeReadCheckpoint(filePath) {
 }
 
 export class RelayOrchestrator {
-  constructor(store, telemetry) {
+  constructor(store, telemetry, { extensionRegistry = null } = {}) {
     this.store = store;
     this.telemetry = telemetry;
+    this.extensionRegistry = extensionRegistry;
     this.engines = {
       codex: new CodexEngine(() => this.store.settings.codexKeepOfficePlugins),
       "deepseek-harness": new AcpEngine(store.dataDir),
@@ -758,6 +768,19 @@ export class RelayOrchestrator {
       };
     }
     return { blocked: false };
+  }
+
+  // Skills / templates compiled for this role, appended to the Turn-1 rules only.
+  // Turn 2+ returns "" so a reused session keeps an identical prefix (Prompt Cache).
+  #roleTurn1Rules(roleCfg, role, isFirstTurn) {
+    if (!isFirstTurn || !this.extensionRegistry) return roleCfg?.customRules;
+    let compiled = "";
+    try {
+      compiled = this.extensionRegistry.compileForRole(role)?.promptText || "";
+    } catch {
+      compiled = "";
+    }
+    return mergeTurn1Rules(roleCfg?.customRules, compiled);
   }
 
   #runningJobs() {
@@ -1675,7 +1698,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
               model,
               effort: effort || roleCfg.effort || "medium",
               sandbox: effectiveSandbox,
-              prompt: worktreeHint + applyTurn1CustomRules(turnPrompt, roleCfg.customRules, !canReuse),
+              prompt: worktreeHint + applyTurn1CustomRules(turnPrompt, this.#roleTurn1Rules(roleCfg, role, !canReuse), !canReuse),
               existingSessionId,
               requireResume: Boolean(checkpoint),
               onSessionReady: (sid) => this.#onSessionReady(job, sid),
@@ -2315,13 +2338,14 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
           try {
             const onSessionReady = (sid) => this.#onSessionReady(job, sid);
             const onActivity = attachTurnSigToJob(job, (ev) => this.#recordActivity(job, ev));
+            const turn1Rules = this.#roleTurn1Rules(roleCfg, "oracle", !canReuse);
             const res =
               engineId === "codex"
                 ? await this.engines.codex.runReview({
                     cwd: workDir,
                     model,
                     existingSessionId,
-                    customRules: canReuse ? undefined : roleCfg.customRules,
+                    customRules: canReuse ? undefined : turn1Rules,
                     target,
                     onSessionReady,
                     onActivity,
@@ -2332,7 +2356,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
                     model,
                     effort: roleCfg.effort || "medium",
                     sandbox: "read-only",
-                    prompt: applyTurn1CustomRules(reviewPrompt, roleCfg.customRules, !canReuse),
+                    prompt: applyTurn1CustomRules(reviewPrompt, turn1Rules, !canReuse),
                     existingSessionId,
                     onSessionReady,
                     onActivity,
@@ -3022,6 +3046,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       recentJobs: this.#recentJobs(10),
       interruptedJobs: this.#interruptedJobs(),
       receipts: this.store.listReceipts().slice(0, 50),
+      extensions: this.extensionRegistry?.getPublicState?.() || { version: 1, items: [], counts: {} },
     };
   }
 

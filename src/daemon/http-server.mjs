@@ -104,6 +104,7 @@ export async function createDaemonHttpServer({
   telemetry,
   orchestrator,
   clientRegistry,
+  extensionRegistry = null,
   port = Number(process.env.ASTAND_PORT || DEFAULT_PORT),
   host = "127.0.0.1",
   uiToken,
@@ -190,6 +191,7 @@ export async function createDaemonHttpServer({
       providers: API_PROVIDERS,
       cliEnginesMeta: CLI_ENGINES_META,
       ...dashboard,
+      extensions: extensionRegistry?.getPublicState?.() || dashboard.extensions || { version: 1, items: [], counts: {} },
       perf: typeof orchestrator.getPerfSummary === "function" ? orchestrator.getPerfSummary() : null,
       clients: clientRegistry.listPublic(),
       clientPresets: CLIENT_PRESETS,
@@ -443,6 +445,76 @@ export async function createDaemonHttpServer({
         const removed = clientRegistry.delete(id);
         if (!removed) return sendJson(res, 404, { ok: false, error: "Client not found" });
         broadcast("client_deleted");
+        sendJson(res, 200, { ok: true, state: await buildStatePayload(false, false) });
+        return;
+      }
+    }
+
+    if (resource === "extensions") {
+      const requireRegistry = () => {
+        if (extensionRegistry) return true;
+        sendJson(res, 503, { ok: false, error: "Extension registry is not available" });
+        return false;
+      };
+      if (!requireRegistry()) return;
+
+      // Registry validation errors carry a friendly message + HTTP status (400/404).
+      // Without this mapping they would escape to the outer handler as a bare 500.
+      const runRegistry = (fn) => {
+        try {
+          return { ok: true, value: fn() };
+        } catch (err) {
+          const status = Number(err?.status) || 500;
+          sendJson(res, status, { ok: false, error: err?.message || String(err) });
+          return { ok: false };
+        }
+      };
+
+      if (req.method === "GET" && segments.length === 2) {
+        sendJson(res, 200, { ok: true, ...extensionRegistry.getPublicState() });
+        return;
+      }
+
+      if (req.method === "POST" && segments.length === 2) {
+        const body = await readJsonBody(req);
+        if (!body.ok) return sendJson(res, body.status, { ok: false, error: body.error });
+        const result = runRegistry(() => extensionRegistry.upsert(body.value || {}));
+        if (!result.ok) return;
+        broadcast("extensions_changed");
+        sendJson(res, 200, { ok: true, item: result.value, state: await buildStatePayload(false, false) });
+        return;
+      }
+
+      if (req.method === "POST" && id === "import-skill") {
+        const body = await readJsonBody(req);
+        if (!body.ok) return sendJson(res, body.status, { ok: false, error: body.error });
+        const input = body.value || {};
+        const result = runRegistry(() =>
+          extensionRegistry.importSkill(input.path, {
+            roles: input.roles,
+            mountMode: input.mountMode,
+          })
+        );
+        if (!result.ok) return;
+        broadcast("extensions_changed");
+        sendJson(res, 200, { ok: true, item: result.value, state: await buildStatePayload(false, false) });
+        return;
+      }
+
+      if (req.method === "PATCH" && id) {
+        const body = await readJsonBody(req);
+        if (!body.ok) return sendJson(res, body.status, { ok: false, error: body.error });
+        const result = runRegistry(() => extensionRegistry.update(id, body.value || {}));
+        if (!result.ok) return;
+        broadcast("extensions_changed");
+        sendJson(res, 200, { ok: true, item: result.value, state: await buildStatePayload(false, false) });
+        return;
+      }
+
+      if (req.method === "DELETE" && id) {
+        const removed = extensionRegistry.delete(id);
+        if (!removed) return sendJson(res, 404, { ok: false, error: "Extension not found" });
+        broadcast("extensions_changed");
         sendJson(res, 200, { ok: true, state: await buildStatePayload(false, false) });
         return;
       }

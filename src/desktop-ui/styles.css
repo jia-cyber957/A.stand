@@ -3196,3 +3196,229 @@ svg {
     transition-duration: 0.001ms !important;
   }
 }
+
+/* ==========================================================================
+   Skills & Extensions (segmented tabs + single-line Magpie rows)
+   ========================================================================== */
+.ext-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ext-tabs {
+  align-self: flex-start;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.ext-tabs .seg-btn {
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.ext-tab-count {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  padding: 0 5px;
+  border-radius: var(--r-pill);
+  background: var(--bg-active);
+  color: var(--ink-3);
+}
+
+.ext-tabs .seg-btn.active .ext-tab-count {
+  background: var(--bg-elevated);
+  color: var(--ink-2);
+}
+
+.ext-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ext-toolbar .spacer {
+  flex: 1;
+}
+
+.ext-search {
+  max-width: 300px;
+  min-width: 180px;
+}
+
+.ext-list {
+  gap: 6px;
+}
+
+.ext-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px 6px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-xs);
+  transition: border-color 140ms ease, background 140ms ease;
+}
+
+.ext-card:hover {
+  border-color: var(--border-strong, var(--border));
+  background: var(--bg-subtle);
+}
+
+.ext-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 4px;
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm);
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.ext-open:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 1px;
+}
+
+.ext-icon {
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-sm);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  color: var(--ink-2);
+}
+
+.ext-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ext-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.ext-name {
+  font-size: 12.5px;
+  font-weight: 620;
+  max-width: 260px;
+}
+
+.ext-desc {
+  font-size: 11px;
+  color: var(--ink-3);
+  line-height: 1.45;
+}
+
+.ext-role,
+.ext-mount,
+.ext-builtin {
+  height: 18px;
+  font-size: 10px;
+  flex: 0 0 auto;
+}
+
+.ext-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.ext-list.muted .ext-card {
+  opacity: 0.72;
+  background: var(--bg-subtle);
+}
+
+.ext-disabled-head {
+  margin-top: 2px;
+}
+
+.ext-collapse {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ink-3);
+  padding: 4px 2px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.ext-collapse:hover {
+  color: var(--ink);
+}
+
+.ext-foot {
+  margin-top: 2px;
+  line-height: 1.6;
+}
+
+.ext-chip-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ext-chip {
+  height: 26px;
+  padding: 0 11px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+  color: var(--ink-2);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+
+.ext-chip.on {
+  background: var(--violet-soft);
+  border-color: transparent;
+  color: var(--violet);
+}
+
+.ext-seg {
+  align-self: flex-start;
+}
+
+.ext-textarea {
+  min-height: 150px;
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.55;
+  padding: 10px 12px;
+}
+
+@media (max-width: 640px) {
+  .ext-search {
+    max-width: none;
+    flex-basis: 100%;
+  }
+
+  .ext-name {
+    max-width: 160px;
+  }
+}

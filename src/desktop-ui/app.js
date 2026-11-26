@@ -14,6 +14,7 @@
  */
 
 import { iconSvg, clientIconSvg, CLIENT_ICON_KEYS, normalizeClientIconKey } from "./icons.js";
+import { createExtensionsView } from "./extensions-view.js";
 
 /* ==========================================================================
    Constants
@@ -47,7 +48,7 @@ const API_BASE = (() => {
   return `http://${DEFAULT_GATEWAY}`;
 })();
 
-const PAGES = ["clients", "activity", "roles", "providers", "observability", "settings"];
+const PAGES = ["clients", "activity", "roles", "extensions", "providers", "observability", "settings"];
 
 const ENGINE_ORDER = ["codex", "deepseek-harness", "claude-code", "antigravity"];
 
@@ -74,6 +75,7 @@ const STRINGS = {
   navClients: ["已接上游", "Upstream Clients"],
   navActivity: ["实时任务", "Live Activity"],
   navRoles: ["角色与队列", "Roles & Queues"],
+  navExtensions: ["技能与扩展", "Skills & Extensions"],
   navProviders: ["模型供应商", "Model Providers"],
   navObservability: ["缓存与耗时", "Cache & Latency"],
   navSettings: ["全局设置", "Settings"],
@@ -84,6 +86,8 @@ const STRINGS = {
   subActivity: ["运行中子 Agent、最近任务与崩溃恢复", "Running subagents, recent jobs and crash recovery"],
   titleRoles: ["角色与队列", "Roles & Queues"],
   subRoles: ["白泽（审查）与祝融（执行）的模型优先级队列", "Model priority queues for Oracle (review) and Hephaestus (build)"],
+  titleExtensions: ["技能与扩展", "Skills & Extensions"],
+  subExtensions: ["Skill 技能、子 Agent MCP 与可复用模板", "Skills, subagent MCP attachments and reusable templates"],
   titleProviders: ["模型供应商", "Model Providers"],
   subProviders: ["CLI 引擎、Codex 配额与 API 渠道", "CLI engines, Codex quota and API channels"],
   titleObservability: ["缓存与耗时", "Cache & Latency"],
@@ -1166,6 +1170,27 @@ function watchSseStaleness() {
 /* ==========================================================================
    Render — shell
    ========================================================================== */
+let extensionsView = null;
+
+// The extensions page owns its own rendering; app.js only supplies the host bridge.
+function getExtensionsView() {
+  if (!extensionsView) {
+    extensionsView = createExtensionsView({
+      esc,
+      api,
+      iconSvg,
+      scheduleRender,
+      openModal,
+      closeModal,
+      showToast,
+      isEn,
+      getState: () => state,
+      refresh: () => refreshState({ silent: true }),
+    });
+  }
+  return extensionsView;
+}
+
 function navItem(page, icon, label, badge) {
   return `<button class="nav-item ${ui.page === page ? "active" : ""}" data-action="nav" data-page="${page}" title="${esc(label)}">
     <span class="nav-icon">${iconSvg(icon)}</span>
@@ -1194,6 +1219,8 @@ function renderSidebar() {
   const activityBadge = running > 0
     ? `<span class="nav-badge live"><span class="nav-dot"></span>${running}</span>`
     : "";
+  const extActive = Number(state?.extensions?.counts?.active) || 0;
+  const extensionsBadge = extActive > 0 ? `<span class="nav-badge">${extActive}</span>` : "";
 
   return `<aside class="sidebar">
     <div class="sidebar-head">
@@ -1211,6 +1238,7 @@ function renderSidebar() {
       ${navGroup(t("groupDispatch"), "DISPATCH", [
         navItem("activity", "activity", t("navActivity"), activityBadge),
         navItem("roles", "roles", t("navRoles")),
+        navItem("extensions", "extensions", t("navExtensions"), extensionsBadge),
       ])}
       ${navGroup(t("groupModels"), "MODELS", [navItem("providers", "providers", t("navProviders"))])}
       ${navGroup(t("groupObserve"), "OBSERVE", [navItem("observability", "observability", t("navObservability"))])}
@@ -1230,6 +1258,7 @@ function renderTopbar() {
     clients: [t("titleClients"), t("subClients")],
     activity: [t("titleActivity"), t("subActivity")],
     roles: [t("titleRoles"), t("subRoles")],
+    extensions: [t("titleExtensions"), t("subExtensions")],
     providers: [t("titleProviders"), t("subProviders")],
     observability: [t("titleObservability"), t("subObservability")],
     settings: [t("titleSettings"), t("subSettings")],
@@ -1265,6 +1294,8 @@ function renderMain() {
     body = renderActivityPage();
   } else if (ui.page === "roles") {
     body = renderRolesPage();
+  } else if (ui.page === "extensions") {
+    body = getExtensionsView().renderPage();
   } else if (ui.page === "providers") {
     body = renderProvidersPage();
   } else if (ui.page === "observability") {
@@ -2290,6 +2321,7 @@ function renderOverlay() {
   if (modal.type === "setup") return renderSetupModal();
   if (modal.type === "channel") return renderChannelModal();
   if (modal.type === "job") return renderJobModal();
+  if (modal.type === "extension") return getExtensionsView().renderModal(modal);
   if (modal.type === "confirm") return renderConfirmModal();
   return "";
 }
@@ -2664,6 +2696,7 @@ function closeModal() {
   ui.setupTab = "prompt";
   ui.jobDetail = null;
   ui.jobError = "";
+  getExtensionsView().reset();
   scheduleRender();
 }
 
@@ -2779,6 +2812,11 @@ async function onActionClick(event) {
   if (!target) return;
   const action = target.dataset.action;
 
+  // Skills & Extensions owns its own page + modal actions; it returns false for anything else.
+  if (action.startsWith("ext-")) {
+    if (await getExtensionsView().handleAction(action, target)) return;
+  }
+
   switch (action) {
     case "overlay-bg":
       if (event.target === target) closeModal();
@@ -2791,6 +2829,7 @@ async function onActionClick(event) {
       ui.modal = null;
       ui.picker = null;
       ui.jobDetail = null;
+      getExtensionsView().reset();
       ui.scrollTop = 0;
       ui.resetScroll = true;
       scheduleRender();
@@ -3512,6 +3551,10 @@ function openChannelForm(channel) {
 function onInput(event) {
   const el = event.target;
   if (!el || !el.dataset) return;
+  if (el.dataset.extField) {
+    getExtensionsView().handleInput(el);
+    return;
+  }
   if (el.dataset.ui === "client-search") {
     ui.clientSearch = el.value;
     scheduleRender();

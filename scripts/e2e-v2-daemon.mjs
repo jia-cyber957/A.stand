@@ -620,6 +620,201 @@ async function main() {
   assert.equal(missingSetup.status, 404);
   console.log("   ok: delete revokes token, 404 for unknown client setup");
 
+  log("9. Skills & Extensions CRUD + built-in guardrails + local SKILL.md import + compileForRole");
+  const { ExtensionRegistry, compileRoleExtensionsPrompt } = await import("../src/core/extensions.mjs");
+
+  const extList = await withTimeout(
+    request(daemonInfo.port, "GET", "/api/extensions", { headers: uiHeaders() }),
+    STEP_TIMEOUT_MS,
+    "extensions list"
+  );
+  assert.equal(extList.status, 200);
+  assert.equal(extList.json.ok, true);
+  const seeded = extList.json.items;
+  assert.equal(seeded.length, 2, `expected 2 seeded built-ins, got ${seeded.length}`);
+  const modular = seeded.find((item) => item.id === "builtin-modular-files");
+  const integrity = seeded.find((item) => item.id === "builtin-test-integrity");
+  assert.ok(modular && integrity, "built-in guardrails missing");
+  assert.equal(modular.kind, "skill");
+  assert.equal(modular.builtin, true);
+  assert.equal(modular.mountMode, "inject");
+  assert.deepEqual(modular.roles, ["hephaestus"]);
+  assert.deepEqual(integrity.roles, ["oracle", "hephaestus"]);
+  assert.match(modular.content, /500 行/);
+  assert.match(integrity.content, /断言/);
+
+  // Persisted atomically as { version: 1, items: [...] }.
+  const extStore = path.join(DATA_DIR, "extensions.json");
+  assert.ok(fs.existsSync(extStore), "extensions.json was not written");
+  const extDisk = JSON.parse(fs.readFileSync(extStore, "utf8"));
+  assert.equal(extDisk.version, 1);
+  assert.ok(Array.isArray(extDisk.items));
+
+  // /api/state exposes the registry.
+  const stateWithExt = await request(daemonInfo.port, "GET", "/api/state", { headers: uiHeaders() });
+  assert.ok(stateWithExt.json.extensions, "state payload missing extensions block");
+  assert.equal(stateWithExt.json.extensions.items.length, 2);
+  assert.equal(stateWithExt.json.extensions.counts.active, 2);
+
+  // Create a template + an MCP entry (secrets in the body must never be persisted).
+  const templateCreated = await request(daemonInfo.port, "POST", "/api/extensions", {
+    headers: uiHeaders(),
+    body: {
+      kind: "template",
+      name: "Review Checklist",
+      description: "Reusable review checklist",
+      roles: ["oracle"],
+      mountMode: "inject",
+      content: "1. Check boundaries\n2. Check null/async",
+    },
+  });
+  assert.equal(templateCreated.status, 200, `create template failed: ${templateCreated.text.slice(0, 300)}`);
+  const templateItem = templateCreated.json.item;
+  assert.match(templateItem.id, /^ext_[0-9a-f]{12}$/);
+  assert.equal(templateItem.enabled, true);
+  assert.equal(templateItem.builtin, false);
+  assert.ok(templateCreated.json.state?.extensions, "create response missing state");
+
+  const mcpCreated = await request(daemonInfo.port, "POST", "/api/extensions", {
+    headers: uiHeaders(),
+    body: {
+      kind: "mcp",
+      name: "Docs MCP",
+      description: "Docs server",
+      roles: ["hephaestus"],
+      transport: "stdio",
+      command: "npx",
+      args: ["-y", "@acme/docs-mcp"],
+      envKeys: ["DOCS_TOKEN"],
+      apiKey: "sk-should-never-be-stored",
+      token: "ast_should_never_be_stored",
+    },
+  });
+  assert.equal(mcpCreated.status, 200, `create mcp failed: ${mcpCreated.text.slice(0, 300)}`);
+  assert.equal(mcpCreated.json.item.transport, "stdio");
+  assert.deepEqual(mcpCreated.json.item.args, ["-y", "@acme/docs-mcp"]);
+  assert.deepEqual(mcpCreated.json.item.envKeys, ["DOCS_TOKEN"]);
+  assert.equal(mcpCreated.json.item.apiKey, undefined);
+  const mcpDisk = fs.readFileSync(extStore, "utf8");
+  assert.ok(!mcpDisk.includes("sk-should-never-be-stored"), "raw secret leaked into extensions.json");
+  assert.ok(!mcpDisk.includes("ast_should_never_be_stored"), "raw token leaked into extensions.json");
+
+  // PATCH toggles enabled + edits roles/mountMode/content.
+  const patchedExt = await request(daemonInfo.port, "PATCH", `/api/extensions/${templateItem.id}`, {
+    headers: uiHeaders(),
+    body: { enabled: false, roles: ["oracle", "hephaestus"], mountMode: "path_index" },
+  });
+  assert.equal(patchedExt.status, 200);
+  assert.equal(patchedExt.json.item.enabled, false);
+  assert.deepEqual(patchedExt.json.item.roles, ["oracle", "hephaestus"]);
+  assert.equal(patchedExt.json.item.mountMode, "path_index");
+
+  // Re-enable it as an oracle-only inject so compileForRole can be asserted precisely.
+  const reEnabled = await request(daemonInfo.port, "PATCH", `/api/extensions/${templateItem.id}`, {
+    headers: uiHeaders(),
+    body: { enabled: true, roles: ["oracle"], mountMode: "inject" },
+  });
+  assert.equal(reEnabled.status, 200);
+  assert.equal(reEnabled.json.item.enabled, true);
+  assert.deepEqual(reEnabled.json.item.roles, ["oracle"]);
+  assert.equal(reEnabled.json.item.mountMode, "inject");
+
+  // Local SKILL.md import: folder path with frontmatter + long body → auto path_index.
+  const skillDir = path.join(DATA_DIR, "demo-skill");
+  fs.mkdirSync(skillDir, { recursive: true });
+  const longBody = `# Demo\n\n${"Long skill guidance line.\n".repeat(80)}`;
+  fs.writeFileSync(
+    path.join(skillDir, "SKILL.md"),
+    `---\nname: Demo Imported Skill\ndescription: imported from folder\n---\n${longBody}`,
+    "utf8"
+  );
+  const imported = await request(daemonInfo.port, "POST", "/api/extensions/import-skill", {
+    headers: uiHeaders(),
+    body: { path: skillDir, roles: ["oracle"] },
+  });
+  assert.equal(imported.status, 200, `import failed: ${imported.text.slice(0, 300)}`);
+  assert.equal(imported.json.item.kind, "skill");
+  assert.equal(imported.json.item.name, "Demo Imported Skill");
+  assert.equal(imported.json.item.description, "imported from folder");
+  assert.equal(imported.json.item.mountMode, "path_index", "long SKILL.md should auto-recommend path_index");
+  assert.equal(imported.json.item.sourcePath, path.join(skillDir, "SKILL.md"));
+  assert.ok(!imported.json.item.content.includes("name: Demo Imported Skill"), "frontmatter should not be stored");
+
+  // Direct .md file path also works; a short file recommends inject.
+  const shortSkill = path.join(DATA_DIR, "short-skill.md");
+  fs.writeFileSync(shortSkill, "# Short\n\nBe concise.\n", "utf8");
+  const importedFile = await request(daemonInfo.port, "POST", "/api/extensions/import-skill", {
+    headers: uiHeaders(),
+    body: { path: shortSkill, roles: ["hephaestus"], mountMode: "inject" },
+  });
+  assert.equal(importedFile.status, 200, `file import failed: ${importedFile.text.slice(0, 300)}`);
+  assert.equal(importedFile.json.item.mountMode, "inject");
+  assert.deepEqual(importedFile.json.item.roles, ["hephaestus"]);
+
+  // Missing path → 400 with a friendly error (never a 500).
+  const badImport = await request(daemonInfo.port, "POST", "/api/extensions/import-skill", {
+    headers: uiHeaders(),
+    body: { path: path.join(DATA_DIR, "does-not-exist") },
+  });
+  assert.equal(badImport.status, 400, `missing path should be 400, got ${badImport.status}`);
+  assert.equal(badImport.json.ok, false);
+  assert.match(badImport.json.error, /不存在|not found/i);
+
+  // compileForRole: inject + path_index + MCP summary, and role filtering.
+  const registry = new ExtensionRegistry(DATA_DIR);
+  const oracleCompiled = registry.compileForRole("oracle");
+  assert.ok(oracleCompiled.injectedText.includes("测试防作弊护栏"), "oracle inject missing built-in");
+  assert.ok(oracleCompiled.injectedText.includes("Review Checklist"), "oracle inject missing template");
+  assert.ok(oracleCompiled.indexLines.some((line) => line.includes("Demo Imported Skill")), "path_index line missing");
+  assert.ok(oracleCompiled.indexLines.some((line) => line.includes("SKILL.md")), "path_index line missing sourcePath");
+  assert.equal(oracleCompiled.mcpNames.length, 0, "oracle should not see the hephaestus MCP entry");
+  assert.equal(oracleCompiled.activeCount, 3, `expected 3 mounted oracle items, got ${oracleCompiled.activeCount}`);
+
+  const hepCompiled = registry.compileForRole("hephaestus");
+  assert.ok(hepCompiled.injectedText.includes("单文件红线与模块化"), "hephaestus inject missing modular guardrail");
+  assert.ok(hepCompiled.injectedText.includes("Short"), "hephaestus inject missing imported short skill");
+  assert.deepEqual(hepCompiled.mcpNames, ["Docs MCP"], "hephaestus MCP summary missing");
+  assert.ok(!hepCompiled.injectedText.includes("Review Checklist"), "oracle-only template leaked into hephaestus");
+  assert.ok(hepCompiled.injectedChars <= 6_000, "injected budget exceeded");
+
+  assert.equal(compileRoleExtensionsPrompt(registry, "oracle"), oracleCompiled.promptText);
+  assert.equal(compileRoleExtensionsPrompt(null, "oracle"), "");
+
+  // Total inject cap: many long skills must stay <= 6000 chars.
+  for (let i = 0; i < 6; i++) {
+    await request(daemonInfo.port, "POST", "/api/extensions", {
+      headers: uiHeaders(),
+      body: {
+        kind: "skill",
+        name: `Bulk ${i}`,
+        roles: ["oracle"],
+        mountMode: "inject",
+        content: "B".repeat(1_900),
+      },
+    });
+  }
+  const capped = new ExtensionRegistry(DATA_DIR).compileForRole("oracle");
+  assert.ok(capped.injectedChars <= 6_000, `inject cap exceeded: ${capped.injectedChars}`);
+  assert.ok(capped.indexLines.length > 0, "overflow skills should degrade to index lines");
+
+  // DELETE is permanent: reloading the registry must not resurrect built-ins.
+  const deletedIntegrity = await request(daemonInfo.port, "DELETE", `/api/extensions/${integrity.id}`, {
+    headers: uiHeaders(),
+  });
+  assert.equal(deletedIntegrity.status, 200);
+  const afterDelete = await request(daemonInfo.port, "GET", "/api/extensions", { headers: uiHeaders() });
+  assert.ok(!afterDelete.json.items.some((item) => item.id === integrity.id), "deleted built-in still listed");
+  const reloaded = new ExtensionRegistry(DATA_DIR);
+  assert.ok(!reloaded.get(integrity.id), "deleted built-in was re-seeded");
+  const missingDelete = await request(daemonInfo.port, "DELETE", "/api/extensions/ext_ffffffffffff", {
+    headers: uiHeaders(),
+  });
+  assert.equal(missingDelete.status, 404);
+  console.log(
+    `   ok: seeded=${seeded.length} imported=${imported.json.item.id} oracleActive=${oracleCompiled.activeCount} ` +
+      `injectChars=${capped.injectedChars} mcp=${hepCompiled.mcpNames.join(",")}`
+  );
+
   console.log("\nALL v2 DAEMON E2E CHECKS PASSED!");
 }
 
