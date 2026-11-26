@@ -57,35 +57,36 @@ After installing A.stand, restart Antigravity once. You can open the panel from 
 
 2. **95%–99.8% Real Upstream Prompt Cache + Explicit Session Lifecycle**
    - Every new unrelated task starts a clean fresh session (zero cross-task bleed).
-   - Follow-ups on the same task pass the explicit `sessionId` to resume context and Prompt Cache across restarts (real billing counters from Codex, DeepSeek, Anthropic, and `dsh` zstd session logs — never guessed).
+   - Follow-ups on the same task pass the explicit `sessionId` to resume context and Prompt Cache across restarts (real billing counters from Codex, DeepSeek, Anthropic, and `dsh` projection/zstd session logs — never guessed; ACP uses an activity-based sliding timeout instead of a fixed 30-minute cutoff).
 
 3. **Antigravity-Native Collapsible Conversation Timeline**
    - Click any running or finished job in the side panel to view a calm, borderless, Antigravity-style timeline:
      - Collapsible **Message from Lead Agent**
-     - **`Thought for 8s ›`** (expandable reasoning block)
+     - **`Thought for 8s ›`** (expandable reasoning block) and expandable **Stall Gatekeeper AI** verdict reasons
      - **`Analyzed gateway.go #L315-455`** / **`Edited gate.go +13 -4`** / **`Searched "pattern"`**
      - **`Ran go test ./... · Exited with code 1 ›`** (expandable scrollable terminal output)
      - Clean **Markdown Final Response** at the bottom, preserving expanded blocks across live 2s refreshes.
 
-4. **Opt-in Async Background Mode ("Chat While It Works") + Zero-Token Doorbell**
+4. **Opt-in Async Background Mode ("Chat While It Works") + Recurring Doorbell**
    - Disabled by default for predictable synchronous runs; toggle ON in **Settings → Async Background Mode**.
    - When ON, dispatching a subagent unlocks your chat box in ~1 second and attaches a zero-dependency Node doorbell (`wait-job.mjs`, **0 AI tokens**, ~0% CPU).
-   - **0 Lead Agent polling turns** while the subagent works for 5–20 minutes — when it finishes, stalls, or errors, the doorbell automatically wakes the Lead Agent with a 3-line summary (and never interrupts if you're chatting about another topic).
+   - **0 Lead Agent polling turns** while the subagent works — when it finishes, stalls, errors, or reaches the configurable recurring duration check-in (`Off / 15 / 30 / 60m` or custom), the doorbell wakes the Lead Agent with a concise summary and a re-arm command to start the next interval.
 
-5. **Opt-in 2-Choice Stall Gatekeeper AI + Crash Recovery**
-   - Optional **Stall Gatekeeper AI** (default OFF): on silence timeout, reads only the task brief + last 30 X-ray lines (never 200K full history) and strictly returns `CONTINUE` (slow build still healthy, don't wake Lead) or `ALERT` (truly stuck, wake Lead) — never edits or steers code.
-   - **Accidental-Close Recovery**: job state & `sessionId` persist atomically to disk; if Antigravity closes mid-run, restarting displays an **`⚠ Interrupted`** banner with one-click **Copy Resume Prompt**.
+5. **Opt-in Stall Gatekeeper AI + Seamless Restart Handoff**
+   - Optional **Stall Gatekeeper AI** (paired right under the silence interval, default OFF): on silence timeout, reads only the task brief + last 30 X-ray lines (never 200K full history), explains what the subagent is doing in the UI language (expandable in the timeline), and strictly returns `CONTINUE` (up to 3 deferrals) or `ALERT` — never edits or steers code.
+   - **Seamless Restart Recovery**: job snapshots, checkpoints, and outputs persist atomically to disk. After a host restart or model switch, saying "continue" in a thread with unfinished A.stand work triggers one scoped `recover` lookup to collect unread completed results (with durable `ack`) or resume a host-interrupted job with its original session, model, and worktree — with zero recovery calls during ordinary chat.
 
-6. **Zero-Mutation Purity & Hard Safety Guardrails**
+6. **Zero-Mutation Purity, Editable Default Role Rules & Hard Safety Guardrails**
    - **Never modifies** your external CLI configs (`~/.codex/config.toml`, `~/.dsh/` configs, `~/.claude/` configs, or `~/.gemini/antigravity-cli/settings.json`).
    - **Master Hard Switch**: OFF = hard-blocks all new subagent delegation inside the MCP server.
+   - **Editable Default Role Custom Rules**: pre-filled guardrails for `Oracle` and `Hephaestus` injected on Turn 1 of a new session only (preserving Prompt Cache; clear and save to disable).
    - **Secret Isolation**: API keys live solely in private `secrets.json` (cross-origin endpoint edits require re-entering the key).
    - **Per-Engine Sandbox & Worktree Isolation**: `Oracle` is read-only (native sandbox on Codex, fail-closed permission denial on ACP, read-only tool allowlist on Claude Code, prompt-level on experimental `agy`). `Hephaestus` uses a per-workspace write mutex by default (plus native `workspace-write` on Codex); settings can enable opt-in Git worktree checkouts or full access.
    - Full details: [SECURITY.md](./SECURITY.md).
 
-7. **Two-Level API Channels, Live Codex Quotas & Automatic Failover**
+7. **Two-Level API Channels, Smart Model Selection, Live Codex Quotas & Automatic Failover**
    - Add an OpenAI-compatible API Channel once (DeepSeek, OpenRouter, self-hosted gateway, etc.) and click **Fetch Models** (`GET /models`) to batch-import models.
-   - Live **Codex 5h / 7d quota tracking**, per-role ordered priority queues with cooldown/auto-restore, bilingual Chinese/English UI, and a 9-section automated E2E test suite (including headless strict-CSP browser checks).
+   - Per-role ordered priority queues with optional **Smart Model Selection** (lets the Lead pick a configured queue model by task complexity), live **Codex quota tracking** (with honest unavailable-balance notes for channels that don't expose balances), inline custom numeric settings, bilingual Chinese/English UI, and an automated 9-section E2E test suite (including headless strict-CSP browser checks).
 
 ---
 

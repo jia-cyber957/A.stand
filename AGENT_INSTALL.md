@@ -125,12 +125,17 @@ When a user asks *"I don't know which models to pick for Oracle vs Hephaestus �
 | **Maximum Code Quality** *(Subscription Heavy)* | `Claude Code` or `Codex (high)` | `Codex (high)` or `Claude Code` | Cross-model adversarial review (different model families catch each other's blind spots) |
 
 ### Recommended Settings Guide (Explain When Asked)
+- **Smart Model Selection (`智能选型`)** *(per-role, default OFF / ordered queue)*:
+  - Keep OFF to strictly follow each role's priority order (`① -> ②`).
+  - Turn ON so the Lead Agent can pick a configured model from that role's queue per task based on complexity, while still honoring cooldowns and fallbacks.
 - **Async Background Mode (`后台异步模式 / 边干边聊`)** *(default OFF)*:
   - Keep OFF if you prefer classic "ask → wait → get answer".
-  - Turn ON if you want 1-second non-blocking dispatch + zero-token doorbell (`wait-job.mjs`) so you can keep chatting with the Lead Agent while `Hephaestus` runs 5–15 min tasks (0 Lead polling tokens!).
-- **Stall Gatekeeper AI (`卡顿守门员 AI`)** *(default OFF)*:
-  - Keep OFF for zero extra API calls (the timeline + silence timeout doorbell already catches stalls).
-  - Turn ON with a fast API model if you run slow builds/downloads (> 3 min silent) and want a strict 2-choice `CONTINUE` vs `ALERT` gatekeeper before waking the Lead Agent.
+  - Turn ON if you want 1-second non-blocking dispatch + zero-token doorbell (`wait-job.mjs`) with recurring duration check-ins (`Off / 15 / 30 / 60m` or custom) so you can keep chatting with the Lead Agent while `Hephaestus` runs long tasks (0 Lead polling tokens!).
+- **Stall Gatekeeper AI (`卡顿守门员 AI`)** *(paired under the silence interval, default OFF)*:
+  - Keep OFF for zero extra API calls (the timeline + silence timeout doorbell already wakes the Lead directly).
+  - Turn ON with a fast API model if you run slow builds/downloads and want a concise localized `CONTINUE` (up to 3 deferrals) vs `ALERT` judgment expandable in the timeline before waking the Lead Agent.
+- **Role Custom Rules (`角色常驻守则`)** *(pre-filled by default)*:
+  - Ships with editable Turn-1 rules for `Oracle` and `Hephaestus` (never re-injected on follow-up turns, keeping Prompt Cache intact). Clear and save a role's box to disable rules for that role.
 - **Allow Hephaestus Full Access** *(default OFF)*:
   - Keep OFF by default (`workspace-write` sandbox).
   - Turn ON only for trusted workspaces where `Hephaestus` needs to run build tools (`esbuild`, Docker, headless browsers) that touch paths outside the workspace.
@@ -145,7 +150,7 @@ When a user asks *"I don't know which models to pick for Oracle vs Hephaestus �
 | `dsh --version` prints nothing and exits 0 | Node.js `< 24.9.0` | Upgrade to Node 24 LTS (or install portable Node 24 into `<PLUGIN_DATA>/runtime/node24`) |
 | Side panel doesn't show newly built features | Resident MCP server caches `dist/server.mjs` | Close/reopen panel refreshes UI (`console.html`); **restart Antigravity** refreshes backend (`server.mjs`) |
 | `hephaestus` fails `esbuild` / browser E2E with `EPERM` | `workspace-write` sandbox blocks parent-dir / pipe spawn | Run build/E2E on host, or enable **Allow Hephaestus Full Access** in Settings for trusted workspaces |
-| Antigravity closed while subagent was running | Local MCP child process stops with host | Reopen Antigravity → Team tab shows **`⚠ 意外中断`** banner → click **Copy Resume Prompt** to resume the same `sessionId` |
+| Antigravity closed while subagent was running | Local MCP child process stops with host | Reopen Antigravity and say "continue" in that thread — the Lead runs one scoped `recover` lookup to collect unread results or resume via `resumeJobId` with the original session, model, and worktree (Team tab also shows the `⚠ 意外中断` banner) |
 | API key rejected after editing a channel | Base URL changed to a different origin | Re-enter the key — A.stand never replays a saved key against a new endpoint |
 | Want to completely uninstall | Clean removal | Run `npm run uninstall:antigravity` (zero external CLI configs touched) |
 
