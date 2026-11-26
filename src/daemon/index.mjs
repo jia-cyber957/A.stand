@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PLUGIN_VERSION } from "../core/constants.mjs";
 import { ClientRegistry } from "../core/clients.mjs";
+import { ExtensionRegistry } from "../core/extensions.mjs";
 import { RelayOrchestrator } from "../core/orchestrator.mjs";
 import { RelayStore } from "../core/store.mjs";
 import { TelemetryLogger } from "../core/telemetry.mjs";
@@ -119,7 +120,8 @@ async function main() {
 
   const store = new RelayStore(dataDir);
   const telemetry = new TelemetryLogger(dataDir);
-  const orchestrator = new RelayOrchestrator(store, telemetry);
+  const extensionRegistry = new ExtensionRegistry(dataDir);
+  const orchestrator = new RelayOrchestrator(store, telemetry, { extensionRegistry });
   const clientRegistry = new ClientRegistry(store, dataDir);
 
   const handle = await createDaemonHttpServer({
@@ -127,6 +129,7 @@ async function main() {
     telemetry,
     orchestrator,
     clientRegistry,
+    extensionRegistry,
     port: resolvePort(cli.port),
     uiToken: crypto.randomBytes(24).toString("hex"),
     desktopHtmlPath: cli.desktopHtml
