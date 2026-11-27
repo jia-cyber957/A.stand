@@ -397,6 +397,63 @@ export function selectRoleModels({ role, queue = [], selectionMode = "ordered", 
   return { mode, models: [picked, ...rest], selected: picked, notes };
 }
 
+function describeCooldown(cd) {
+  if (!cd) return "no cooldown";
+  return `${cd.reason || "rate limited"}${cd.untilMs ? `, resets ${formatResetTime(cd.untilMs)}` : ", manual reset required"}`;
+}
+
+/**
+ * Decide the terminal failure message once a job's model loop stops.
+ *
+ * `queue` must be the ROLE's full configured queue (not a resume-pinned subset): a pinned resumed
+ * session intentionally skips cross-model fallback to protect its context, so it must never claim
+ * every engine is exhausted while healthy alternatives remain. Returns null when the caller should
+ * fall back to the raw last error.
+ */
+export function describeQueueExhaustion({
+  role = "oracle",
+  queue = [],
+  getCooldown,
+  pinnedModelId = "",
+  lastErr = null,
+} = {}) {
+  const models = Array.isArray(queue) ? queue.filter(Boolean) : [];
+  const cooldownOf = (id) => {
+    try {
+      return typeof getCooldown === "function" ? getCooldown(id) : null;
+    } catch {
+      return null;
+    }
+  };
+  const healthy = models.filter((m) => !cooldownOf(m.id));
+  const allCooled = models.length > 0 && healthy.length === 0;
+  if (allCooled) {
+    const details = models
+      .map((m) => `${m.name || m.id} (${m.id}): ${describeCooldown(cooldownOf(m.id))}`)
+      .join("; ");
+    return (
+      `[ALL_ENGINES_EXHAUSTED] Every AI in the ${role} priority queue hit its quota/balance limit. ` +
+      `Pause external delegation and ask the user to disable A.stand, top up, or wait for quota reset. ` +
+      `Queue: ${details}. Last error: ${lastErr?.message || ""}`
+    );
+  }
+
+  const rateLimited = Boolean(lastErr?.isRateLimit || lastErr?.isQuotaDepleted);
+  if (!pinnedModelId || !rateLimited) return null;
+  const pinned = models.find((m) => m.id === pinnedModelId) || { id: pinnedModelId, name: pinnedModelId };
+  const alternatives = healthy.filter((m) => m.id !== pinned.id);
+  if (alternatives.length === 0) return null;
+  const pinnedCd = cooldownOf(pinned.id);
+  const altList = alternatives.map((m) => `${m.name || m.id} (${m.id})`).join(", ");
+  return (
+    `[SESSION_MODEL_RATE_LIMITED] Pinned session model "${pinned.name || pinned.id}" (${pinned.id}) hit its ` +
+    `rate/quota limit (${describeCooldown(pinnedCd)}). This turn is pinned to that model to preserve session ` +
+    `context, so A.stand did not silently switch models. Healthy alternatives in the ${role} queue: ${altList}. ` +
+    `The Lead Agent can start a fresh session (omit sessionId) to automatically use a healthy model. ` +
+    `Last error: ${lastErr?.message || ""}`
+  );
+}
+
 // Pure silence decision shared by the class and tests. Never mutates the job.
 // OFF  => the Lead is alerted directly at the silence threshold (no judging call).
 // ON   => the gatekeeper judges first; a pending verdict or an existing alert short-circuits.
@@ -1578,6 +1635,26 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
             `• ${model.name} (${model.engine}): ${cd.reason}, resets ${formatResetTime(cd.untilMs)}`
         )
         .join("\n");
+      const pinnedModelId = selection.resumeForced && queue.length === 1 ? queue[0]?.id || "" : "";
+      const exhaustionText = describeQueueExhaustion({
+        role,
+        queue: roleCfg.queue,
+        getCooldown: (id) => this.store.getActiveCooldown(id),
+        pinnedModelId,
+        lastErr: {
+          message: skippedCooldowns.map(({ model, cd }) => `${model.name}: ${cd.reason}`).join("; "),
+          isRateLimit: true,
+        },
+      });
+      if (exhaustionText) {
+        return {
+          status: exhaustionText.startsWith("[SESSION_MODEL_RATE_LIMITED]")
+            ? "session_model_rate_limited"
+            : "all_exhausted",
+          blocked: true,
+          text: exhaustionText,
+        };
+      }
       return {
         status: "all_exhausted",
         blocked: true,
@@ -1760,6 +1837,16 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
               resumedFromDisk: res.resumedFromDisk,
               elapsedMs: res.elapsedMs,
               cacheReported: res.usage.cacheReported,
+              ...(res.usage?.cacheReported
+                ? {}
+                : {
+                    usageSkipReason: String(
+                      res.usageProvenance?.skipReason ||
+                        res.usageProvenance?.projectionSkipReason ||
+                        res.usageProvenance?.reason ||
+                        "cache-not-reported"
+                    ).slice(0, 200),
+                  }),
               ...(res.usageProvenance?.scope && { usageScope: res.usageProvenance.scope }),
               totalInputTokens: res.usage.totalInputTokens,
               cachedInputTokens: res.usage.cachedInputTokens,
@@ -1846,10 +1933,15 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
           }
         }
 
-        const allCooled = queue.every((m) => Boolean(this.store.getActiveCooldown(m.id)));
-        terminalError = allCooled
-          ? `[ALL_ENGINES_EXHAUSTED] Every AI in the ${role} priority queue hit its quota/balance limit. Pause external delegation and ask the user to disable A.stand, top up, or wait for quota reset. Last error: ${lastErr?.message || ""}`
-          : lastErr?.message || terminalError;
+        const pinnedModelId = selection.resumeForced && queue.length === 1 ? queue[0]?.id || "" : "";
+        terminalError =
+          describeQueueExhaustion({
+            role,
+            queue: roleCfg.queue,
+            getCooldown: (id) => this.store.getActiveCooldown(id),
+            pinnedModelId,
+            lastErr,
+          }) || lastErr?.message || terminalError;
       } catch (err) {
         terminalError = err?.message || String(err);
       } finally {
@@ -2234,6 +2326,26 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       const details = skippedCooldowns
         .map(({ model, cd }) => `• ${model.name} (${model.engine}): ${cd.reason}, resets ${formatResetTime(cd.untilMs)}`)
         .join("\n");
+      const pinnedModelId = selection.resumeForced && queue.length === 1 ? queue[0]?.id || "" : "";
+      const exhaustionText = describeQueueExhaustion({
+        role: "oracle",
+        queue: roleCfg.queue,
+        getCooldown: (id) => this.store.getActiveCooldown(id),
+        pinnedModelId,
+        lastErr: {
+          message: skippedCooldowns.map(({ model, cd }) => `${model.name}: ${cd.reason}`).join("; "),
+          isRateLimit: true,
+        },
+      });
+      if (exhaustionText) {
+        return {
+          status: exhaustionText.startsWith("[SESSION_MODEL_RATE_LIMITED]")
+            ? "session_model_rate_limited"
+            : "all_exhausted",
+          blocked: true,
+          text: exhaustionText,
+        };
+      }
       return {
         status: "all_exhausted",
         blocked: true,
@@ -2416,6 +2528,16 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
               resumedFromDisk: Boolean(res.resumedFromDisk),
               elapsedMs: res.elapsedMs,
               cacheReported: res.usage.cacheReported,
+              ...(res.usage?.cacheReported
+                ? {}
+                : {
+                    usageSkipReason: String(
+                      res.usageProvenance?.skipReason ||
+                        res.usageProvenance?.projectionSkipReason ||
+                        res.usageProvenance?.reason ||
+                        "cache-not-reported"
+                    ).slice(0, 200),
+                  }),
               totalInputTokens: res.usage.totalInputTokens,
               cachedInputTokens: res.usage.cachedInputTokens,
               cacheWriteTokens: res.usage.cacheWriteTokens,
@@ -2479,13 +2601,19 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
           }
         }
 
-        const allCooled = queue.every((m) => Boolean(this.store.getActiveCooldown(m.id)));
+        const pinnedModelId = selection.resumeForced && queue.length === 1 ? queue[0]?.id || "" : "";
         this.#markJobTerminal(
           job,
           "failed",
-          allCooled
-            ? `[ALL_ENGINES_EXHAUSTED] Every AI in the oracle priority queue hit its quota/balance limit. Last error: ${lastErr?.message || ""}`
-            : lastErr?.message || "Unknown review error"
+          describeQueueExhaustion({
+            role: "oracle",
+            queue: roleCfg.queue,
+            getCooldown: (id) => this.store.getActiveCooldown(id),
+            pinnedModelId,
+            lastErr,
+          }) ||
+            lastErr?.message ||
+            "Unknown review error"
         );
       } finally {
         stopGatekeeper();
