@@ -3412,6 +3412,22 @@ svg {
   padding: 10px 12px;
 }
 
+.diag-result {
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: var(--ink-2);
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+.diag-reason {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
 @media (max-width: 640px) {
   .ext-search {
     max-width: none;

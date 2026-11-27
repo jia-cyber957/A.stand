@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -103,6 +103,33 @@ function request(port, method, urlPath, { headers = {}, body } = {}) {
     if (payload) req.write(payload);
     req.end();
   });
+}
+
+function extractZip(zipPath, destDir) {
+  const quote = (value) => `'${String(value).replace(/'/g, "''")}'`;
+  const result =
+    process.platform === "win32"
+      ? spawnSync(
+          "powershell.exe",
+          [
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            `$ErrorActionPreference='Stop'; try { Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory(${quote(zipPath)}, ${quote(destDir)}) } catch { Write-Error $_; exit 1 }`,
+          ],
+          { encoding: "utf8", timeout: 20_000, windowsHide: true }
+        )
+      : spawnSync("unzip", ["-q", zipPath, "-d", destDir], { encoding: "utf8", timeout: 20_000 });
+  assert.equal(result.status, 0, `zip extraction failed: ${result.stderr || result.error || "unknown error"}`);
+}
+
+function walkFiles(dir, out = []) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) walkFiles(full, out);
+    else out.push(full);
+  }
+  return out;
 }
 
 function uiHeaders(extra = {}) {
@@ -814,6 +841,107 @@ async function main() {
     `   ok: seeded=${seeded.length} imported=${imported.json.item.id} oracleActive=${oracleCompiled.activeCount} ` +
       `injectChars=${capped.injectedChars} mcp=${hepCompiled.mcpNames.join(",")}`
   );
+
+  log("10. Sanitized diagnostic bundle export (secrets excluded + redacted)");
+  const fixtureJobId = "job_diagfixture";
+  const fakeApiKey = ["sk", "diag", "leak", "test"].join("-") + "-" + Date.now().toString(36);
+  const fakeClientToken = ["ast", "client", "diag", "leak"].join("_") + "_" + Date.now().toString(36);
+  const jobsDir = path.join(DATA_DIR, "jobs");
+  const outputsDir = path.join(DATA_DIR, "outputs");
+  fs.mkdirSync(jobsDir, { recursive: true });
+  fs.mkdirSync(outputsDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(jobsDir, `${fixtureJobId}.status.json`),
+    JSON.stringify({
+      jobId: fixtureJobId,
+      role: "hephaestus",
+      modelId: "diag-model",
+      engine: "codex",
+      status: "failed",
+      error: `upstream rejected credential apiKey=${fakeApiKey}`,
+      startedAt: Date.now() - 1000,
+      finishedAt: Date.now(),
+    }),
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(jobsDir, `${fixtureJobId}.log`),
+    [
+      `Authorization: Bearer ${fakeApiKey}`,
+      JSON.stringify({ apiKey: fakeApiKey, clientToken: fakeClientToken }),
+      "normal diagnostic line",
+    ].join("\n"),
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(jobsDir, `${fixtureJobId}.checkpoint.json`),
+    JSON.stringify({ jobId: fixtureJobId, secret: fakeClientToken, note: "checkpoint" }),
+    "utf8"
+  );
+  fs.writeFileSync(path.join(outputsDir, `${fixtureJobId}.txt`), `output token=${fakeClientToken}\n`, "utf8");
+  fs.appendFileSync(
+    path.join(DATA_DIR, "telemetry.jsonl"),
+    JSON.stringify({ ts: new Date().toISOString(), jobId: fixtureJobId, cacheReported: false, usageSkipReason: "no-projection-record", secret: fakeApiKey }) + "\n",
+    "utf8"
+  );
+  const settingsFile = path.join(DATA_DIR, "settings.json");
+  const settingsOnDisk = JSON.parse(fs.readFileSync(settingsFile, "utf8"));
+  settingsOnDisk.apiKey = fakeApiKey;
+  settingsOnDisk.nested = { apiKey: fakeApiKey, keep: "safe" };
+  fs.writeFileSync(settingsFile, JSON.stringify(settingsOnDisk, null, 2), "utf8");
+
+  const noAuthExport = await request(daemonInfo.port, "POST", "/api/diagnostics/export", { body: { reveal: false } });
+  assert.equal(noAuthExport.status, 401, `diagnostics export must require UI token, got ${noAuthExport.status}`);
+  const exportRes = await withTimeout(
+    request(daemonInfo.port, "POST", "/api/diagnostics/export", {
+      headers: uiHeaders(),
+      body: { reveal: false, maxJobs: 5 },
+    }),
+    20_000,
+    "diagnostics export"
+  );
+  assert.equal(exportRes.status, 200, `diagnostics export failed: ${exportRes.status} ${exportRes.text.slice(0, 400)}`);
+  assert.equal(exportRes.json.ok, true);
+  assert.match(exportRes.json.fileName, /^Astand_diag_\d{4}-\d{2}-\d{2}_\d{6}\.zip$/);
+  assert.equal(exportRes.json.zipPath, path.join(DATA_DIR, "diagnostics", exportRes.json.fileName));
+  assert.ok(fs.existsSync(exportRes.json.zipPath), "diagnostics zip was not created");
+  assert.ok(exportRes.json.sizeBytes > 0, "diagnostics zip is empty");
+  assert.ok(exportRes.json.includedJobs >= 1, "fixture job was not included");
+
+  const extractDir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "astand-diag-extract-")), "out");
+  try {
+    extractZip(exportRes.json.zipPath, extractDir);
+    const files = walkFiles(extractDir);
+    const names = files.map((file) => path.relative(extractDir, file).split(path.sep).join("/"));
+    assert.ok(names.some((name) => name.endsWith("SECRETS_EXCLUDED.txt")), "SECRETS_EXCLUDED.txt missing");
+    assert.ok(names.some((name) => name.endsWith("00-DIAGNOSTIC-SUMMARY.md")), "00-DIAGNOSTIC-SUMMARY.md missing");
+    assert.ok(names.some((name) => name.endsWith(`${fixtureJobId}.log`)), "recent job log missing");
+    assert.ok(names.some((name) => name.endsWith(`${fixtureJobId}.status.json`)), "recent job status missing");
+    assert.ok(names.some((name) => name.endsWith(`outputs/${fixtureJobId}.txt`)), "recent job output missing");
+
+    const text = files
+      .filter((file) => /\.(md|txt|json|jsonl|log)$/i.test(file))
+      .map((file) => fs.readFileSync(file, "utf8"))
+      .join("\n");
+    assert.ok(!text.includes(fakeApiKey), "raw API key leaked into the diagnostic bundle");
+    assert.ok(!text.includes(fakeClientToken), "raw client token leaked into the diagnostic bundle");
+    assert.ok(!/Bearer\s+(?!\[REDACTED\])[A-Za-z0-9._~+/=-]{16,}/.test(text), "unredacted Bearer credential leaked");
+
+    const exportedSettings = JSON.parse(fs.readFileSync(files.find((file) => file.endsWith("settings.json")), "utf8"));
+    assert.equal(exportedSettings.apiKey, undefined, "settings.json apiKey was not stripped");
+    assert.equal(exportedSettings.nested?.apiKey, undefined, "nested settings apiKey was not stripped");
+    assert.equal(exportedSettings.nested?.keep, "safe", "unrelated settings were dropped");
+
+    const summary = fs.readFileSync(files.find((file) => file.endsWith("00-DIAGNOSTIC-SUMMARY.md")), "utf8");
+    assert.match(summary, /# A\.stand Diagnostic Bundle/);
+    assert.match(summary, /Cache turns unreported: [1-9]/);
+    assert.match(summary, /Last failed \/ errored jobs[\s\S]*job_diagfixture/, "failed job missing from summary");
+    const notice = fs.readFileSync(files.find((file) => file.endsWith("SECRETS_EXCLUDED.txt")), "utf8");
+    assert.match(notice, /secrets\.json/);
+  } finally {
+    fs.rmSync(extractDir, { recursive: true, force: true });
+  }
+  console.log(`   ok: ${exportRes.json.fileName} (${exportRes.json.sizeBytes} bytes, jobs=${exportRes.json.includedJobs}) zero secret leakage`);
 
   console.log("\nALL v2 DAEMON E2E CHECKS PASSED!");
 }

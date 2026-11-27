@@ -372,6 +372,27 @@ const STRINGS = {
   secData: ["数据与记忆", "Data & memory"],
   secAppearance: ["外观与语言", "Appearance & language"],
   secGateway: ["网关信息", "Gateway"],
+  secDiagnostics: ["诊断与日志", "Diagnostics & Logs"],
+  diagExportTitle: ["一键导出脱敏诊断包", "Export sanitized diagnostics"],
+  diagExportDesc: ["打包最近日志、设置、遥测与耗时数据；自动排除 secrets.json 与所有密钥。", "Bundles recent logs, settings, telemetry and perf; excludes secrets.json and all keys."],
+  diagExportBtn: ["一键导出脱敏诊断包", "Export diagnostic bundle"],
+  diagExporting: ["正在打包…", "Packing…"],
+  diagExportDone: ["已导出", "Exported"],
+  diagRevealHint: ["打包完成后会自动在文件管理器中定位 zip。", "The finished zip is revealed in your file manager."],
+  diagEmpty: ["尚未导出诊断包。", "No diagnostic bundle exported yet."],
+  diagOpenTitle: ["打开数据与日志目录", "Open data & logs folder"],
+  diagOpenDesc: ["在系统文件管理器中打开本插件的本地数据目录。", "Reveal this plugin's local data directory in your file manager."],
+  diagOpenBtn: ["打开日志目录", "Open logs folder"],
+  diagOpenOk: ["已打开日志目录", "Opened logs folder"],
+  diagFailed: ["导出诊断包失败", "Failed to export diagnostics"],
+  recentTurnsTitle: ["最近调用轮次", "Recent turns"],
+  colTime: ["时间", "Time"],
+  colCache: ["缓存", "Cache"],
+  cacheReasonNoProjection: ["首轮未落盘 / 未启用缓存插件", "No projection record / cache plugin disabled"],
+  cacheReasonCwdMismatch: ["路径不一致", "Working directory mismatch"],
+  cacheReasonUpstream: ["上游未返回缓存字段", "Upstream returned no cache fields"],
+  cacheReasonScope: ["仅统计部分步骤", "Partial-step usage only"],
+  cacheReasonFallback: ["上游未上报缓存用量", "Cache usage unreported by upstream"],
   maxConcurrency: ["最大并发数", "Max concurrency"],
   maxConcurrencyDesc: ["全局并行上限；仅只读白泽支持多开，祝融同目录严格互斥写。", "Global parallelism cap. Oracle may run in parallel; Hephaestus is write-mutex per directory."],
   silentCheckin: ["静默巡检间隔", "Silent check-in interval"],
@@ -497,6 +518,9 @@ const ui = {
   creatingClient: false,
   registerError: "",
   registerName: "",
+  diagExporting: false,
+  diagExportResult: null,
+  diagExportError: "",
   resetScroll: false,
 };
 
@@ -529,6 +553,14 @@ function fmtCompact(value) {
   if (Math.abs(n) >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
   if (Math.abs(n) >= 10_000) return `${(n / 1_000).toFixed(1)}K`;
   return Math.round(n).toLocaleString("en-US");
+}
+
+function fmtBytes(value) {
+  const n = num(value);
+  if (n == null || n < 0) return "—";
+  if (n < 1024) return `${Math.round(n)} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(2)} MB`;
 }
 
 function fmtPct(value, digits = 1) {
@@ -2044,11 +2076,46 @@ function perfRow(row) {
   </tr>`;
 }
 
+const CACHE_SKIP_REASON_KEYS = {
+  "no-projection-record": "cacheReasonNoProjection",
+  "cwd-mismatch": "cacheReasonCwdMismatch",
+  unreported: "cacheReasonUpstream",
+};
+
+function cacheReasonText(row) {
+  const code = String(row?.usageSkipReason || "").trim();
+  const known = CACHE_SKIP_REASON_KEYS[code.toLowerCase()];
+  if (known) return t(known);
+  if (code) return code;
+  const scope = String(row?.usageScope || "").trim();
+  if (scope) return `${t("cacheReasonScope")} · ${scope}`;
+  return t("cacheReasonFallback");
+}
+
+function cacheCell(row) {
+  if (row?.cacheReported !== false && num(row?.hitRate) != null) {
+    return `<span class="tag green nums">${esc(fmtPct(row.hitRate))}</span>`;
+  }
+  const reason = cacheReasonText(row);
+  return `<span class="tag plain diag-reason" title="${esc(reason)}">${esc(t("unreported"))} · ${esc(reason)}</span>`;
+}
+
+function turnRow(row) {
+  return `<tr>
+    <td class="mono">${esc(fmtClock(row.ts) || "—")}</td>
+    <td class="strong">${esc(roleName(row.role))}</td>
+    <td class="mono">${esc(row.modelName || row.modelId || "—")}</td>
+    <td class="mono">${esc(row.engine || "—")}</td>
+    <td>${cacheCell(row)}</td>
+  </tr>`;
+}
+
 function renderObservabilityPage() {
   const tel = state?.telemetry || {};
   const perf = state?.perf || {};
   const cumHit = num(tel.cumulativeHitRate);
   const perfRows = Array.isArray(perf.recent) ? [...perf.recent].reverse() : [];
+  const turnRows = Array.isArray(tel.recent) ? tel.recent.slice(0, 20) : [];
 
   return `<div class="content-inner">
     <div class="kpi-grid">
@@ -2090,6 +2157,25 @@ function renderObservabilityPage() {
         <span class="legend-key"><span class="legend-swatch"></span>${esc(t("hit"))} %</span>
         <span>${esc(t("chartUnreported"))}: ${(tel.chartPoints || []).filter((p) => p && p.cacheReported === false).length}</span>
       </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <span class="card-title">${esc(t("recentTurnsTitle"))}</span>
+        <span class="tag plain nums">${esc(turnRows.length)}</span>
+      </div>
+      ${turnRows.length
+        ? `<div class="table-wrap"><table class="data-table">
+            <thead><tr>
+              <th>${esc(t("colTime"))}</th>
+              <th>${esc(t("colRole"))}</th>
+              <th>${esc(t("colModel"))}</th>
+              <th>${esc(t("colEngine"))}</th>
+              <th>${esc(t("colCache"))}</th>
+            </tr></thead>
+            <tbody>${turnRows.map(turnRow).join("")}</tbody>
+          </table></div>`
+        : `<div class="empty-state">${esc(t("noLogs"))}</div>`}
     </div>
 
     <div class="card">
@@ -2280,6 +2366,32 @@ function renderSettingsPage() {
             <button class="seg-btn ${ui.theme === "dark" ? "active" : ""}" data-action="set-theme" data-theme="dark">${esc(t("themeDark"))}</button>
             <button class="seg-btn ${ui.theme === "system" ? "active" : ""}" data-action="set-theme" data-theme="system">${esc(t("themeSystem"))}</button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="section-head"><span class="section-title">${esc(t("secDiagnostics"))}</span></div>
+      <div class="settings-group" style="margin-top:9px">
+        <div class="setting-item">
+          <div class="setting-meta">
+            <div class="setting-title">${esc(t("diagExportTitle"))}</div>
+            <div class="setting-desc">${esc(t("diagExportDesc"))}</div>
+            ${ui.diagExportResult
+              ? `<div class="diag-result">${esc(t("diagExportDone"))} · <span class="mono">${esc(ui.diagExportResult.fileName || "—")}</span> · ${esc(fmtBytes(ui.diagExportResult.sizeBytes))}</div>`
+              : `<div class="field-hint">${esc(t("diagRevealHint"))}</div>`}
+            ${ui.diagExportError ? `<div class="field-hint" style="color:var(--red)">${esc(ui.diagExportError)}</div>` : ""}
+          </div>
+          <button class="btn sm primary" data-action="diag-export" ${ui.diagExporting ? "disabled" : ""}>
+            ${iconSvg("download")} ${esc(ui.diagExporting ? t("diagExporting") : t("diagExportBtn"))}
+          </button>
+        </div>
+        <div class="setting-item">
+          <div class="setting-meta">
+            <div class="setting-title">${esc(t("diagOpenTitle"))}</div>
+            <div class="setting-desc">${esc(t("diagOpenDesc"))}</div>
+          </div>
+          <button class="btn sm" data-action="diag-open-logs">${iconSvg("external")} ${esc(t("diagOpenBtn"))}</button>
         </div>
       </div>
     </div>
@@ -3449,6 +3561,34 @@ async function onActionClick(event) {
     }
 
     /* ---------- Observability / Settings ---------- */
+    case "diag-export": {
+      if (ui.diagExporting) return;
+      ui.diagExporting = true;
+      ui.diagExportError = "";
+      scheduleRender();
+      try {
+        const res = await api("/api/diagnostics/export", { method: "POST", body: { reveal: true } });
+        ui.diagExportResult = res;
+        showToast(`${t("diagExportDone")} · ${res.fileName || "—"}`);
+      } catch (err) {
+        ui.diagExportResult = null;
+        ui.diagExportError = err?.message || String(err);
+        showError(t("diagFailed"), err);
+      } finally {
+        ui.diagExporting = false;
+        scheduleRender();
+      }
+      return;
+    }
+    case "diag-open-logs": {
+      try {
+        await api("/api/diagnostics/open-logs", { method: "POST", body: { subdir: "root" } });
+        showToast(t("diagOpenOk"));
+      } catch (err) {
+        showError("", err);
+      }
+      return;
+    }
     case "clear-logs": {
       askConfirm({
         title: t("confirmClearLogs"),

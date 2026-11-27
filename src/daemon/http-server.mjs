@@ -5,6 +5,7 @@ import path from "node:path";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { API_PROVIDERS, CLI_ENGINES_META, PLUGIN_VERSION } from "../core/constants.mjs";
 import { CLIENT_PRESETS } from "../core/clients.mjs";
+import { exportSanitizedDiagnostics, openInExplorer } from "../core/diagnostics.mjs";
 import { createRelayMcpServer } from "./mcp-factory.mjs";
 
 const DEFAULT_PORT = 3426;
@@ -401,6 +402,57 @@ export async function createDaemonHttpServer({
     }
 
     const [, resource, id, action] = segments;
+
+    if (req.method === "POST" && resource === "diagnostics" && id === "export") {
+      const body = await readJsonBody(req);
+      if (!body.ok) return sendJson(res, body.status, { ok: false, error: body.error });
+      const input = body.value || {};
+      const maxJobs = Math.max(1, Math.min(100, Number(input.maxJobs) || 15));
+      const collectSecrets = (bag) =>
+        bag && typeof bag === "object"
+          ? Object.values(bag).filter((value) => typeof value === "string" && value.length >= 6)
+          : [];
+      const extraSecrets = [
+        ...collectSecrets(store.secrets?.apiKeys),
+        ...collectSecrets(store.secrets?.clientTokens),
+      ];
+      try {
+        const result = await exportSanitizedDiagnostics({
+          dataDir: store.dataDir,
+          daemonInfo: { host: listenHost, port: actualPort, startedAt },
+          version,
+          maxJobs,
+          extraSecrets,
+        });
+        let revealError = "";
+        if (input.reveal === true && result.zipPath) {
+          try {
+            openInExplorer(result.zipPath, { dataDir: store.dataDir, selectFile: true });
+          } catch (err) {
+            revealError = err?.message || String(err);
+          }
+        }
+        sendJson(res, 200, { ok: true, ...result, ...(revealError ? { revealError } : {}) });
+      } catch (err) {
+        sendJson(res, Number(err?.status) || 500, { ok: false, error: err?.message || String(err) });
+      }
+      return;
+    }
+
+    if (req.method === "POST" && resource === "diagnostics" && id === "open-logs") {
+      const body = await readJsonBody(req);
+      if (!body.ok) return sendJson(res, body.status, { ok: false, error: body.error });
+      const subdir = ["root", "jobs", "diagnostics"].includes(body.value?.subdir) ? body.value.subdir : "root";
+      const target = subdir === "root" ? store.dataDir : path.join(store.dataDir, subdir);
+      try {
+        fs.mkdirSync(target, { recursive: true });
+        openInExplorer(target, { dataDir: store.dataDir });
+        sendJson(res, 200, { ok: true, path: target });
+      } catch (err) {
+        sendJson(res, Number(err?.status) || 500, { ok: false, error: err?.message || String(err) });
+      }
+      return;
+    }
 
     if (req.method === "GET" && resource === "state") {
       const forceDetect = parseBooleanFlag(url.searchParams.get("forceDetect"));
