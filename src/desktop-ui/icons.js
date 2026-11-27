@@ -72,6 +72,7 @@ const UI_ICONS = {
   chevronRight: `<path d="m9 6 6 6-6 6" />`,
   chevronLeft: `<path d="m15 6-6 6 6 6" />`,
   arrowUp: `<path d="M12 19V5" /><path d="m6 11 6-6 6 6" />`,
+  arrowDown: `<path d="M12 5v14" /><path d="m6 13 6 6 6-6" />`,
   arrowRight: `<path d="M5 12h14" /><path d="m13 6 6 6-6 6" />`,
   plus: `<path d="M12 5v14" /><path d="M5 12h14" />`,
   minus: `<path d="M5 12h14" />`,

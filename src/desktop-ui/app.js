@@ -15,6 +15,7 @@
 
 import { iconSvg, clientIconSvg, CLIENT_ICON_KEYS, normalizeClientIconKey } from "./icons.js";
 import { createExtensionsView } from "./extensions-view.js";
+import { createActivityView } from "./activity-view.js";
 
 /* ==========================================================================
    Constants
@@ -738,7 +739,7 @@ function applyState(next) {
   ui.authError = false;
   ui.fatal = null;
   if (!PAGES.includes(ui.page)) ui.page = "clients";
-  if (ui.modal?.type === "job" && ui.modal.jobId) refreshJobDetail({ silent: true });
+  if (ui.page === "activity") getActivityView().onStateUpdated();
   scheduleRender();
 }
 
@@ -980,6 +981,19 @@ function cooldowns() {
 /* ==========================================================================
    Theme
    ========================================================================== */
+function syncNativeWindowTheme(resolved) {
+  try {
+    const invoke =
+      window.__TAURI__?.core?.invoke ||
+      window.__TAURI_INTERNALS__?.invoke;
+    if (typeof invoke === "function") {
+      Promise.resolve(invoke("set_window_theme", { theme: resolved })).catch(() => {});
+    }
+  } catch {
+    /* ignore outside Tauri shell */
+  }
+}
+
 function applyTheme() {
   const mode = ui.theme === "dark" || ui.theme === "system" ? ui.theme : "light";
   let dark = mode === "dark";
@@ -990,7 +1004,9 @@ function applyTheme() {
       dark = false;
     }
   }
-  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  const resolved = dark ? "dark" : "light";
+  document.documentElement.dataset.theme = resolved;
+  syncNativeWindowTheme(resolved);
   try {
     localStorage.setItem(THEME_STORAGE_KEY, mode);
   } catch {
@@ -1206,6 +1222,7 @@ function watchSseStaleness() {
    Render — shell
    ========================================================================== */
 let extensionsView = null;
+let activityView = null;
 
 // The extensions page owns its own rendering; app.js only supplies the host bridge.
 function getExtensionsView() {
@@ -1224,6 +1241,34 @@ function getExtensionsView() {
     });
   }
   return extensionsView;
+}
+
+// The live activity page owns Master-Detail selection, chat-stream grouping & zero-jump scroll.
+function getActivityView() {
+  if (!activityView) {
+    activityView = createActivityView({
+      esc,
+      api,
+      iconSvg,
+      clientIconSvg,
+      normalizeClientIconKey,
+      scheduleRender,
+      showToast,
+      showError,
+      copyText,
+      isEn,
+      getState: () => state,
+      findClient,
+      roleName,
+      statusTag,
+      fmtElapsedSec,
+      fmtDuration,
+      fmtRelative,
+      fmtPct,
+      refreshState,
+    });
+  }
+  return activityView;
 }
 
 function navItem(page, icon, label, badge) {
@@ -1259,7 +1304,7 @@ function renderSidebar() {
 
   return `<aside class="sidebar">
     <div class="sidebar-head">
-      <div class="brand-mark">${iconSvg("brand")}</div>
+      <button class="brand-mark" data-action="toggle-sidebar" title="${esc(ui.sidebarCollapsed ? t("expandSidebar") : t("collapseSidebar"))}" aria-label="${esc(ui.sidebarCollapsed ? t("expandSidebar") : t("collapseSidebar"))}">${iconSvg("brand", 30)}</button>
       <div class="brand-text">
         <span class="brand-name">A.stand</span>
         <span class="version-pill">v2</span>
@@ -1319,6 +1364,7 @@ function renderTopbar() {
 
 function renderMain() {
   let body;
+  let flush = false;
   if (ui.authError) {
     body = renderBlockedState("lock", t("authTitle"), t("authDesc"), false);
   } else if (!state) {
@@ -1326,7 +1372,8 @@ function renderMain() {
   } else if (ui.page === "clients") {
     body = renderClientsPage();
   } else if (ui.page === "activity") {
-    body = renderActivityPage();
+    body = getActivityView().renderPage();
+    flush = true;
   } else if (ui.page === "roles") {
     body = renderRolesPage();
   } else if (ui.page === "extensions") {
@@ -1340,7 +1387,7 @@ function renderMain() {
   }
   return `<main class="main">
     ${renderTopbar()}
-    <div class="content" data-scroll-root="1">
+    <div class="content ${flush ? "content-flush" : ""}" data-scroll-root="1">
       ${body}
     </div>
   </main>`;
@@ -1364,6 +1411,7 @@ function render() {
   // Page switches reset the scroll to the top; every other render preserves it.
   const scrollEl = document.querySelector('[data-scroll-root="1"]');
   if (scrollEl && !ui.resetScroll) ui.scrollTop = scrollEl.scrollTop;
+  if (ui.page === "activity" && !ui.resetScroll) getActivityView().captureScroll();
   if (ui.resetScroll) ui.resetScroll = false;
 
   const active = document.activeElement;
@@ -1390,6 +1438,7 @@ function render() {
 
   const nextScroll = document.querySelector('[data-scroll-root="1"]');
   if (nextScroll) nextScroll.scrollTop = ui.scrollTop;
+  if (ui.page === "activity") getActivityView().restoreScroll();
 
   if (focusKey) {
     const el = root.querySelector(`[data-focus-key="${cssEscape(focusKey)}"]`);
@@ -1498,90 +1547,6 @@ function renderClientsPage() {
   return `<div class="content-inner wide">
     ${toolbar}
     ${list}
-  </div>`;
-}
-
-/* ==========================================================================
-   Page — Activity
-   ========================================================================== */
-function jobRow(job, running) {
-  const role = job.role === "hephaestus" ? "hephaestus" : "oracle";
-  const status = statusTag(job.status);
-  const upstream = job.upstreamClientLabel
-    ? `<span class="tag plain mono">${esc(job.upstreamClientLabel)}</span>`
-    : "";
-  const model = job.modelDisplayName || job.modelId || job.engine || "";
-  return `<div class="job-row ${running ? "running" : ""}" data-action="open-job" data-job="${esc(job.jobId)}" role="button" tabindex="0">
-    <span class="job-role ${role}">${esc(roleName(role))}</span>
-    <span class="job-main">
-      <span class="job-title">${esc(job.title || job.jobId)}</span>
-      <span class="job-meta">
-        ${upstream}
-        <span>${esc(model)}</span>
-        <span class="sep">·</span>
-        <span class="mono">${esc(fmtElapsedSec(job.elapsedSec))}</span>
-        ${running && job.silentSec != null ? `<span class="sep">·</span><span>${esc(t("silent"))} ${esc(fmtElapsedSec(job.silentSec))}</span>` : ""}
-      </span>
-    </span>
-    <span class="job-side">
-      <span class="tag ${status.cls}">${esc(status.label)}</span>
-      ${running
-        ? `<button class="btn xs danger" data-action="stop-job" data-job="${esc(job.jobId)}">${iconSvg("stop")} ${esc(t("stopJob"))}</button>`
-        : `<span class="client-chevron">${iconSvg("chevronRight")}</span>`}
-    </span>
-  </div>`;
-}
-
-function renderCrashBanner() {
-  const jobs = state?.interruptedJobs || [];
-  if (!jobs.length) return "";
-  const rows = jobs
-    .map(
-      (job) => `<div class="crash-item">
-        <span class="job-role ${job.role === "hephaestus" ? "hephaestus" : "oracle"}">${esc(roleName(job.role))}</span>
-        <span class="crash-title" title="${esc(job.title || job.jobId)}">${esc(job.title || job.jobId)}</span>
-        <button class="btn xs" data-action="open-job" data-job="${esc(job.jobId)}">${esc(t("jobDetail"))}</button>
-        <button class="btn xs ghost" data-action="dismiss-interrupted" data-job="${esc(job.jobId)}">${esc(t("dismiss"))}</button>
-      </div>`
-    )
-    .join("");
-  return `<div class="crash-banner">
-    <div class="crash-head">
-      ${iconSvg("alert")}
-      <span>${esc(t("crashTitle"))} · ${jobs.length}</span>
-      <span style="flex:1"></span>
-      <button class="btn xs ghost" data-action="dismiss-interrupted">${esc(t("dismissAll"))}</button>
-    </div>
-    <div class="setting-desc" style="color:var(--ink-2)">${esc(t("crashDesc"))}</div>
-    <div class="crash-list">${rows}</div>
-  </div>`;
-}
-
-function renderActivityPage() {
-  const running = state?.activeJobs || [];
-  const recent = (state?.recentJobs || []).filter((j) => j.status !== "running");
-  return `<div class="content-inner">
-    ${renderCrashBanner()}
-    <div>
-      <div class="section-head">
-        <span class="section-title">${esc(t("runningJobs"))}</span>
-        <span class="section-sub">${running.length}</span>
-      </div>
-      <div class="card-list" style="margin-top:9px">
-        ${running.length ? running.map((j) => jobRow(j, true)).join("") : `<div class="card"><div class="empty-state">${esc(t("noRunning"))}</div></div>`}
-      </div>
-    </div>
-    <div>
-      <div class="section-head">
-        <span class="section-title">${esc(t("recentJobs"))}</span>
-        <span class="section-sub">${recent.length}</span>
-      </div>
-      <div class="card-list" style="margin-top:9px">
-        ${recent.length
-          ? recent.slice(0, 30).map((j) => jobRow(j, false)).join("")
-          : `<div class="card"><div class="empty-state"><div class="empty-icon">${iconSvg("history", 18)}</div>${esc(t("noRecent"))}<div class="setting-desc" style="margin-top:4px">${esc(t("noActivityDesc"))}</div></div></div>`}
-      </div>
-    </div>
   </div>`;
 }
 
@@ -2434,7 +2399,6 @@ function renderOverlay() {
   if (modal.type === "client") return renderClientDrawer(modal);
   if (modal.type === "setup") return renderSetupModal();
   if (modal.type === "channel") return renderChannelModal();
-  if (modal.type === "job") return renderJobModal();
   if (modal.type === "extension") return getExtensionsView().renderModal(modal);
   if (modal.type === "confirm") return renderConfirmModal();
   return "";
@@ -2701,63 +2665,6 @@ function renderChannelModal() {
   </div>`);
 }
 
-function renderJobModal() {
-  const job = ui.jobDetail;
-  const jobId = ui.modal.jobId;
-  const status = job ? statusTag(job.status) : { cls: "blue", label: "" };
-  let body;
-  if (ui.jobLoading && !job) {
-    body = `<div class="empty-state">${esc(t("jobLoading"))}</div>`;
-  } else if (ui.jobError) {
-    body = `<div class="empty-state" style="color:var(--red)">${esc(ui.jobError)}</div>`;
-  } else if (!job) {
-    body = `<div class="empty-state">${esc(t("jobNoSteps"))}</div>`;
-  } else {
-    const activities = Array.isArray(job.activities) ? job.activities : [];
-    body = `
-      ${job.prompt ? `<div class="field"><div class="detail-label">${esc(t("jobPrompt"))}</div><div class="job-prompt-box">${esc(job.prompt)}</div></div>` : ""}
-      <div class="field">
-        <div class="detail-label">${esc(t("jobTimeline"))}</div>
-        ${activities.length
-          ? `<div class="timeline">${activities
-              .map((a) => {
-                const kind = a.kind || a.type || "log";
-                const dotCls = ["cmd", "edit", "write", "output", "error"].includes(kind) ? kind : "";
-                const title = a.title || a.summary || kind;
-                const meta = [kind, a.durationSec != null ? fmtDuration(Number(a.durationSec) * 1000) : "", a.exitCode != null ? `exit ${a.exitCode}` : ""]
-                  .filter(Boolean)
-                  .join(" · ");
-                return `<div class="timeline-item">
-                  <span class="timeline-dot ${dotCls}"></span>
-                  <div class="timeline-main">
-                    <div class="timeline-title">${esc(title)}</div>
-                    ${meta ? `<div class="timeline-meta">${esc(meta)}</div>` : ""}
-                  </div>
-                </div>`;
-              })
-              .join("")}</div>`
-          : `<div class="empty-state">${esc(t("jobNoSteps"))}</div>`}
-      </div>
-      ${job.error ? `<div class="field"><div class="detail-label" style="color:var(--red)">${esc(t("jobError"))}</div><div class="job-prompt-box" style="color:var(--red)">${esc(job.error)}</div></div>` : ""}
-      ${job.finalText ? `<div class="field"><div class="detail-label">${esc(t("jobFinal"))}</div><div class="job-final-box">${esc(job.finalText)}</div></div>` : ""}
-    `;
-  }
-
-  return overlayShell(`<div class="modal wide" role="dialog" aria-modal="true" aria-label="${esc(t("jobDetail"))}">
-    <div class="modal-head">
-      <span class="job-role ${job?.role === "hephaestus" ? "hephaestus" : "oracle"}">${esc(roleName(job?.role))}</span>
-      <div class="modal-head-main">
-        <div class="modal-title truncate">${esc(job?.title || jobId)}</div>
-        <div class="modal-sub">${esc(job?.modelDisplayName || job?.modelId || job?.engine || jobId)}</div>
-      </div>
-      ${job ? `<span class="tag ${status.cls}">${esc(status.label)}</span>` : ""}
-      ${job?.status === "running" ? `<button class="btn xs danger" data-action="stop-job" data-job="${esc(jobId)}">${iconSvg("stop")} ${esc(t("stopJob"))}</button>` : ""}
-      <button class="icon-btn sm plain" data-action="close-modal" aria-label="${esc(t("close"))}">${iconSvg("close")}</button>
-    </div>
-    <div class="modal-body">${body}</div>
-  </div>`);
-}
-
 function renderConfirmModal() {
   const modal = ui.modal;
   return overlayShell(`<div class="modal narrow" role="dialog" aria-modal="true" aria-label="${esc(modal.title)}">
@@ -2848,32 +2755,6 @@ function normalizeSetup(raw, token) {
   };
 }
 
-async function refreshJobDetail({ silent = false } = {}) {
-  const modal = ui.modal;
-  if (!modal || modal.type !== "job") return;
-  const jobId = modal.jobId;
-  if (!silent) {
-    ui.jobLoading = true;
-    ui.jobError = "";
-    scheduleRender();
-  }
-  try {
-    const res = await api(`/api/jobs/${encodeURIComponent(jobId)}`);
-    if (ui.modal?.type !== "job" || ui.modal.jobId !== jobId) return;
-    if (res?.ok && res.job) {
-      ui.jobDetail = res.job;
-      ui.jobError = "";
-    } else {
-      ui.jobError = res?.error || t("jobLoadFailed");
-    }
-  } catch (err) {
-    ui.jobError = err?.message || t("jobLoadFailed");
-  } finally {
-    ui.jobLoading = false;
-    scheduleRender();
-  }
-}
-
 async function saveSettings(patch) {
   try {
     const res = await api("/api/settings", { method: "POST", body: patch });
@@ -2930,9 +2811,12 @@ async function onActionClick(event) {
   if (!target) return;
   const action = target.dataset.action;
 
-  // Skills & Extensions owns its own page + modal actions; it returns false for anything else.
+  // Skills & Extensions and Live Activity own their scoped actions.
   if (action.startsWith("ext-")) {
     if (await getExtensionsView().handleAction(action, target)) return;
+  }
+  if (action.startsWith("act-")) {
+    if (await getActivityView().handleAction(action, target, event)) return;
   }
 
   switch (action) {
@@ -2950,6 +2834,7 @@ async function onActionClick(event) {
       getExtensionsView().reset();
       ui.scrollTop = 0;
       ui.resetScroll = true;
+      if (ui.page === "activity") getActivityView().onStateUpdated();
       scheduleRender();
       return;
     case "toggle-sidebar":
@@ -3153,10 +3038,10 @@ async function onActionClick(event) {
     case "open-job": {
       const jobId = target.dataset.job;
       if (!jobId) return;
-      ui.jobDetail = null;
-      ui.jobError = "";
-      openModal({ type: "job", jobId });
-      void refreshJobDetail();
+      ui.page = "activity";
+      ui.modal = null;
+      getActivityView().selectJob(jobId);
+      scheduleRender();
       return;
     }
     case "stop-job": {
@@ -3166,7 +3051,7 @@ async function onActionClick(event) {
         await api("/api/session-action", { method: "POST", body: { action: "interrupt", jobId } });
         showToast(t("jobStopped"));
         await refreshState({ silent: true });
-        if (ui.modal?.type === "job") void refreshJobDetail({ silent: true });
+        getActivityView().refreshSelected();
       } catch (err) {
         showError("", err);
       }

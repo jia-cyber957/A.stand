@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { API_PROVIDERS, CLI_DEFAULT_MODELS_MAP, PLUGIN_VERSION } from "./constants.mjs";
@@ -958,6 +959,44 @@ export class RelayOrchestrator {
     };
   }
 
+  #readCodexConfiguredModel() {
+    const def = (this.engines.codex?.latestModels || []).find((m) => m?.isDefault && m?.modelName);
+    if (def?.modelName) return def.modelName;
+    try {
+      const tomlPath = path.join(os.homedir(), ".codex", "config.toml");
+      if (!fs.existsSync(tomlPath)) return "";
+      const raw = fs.readFileSync(tomlPath, "utf8");
+      const m = /^\s*model\s*=\s*["']([^"']+)["']/m.exec(raw);
+      return m?.[1]?.trim() || "";
+    } catch {
+      return "";
+    }
+  }
+
+  #displayModelName(model) {
+    if (!model) return "";
+    if (model.engine === "codex" && (!model.modelName || model.id === "cli-codex-default")) {
+      const configured = this.#readCodexConfiguredModel();
+      if (configured) return `${configured} (Codex CLI)`;
+    }
+    return model.name || model.modelName || model.engine || "";
+  }
+
+  #formatJobModelDisplay(j) {
+    if (!j) return "";
+    if (j.resolvedModel) {
+      if (j.engine === "codex" && !String(j.resolvedModel).includes("Codex")) {
+        return `${j.resolvedModel} (Codex CLI)`;
+      }
+      return String(j.resolvedModel);
+    }
+    if (j.engine === "codex" && (!j.modelDisplayName || j.modelDisplayName === "GPT (Codex)")) {
+      const configured = this.#readCodexConfiguredModel();
+      if (configured) return `${configured} (Codex CLI)`;
+    }
+    return j.modelDisplayName || j.engine || "";
+  }
+
   // Compact, UI-safe projection of a job (shared by activeJobs / recentJobs / job detail).
   #summarizeJob(j, now = Date.now()) {
     const running = j.status === "running";
@@ -971,7 +1010,7 @@ export class RelayOrchestrator {
       sessionId: j.sessionId || "",
       engine: j.engine,
       modelId: j.modelId || "",
-      modelDisplayName: j.modelDisplayName || j.engine,
+      modelDisplayName: this.#formatJobModelDisplay(j),
       status: j.status,
       elapsedSec: Number(((endTs - j.startedAt) / 1000).toFixed(1)),
       // Silent time only keeps ticking for live jobs; finished jobs freeze at their last activity.
@@ -995,13 +1034,78 @@ export class RelayOrchestrator {
     };
   }
 
-  // Newest-first jobs covering running, completed and failed states.
+  #readDiskRecentJobs(limit, seenIds, now) {
+    const jobsDir = path.join(this.store.dataDir, "jobs");
+    if (!fs.existsSync(jobsDir)) return [];
+    const days = Number(this.store.settings.retentionDays) || 0;
+    const cutoff = days > 0 ? now - days * 86_400_000 : 0;
+    let files;
+    try {
+      files = fs.readdirSync(jobsDir).filter((f) => f.endsWith(".status.json"));
+    } catch {
+      return [];
+    }
+    const candidates = [];
+    for (const file of files) {
+      const jobId = file.slice(0, -".status.json".length);
+      if (!jobId || seenIds.has(jobId)) continue;
+      const fullPath = path.join(jobsDir, file);
+      try {
+        const st = fs.statSync(fullPath);
+        if (cutoff && st.mtimeMs < cutoff) continue;
+        candidates.push({ jobId, fullPath, mtimeMs: st.mtimeMs });
+      } catch {}
+    }
+    candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    const out = [];
+    for (const item of candidates.slice(0, Math.max(limit * 2, 40))) {
+      try {
+        const snap = JSON.parse(fs.readFileSync(item.fullPath, "utf8"));
+        if (!snap || typeof snap !== "object") continue;
+        const startedAt = Number(snap.startedAt) || item.mtimeMs;
+        if (cutoff && startedAt < cutoff) continue;
+        out.push({
+          jobId: snap.jobId || item.jobId,
+          role: snap.role || "oracle",
+          slot: snap.slot || "default",
+          title: snap.title || "",
+          cwd: snap.cwd || "",
+          sessionId: snap.sessionId || "",
+          engine: snap.engine || "",
+          modelId: snap.modelId || "",
+          modelDisplayName: this.#formatJobModelDisplay(snap),
+          status: snap.status === "running" ? "interrupted" : snap.status || (snap.error ? "failed" : "completed"),
+          elapsedSec: snap.elapsedSec ?? null,
+          silentSec: null,
+          startedAt,
+          finishedAt: snap.finishedAt || null,
+          hitRate: snap.hitRate ?? null,
+          contextPct: snap.contextPct ?? null,
+          activityCount: Number(snap.activityCount) || 0,
+          recentActivities: [],
+          lastSummary: snap.lastSummary || "",
+          lastAction: snap.lastAction || "",
+          logPath: path.join(jobsDir, `${item.jobId}.log`),
+          outputPath: this.#outputPath(item.jobId),
+          ...(snap.conversationId && { conversationId: snap.conversationId }),
+          ...(snap.client && { client: snap.client }),
+          ...(snap.worktree && { worktree: snap.worktree }),
+          error: snap.error || "",
+        });
+      } catch {}
+    }
+    return out;
+  }
+
+  // Newest-first jobs covering running, completed and failed states (memory + persisted disk snapshots).
   #recentJobs(limit) {
     const now = Date.now();
-    return Array.from(this.jobs.values())
+    const mem = Array.from(this.jobs.values()).map((j) => this.#summarizeJob(j, now));
+    const seen = new Set(mem.map((j) => j.jobId));
+    const disk = this.#readDiskRecentJobs(limit, seen, now);
+    return [...mem, ...disk]
       .sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))
-      .slice(0, limit)
-      .map((j) => this.#summarizeJob(j, now));
+      .slice(0, limit);
   }
 
   formatTelemetryFooter(meta) {
@@ -1718,7 +1822,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       appliedEffort: "",
       engine: available[0].engine,
       modelId: available[0].id,
-      modelDisplayName: available[0].name,
+      modelDisplayName: this.#displayModelName(available[0]),
       sessionId: "",
       status: "running",
       startedAt: now,
@@ -1762,7 +1866,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
 
           job.engine = engineId;
           job.modelId = model.id;
-          job.modelDisplayName = model.name;
+          job.modelDisplayName = this.#displayModelName(model);
 
           const existing = requestedExisting;
           // A resumed engine session can keep its original working directory.
@@ -1920,10 +2024,10 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
               if (!this.store.settings.autoFallbackOnLimit || idx === available.length - 1) {
                 break;
               }
-              fallbackPrefixNote = `fallback from ${model.name} (resets ${formatResetTime(untilMs)})`;
+              fallbackPrefixNote = `fallback from ${this.#displayModelName(model)} (resets ${formatResetTime(untilMs)})`;
               this.#recordActivity(job, {
                 type: "fallback",
-                summary: `${model.name} hit limit; switching to ${available[idx + 1].name}`,
+                summary: `${this.#displayModelName(model)} hit limit; switching to ${this.#displayModelName(available[idx + 1])}`,
               });
               this.#writeStatusSnapshot(job, { force: true });
               continue;
@@ -2413,7 +2517,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       appliedEffort: "",
       engine: available[0].engine,
       modelId: available[0].id,
-      modelDisplayName: available[0].name,
+      modelDisplayName: this.#displayModelName(available[0]),
       sessionId: "",
       status: "running",
       startedAt: now,
@@ -2448,7 +2552,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
 
           job.engine = engineId;
           job.modelId = model.id;
-          job.modelDisplayName = model.name;
+          job.modelDisplayName = this.#displayModelName(model);
 
           const existing = cleanRequestedSid ? this.store.getSessionById(cleanRequestedSid) : null;
           const canReuse = Boolean(
@@ -3182,7 +3286,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
         checkpointPath: this.#checkpointPath(j.jobId),
         stallAlert: j.stallAlert || null,
       })),
-      recentJobs: this.#recentJobs(10),
+      recentJobs: this.#recentJobs(30),
       interruptedJobs: this.#interruptedJobs(),
       receipts: this.store.listReceipts().slice(0, 50),
       extensions: this.extensionRegistry?.getPublicState?.() || { version: 1, items: [], counts: {} },
@@ -3245,7 +3349,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
         conversationId: snapshot?.conversationId || checkpoint?.conversationId || "",
         engine: snapshot?.engine || "",
         modelId: snapshot?.modelId || checkpoint?.modelId || "",
-        modelDisplayName: snapshot?.modelDisplayName || "",
+        modelDisplayName: this.#formatJobModelDisplay(snapshot),
         status: snapshot?.status || (error ? "failed" : "completed"),
         elapsedSec: snapshot?.elapsedSec ?? null,
         silentSec: null,

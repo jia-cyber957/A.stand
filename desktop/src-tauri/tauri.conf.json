@@ -7,7 +7,7 @@
     "frontendDist": "./loading"
   },
   "app": {
-    "withGlobalTauri": false,
+    "withGlobalTauri": true,
     "windows": [
       {
         "label": "main",

@@ -10,11 +10,22 @@
 mod daemon;
 mod tray;
 
-use tauri::{Manager, RunEvent, WindowEvent};
+use tauri::{Manager, RunEvent, Theme, WindowEvent};
+
+#[tauri::command]
+fn set_window_theme(window: tauri::WebviewWindow, theme: String) {
+    let target = match theme.trim().to_ascii_lowercase().as_str() {
+        "dark" => Some(Theme::Dark),
+        "light" => Some(Theme::Light),
+        _ => None,
+    };
+    let _ = window.set_theme(target);
+}
 
 fn main() {
     tauri::Builder::default()
         .manage(daemon::DaemonState::default())
+        .invoke_handler(tauri::generate_handler![set_window_theme])
         .setup(|app| {
             tray::build(app.handle())?;
             let handle = app.handle().clone();
