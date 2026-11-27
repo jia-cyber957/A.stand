@@ -374,7 +374,7 @@ export class ClientRegistry {
     const url = cleanText(httpUrl, 400) || "http://127.0.0.1:3426/mcp";
     const bridge = bridgeScript || path.join(process.cwd(), "dist", "stdio-bridge.mjs");
     const rules = rulesFile || path.join(process.cwd(), "plugin", "rules", "AGENTS.md");
-    const displayName = client.customName || client.label || GENERIC_PRESET.label;
+    const customSlot = client.customName;
     const stdioCommand = `node "${bridge}" --url "${url}" --token "${token}"`;
 
     const httpConfig = {
@@ -401,7 +401,7 @@ export class ClientRegistry {
     const stdioBridgeConfigJson = JSON.stringify(stdioConfig, null, 2);
 
     const promptZh = [
-      `请把 A.stand 常驻代理接入当前 MCP 客户端（客户端槽位：${displayName}）。按下面 4 步操作，不要跳过。`,
+      `请把 A.stand 常驻代理接入当前 MCP 客户端${customSlot ? `（客户端槽位：${customSlot}）` : ""}。按下面 4 步操作，不要跳过。`,
       "",
       "【1. 添加 MCP 服务器（Streamable HTTP）】",
       "服务器名称：a-stand",
@@ -428,11 +428,13 @@ export class ClientRegistry {
       "- 新任务一律省略 sessionId，让子代理获得干净的上下文与缓存。",
       "",
       "【4. 握手校验】",
-      '配置完成后，调用一次 agent_relay_session(action="status") 完成握手并确认连接；返回 enabled/limits 即表示接入成功。',
+      "写入 MCP 配置后，大多数宿主需要用户手动刷新 MCP 或再发送一条消息，才会加载新工具。",
+      '如果此时还看不到 a-stand 的工具，请明确提示用户刷新 MCP 或再发一条消息；工具加载后再调用一次 agent_relay_session(action="status") 完成握手并自动回填客户端代号。',
+      "返回 enabled/limits 即表示接入成功。",
     ].join("\n");
 
     const promptEn = [
-      `Connect this MCP client to the A.stand resident daemon (client slot: ${displayName}). Follow these 4 steps exactly.`,
+      `Connect this MCP client to the A.stand resident daemon${customSlot ? ` (client slot: ${customSlot})` : ""}. Follow these 4 steps exactly.`,
       "",
       "[1. Add the MCP server (Streamable HTTP)]",
       "Server name: a-stand",
@@ -459,7 +461,9 @@ export class ClientRegistry {
       "- Omit sessionId for every new task so the subagent starts with a clean context and cache.",
       "",
       "[4. Handshake check]",
-      'After configuring, call agent_relay_session(action="status") once to complete the handshake and verify the connection; a reply with enabled/limits means you are connected.',
+      "After writing the MCP config, most hosts require the user to manually refresh MCP or send another message before new tools load.",
+      'If the a-stand tools are not visible yet, explicitly tell the user to refresh MCP or send another message; once the tools load, call agent_relay_session(action="status") once to complete the handshake and auto-fill the client name.',
+      "A reply with enabled/limits means you are connected.",
     ].join("\n");
 
     return {
