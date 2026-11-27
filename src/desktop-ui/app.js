@@ -1570,9 +1570,11 @@ function render() {
   const root = document.getElementById("root");
   if (!root) return;
 
-  // Page switches reset the scroll to the top; every other render preserves it.
+  // Page switches reset the scroll to the top; every other render preserves main + modal scroll positions.
   const scrollEl = document.querySelector('[data-scroll-root="1"]');
   if (scrollEl && !ui.resetScroll) ui.scrollTop = scrollEl.scrollTop;
+  const modalBodyScroll = document.querySelector(".modal-body")?.scrollTop ?? null;
+  const presetListScroll = document.querySelector(".cli-preset-list")?.scrollTop ?? null;
   if (ui.page === "activity" && !ui.resetScroll) getActivityView().captureScroll();
   if (ui.resetScroll) ui.resetScroll = false;
 
@@ -1600,6 +1602,14 @@ function render() {
 
   const nextScroll = document.querySelector('[data-scroll-root="1"]');
   if (nextScroll) nextScroll.scrollTop = ui.scrollTop;
+  if (modalBodyScroll != null) {
+    const nextModalBody = root.querySelector(".modal-body");
+    if (nextModalBody) nextModalBody.scrollTop = modalBodyScroll;
+  }
+  if (presetListScroll != null) {
+    const nextPresetList = root.querySelector(".cli-preset-list");
+    if (nextPresetList) nextPresetList.scrollTop = presetListScroll;
+  }
   if (ui.page === "activity") getActivityView().restoreScroll();
 
   if (focusKey) {
@@ -2187,18 +2197,24 @@ function renderEngineTile(eid) {
   </div>`;
 }
 
-/** Bottom-left column card: Magpie-style CLI account, subscription & quota status. */
-function renderCliAccountRow(eid) {
+/** Bottom-left column: Account-first cards (1 card per account; clicking opens the same CLI detail modal). */
+function renderCliAccountCards(eid) {
   const eng = state?.engines?.[eid] || {};
   const rl = state?.codexRateLimits;
   const showQuota = eid === "codex" && Boolean(rl);
   const { loggedIn, probing, identity, subCount, acc } = engineLoginSummary(eid);
-  const canInAppLogin = Boolean(
-    eng.installed && (eng.extensible || ["doubao", "qoder", "qoder-cn", "minimax", "opencode"].includes(eid))
+  const loginSess = state?.cliLogins?.[eid] || null;
+  const loggingIn = Boolean(
+    loginSess && (loginSess.status === "starting" || loginSess.status === "waiting_browser" || loginSess.status === "waiting_qr")
   );
-  const loginBarHtml = canInAppLogin ? getCliCatalogModal().renderLoginBar(eid) : "";
+  const canInAppLogin = Boolean(
+    eng.installed &&
+      eid !== "codebuddy" &&
+      (eng.extensible || ["doubao", "qoder", "qoder-cn", "minimax", "opencode"].includes(eid))
+  );
+  const loginBarHtml = eng.installed ? getCliCatalogModal().renderLoginBar(eid) : "";
   const cooled = engineCooldownModels(eid);
-  const displayTitle = eid === "deepseek-harness" ? (isEn() ? "DeepSeek Official Account" : "DeepSeek 官方账号") : engineLabel(eid);
+  const cliShort = shortEngineLabel(eid);
   const dshAccountModels =
     eid === "deepseek-harness"
       ? (state?.dshModels || []).filter((m) => m && (m.authType === "account" || m.providerId === "deepseek-account"))
@@ -2207,58 +2223,88 @@ function renderCliAccountRow(eid) {
     eid === "codex" && rl?.planType
       ? String(rl.planType).toUpperCase()
       : eid === "deepseek-harness" && loggedIn
-      ? isEn() ? "Official" : "官方账号"
+      ? isEn() ? "Official" : "官方"
       : acc?.loginMethod === "minimax_oauth" && loggedIn
       ? "OAuth"
       : "";
-  const profilesCount = (state?.cliAccountProfiles?.[eid] || []).filter((p) => p.enabled).length;
+  const rawProfiles = Array.isArray(state?.cliAccountProfiles?.[eid]) && state.cliAccountProfiles[eid].length > 0
+    ? state.cliAccountProfiles[eid]
+    : [{ id: "default", label: "", enabled: true, isDefault: true }];
 
-  return `<div class="cli-account-card ${loggedIn ? "signed-in" : ""}">
-    <div class="cli-account-top">
-      <div class="engine-avatar brand sm" data-action="cd-open" data-engine="${esc(eid)}" style="cursor:pointer">${engineIconSvg(eid, 22)}</div>
-      <div class="cli-account-main" data-action="cd-open" data-engine="${esc(eid)}" style="cursor:pointer">
-        <div class="cli-account-title">
-          <span class="truncate">${esc(displayTitle)}</span>
-          ${planBadge ? `<span class="tag plain" style="height:17px;font-size:10px">${esc(planBadge)}</span>` : ""}
-          ${profilesCount > 1 ? `<span class="tag blue" style="height:17px;font-size:10px">${esc(isEn() ? `${profilesCount} accts` : `${profilesCount} 账号轮换`)}</span>` : ""}
+  const defaultTitle =
+    identity && identity !== "已登录" && identity !== "Signed in"
+      ? identity
+      : loggedIn
+      ? eid === "codex"
+        ? isEn() ? "ChatGPT local session" : "ChatGPT 本地登录态"
+        : eid === "deepseek-harness"
+        ? isEn() ? "DeepSeek Official Account" : "DeepSeek 官方账号"
+        : `${cliShort} ${isEn() ? "Account" : "默认账号"}`
+      : loggingIn
+      ? isEn() ? "Signing in…" : "正在登录…"
+      : isEn() ? "Not signed in" : "未登录";
+
+  return rawProfiles
+    .map((prof) => {
+      const isDef = prof.id === "default" || prof.isDefault;
+      const cardTitle = isDef ? defaultTitle : prof.label || prof.id;
+      const cardLoggedIn = isDef ? loggedIn : Boolean(prof.enabled);
+      const statusDot = loggingIn && isDef ? "warn" : cardLoggedIn ? "ok" : probing && isDef ? "off" : "warn";
+      const statusLine = isDef
+        ? loggingIn
+          ? isEn() ? "Waiting for sign-in confirmation…" : "登录中 · 等待授权确认…"
+          : probing
+          ? isEn() ? "Checking sign-in…" : "正在检测账号状态…"
+          : cardLoggedIn
+          ? `${isEn() ? "Ready" : "正常可用"}${subCount > 0 ? ` · ${isEn() ? `${subCount} models` : `${subCount} 个模型`}` : ""}`
+          : eid === "codebuddy"
+          ? isEn() ? "Run codebuddy -> /login in terminal" : "待登录 · 终端运行 codebuddy 后输入 /login"
+          : isEn() ? "Not signed in — click Sign in" : "待登录 · 点击右侧登录"
+        : `${prof.enabled ? (isEn() ? "Active in rotation" : "已启用 · 参与轮换") : isEn() ? "Paused" : "已暂停"}`;
+
+      return `<div class="cli-account-card ${cardLoggedIn ? "signed-in" : ""}">
+        <div class="cli-account-top">
+          <div class="engine-avatar brand sm" data-action="cd-open" data-engine="${esc(eid)}" style="cursor:pointer">${engineIconSvg(eid, 22)}</div>
+          <div class="cli-account-main" data-action="cd-open" data-engine="${esc(eid)}" style="cursor:pointer">
+            <div class="cli-account-title">
+              <span class="truncate">${esc(cardTitle)}</span>
+              <span class="tag plain" style="height:17px;font-size:10px">${esc(cliShort)}</span>
+              ${isDef && planBadge ? `<span class="tag blue" style="height:17px;font-size:10px">${esc(planBadge)}</span>` : ""}
+              ${!isDef ? `<span class="tag plain" style="height:17px;font-size:10px">${esc(isEn() ? "Isolated" : "独立账号")}</span>` : ""}
+            </div>
+            <div class="cli-account-sub">
+              <span class="dot-inline ${statusDot}"></span>
+              <span class="truncate">${esc(statusLine)}</span>
+            </div>
+          </div>
+          <div class="cli-account-right">
+            ${isDef && eid === "codex"
+              ? `<button class="icon-btn sm" data-action="refresh-quota" title="${esc(t("refreshQuota"))}">${iconSvg("refresh", 13)}</button>`
+              : ""}
+            ${isDef && !cardLoggedIn && !loggingIn && canInAppLogin
+              ? `<button class="btn xs primary" data-action="cli-login-start" data-engine="${esc(eid)}">${iconSvg("key")} ${esc(isEn() ? "Sign in" : "登录")}</button>`
+              : `<button class="btn xs ghost" data-action="cd-open" data-engine="${esc(eid)}" title="${esc(isEn() ? "Open CLI details" : "查看详情")}">${iconSvg("chevronRight", 13)}</button>`}
+          </div>
         </div>
-        <div class="cli-account-sub">
-          <span class="dot-inline ${loggedIn ? "ok" : probing ? "off" : "warn"}"></span>
-          <span class="truncate">${esc(
-            probing
-              ? isEn() ? "Checking sign-in…" : "正在读取登录态…"
-              : loggedIn
-              ? `${isEn() ? "Signed in" : "已登录"}${identity && identity !== "已登录" && identity !== "Signed in" ? ` · ${identity}` : ""}${subCount > 0 ? ` · ${isEn() ? `${subCount} models` : `${subCount} 个模型`}` : ""}`
-              : isEn() ? "Not signed in — click Sign in" : "未登录 · 点击右侧登录"
-          )}</span>
-        </div>
-      </div>
-      <div class="cli-account-right">
-        ${eid === "codex"
-          ? `<button class="icon-btn sm" data-action="refresh-quota" title="${esc(t("refreshQuota"))}">${iconSvg("refresh", 13)}</button>`
+        ${isDef && showQuota ? `<div class="cli-account-extra">${renderQuotaBars()}</div>` : ""}
+        ${isDef && dshAccountModels.length
+          ? `<div class="chip-row" style="padding:0 12px 10px 48px">${dshAccountModels
+              .map((m) => `<span class="model-chip">${esc(m.displayName || m.name || m.modelName || m.id)}</span>`)
+              .join("")}</div>`
           : ""}
-        ${!loggedIn && canInAppLogin
-          ? `<button class="btn xs primary" data-action="cli-login-start" data-engine="${esc(eid)}">${iconSvg("key")} ${esc(isEn() ? "Sign in" : "登录")}</button>`
-          : `<button class="btn xs ghost" data-action="cd-open" data-engine="${esc(eid)}" title="${esc(isEn() ? "Account & models" : "管理账号与模型")}">${esc(loggedIn ? (isEn() ? "Manage" : "管理") : (isEn() ? "Details" : "详情"))} ${iconSvg("chevronRight", 12)}</button>`}
-      </div>
-    </div>
-    ${showQuota ? `<div class="cli-account-extra">${renderQuotaBars()}</div>` : ""}
-    ${dshAccountModels.length
-      ? `<div class="chip-row" style="padding:0 12px 10px 48px">${dshAccountModels
-          .map((m) => `<span class="model-chip">${esc(m.displayName || m.name || m.modelName || m.id)}</span>`)
-          .join("")}</div>`
-      : ""}
-    ${cooled.length
-      ? `<div class="row wrap" style="gap:6px;padding:0 12px 10px 48px">${cooled
-          .map(
-            (x) => `<span class="tag amber">⏳ ${esc(x.model.name)} · ${esc(x.cd.manualOnly ? t("balanceDepleted") : fmtCountdown(x.cd.untilMs))}
-              <button class="chip-btn" data-action="clear-cooldown" data-model="${esc(x.model.id)}" title="${esc(t("restore"))}">${esc(t("restore"))}</button>
-            </span>`
-          )
-          .join("")}</div>`
-      : ""}
-    ${loginBarHtml ? `<div class="cli-account-login-slot">${loginBarHtml}</div>` : ""}
-  </div>`;
+        ${isDef && cooled.length
+          ? `<div class="row wrap" style="gap:6px;padding:0 12px 10px 48px">${cooled
+              .map(
+                (x) => `<span class="tag amber">⏳ ${esc(x.model.name)} · ${esc(x.cd.manualOnly ? t("balanceDepleted") : fmtCountdown(x.cd.untilMs))}
+                  <button class="chip-btn" data-action="clear-cooldown" data-model="${esc(x.model.id)}" title="${esc(t("restore"))}">${esc(t("restore"))}</button>
+                </span>`
+              )
+              .join("")}</div>`
+          : ""}
+        ${isDef && loginBarHtml ? `<div class="cli-account-login-slot">${loginBarHtml}</div>` : ""}
+      </div>`;
+    })
+    .join("");
 }
 
 function providerBadge(providerId) {
@@ -2377,11 +2423,11 @@ function renderProvidersPage() {
     <div class="providers-split-grid">
       <div class="providers-col">
         <div class="section-head">
-          <span class="section-title">${esc(isEn() ? "CLI Accounts & Plans" : "CLI 账号与套餐")}</span>
-          <span class="section-sub nums">${displayedIds.length}</span>
+          <span class="section-title">${esc(isEn() ? "Accounts & Quotas" : "账号与额度")}</span>
+          <span class="section-sub nums">${displayedIds.reduce((acc, eid) => acc + Math.max(1, (state?.cliAccountProfiles?.[eid] || []).length), 0)}</span>
         </div>
         <div class="card-list">
-          ${displayedIds.map(renderCliAccountRow).join("")}
+          ${displayedIds.map(renderCliAccountCards).join("")}
         </div>
       </div>
 
@@ -3556,6 +3602,12 @@ async function onActionClick(event) {
       const queue = roleQueue(role);
       ui.picker = null;
       if (index === 0) {
+        const rest = queue.filter((id) => id !== modelId);
+        if (state?.settings?.roles?.[role]) {
+          state.settings.roles[role].modelId = modelId;
+          state.settings.roles[role].queue = [modelId, ...rest];
+        }
+        scheduleRender();
         void saveSettings({ roles: { [role]: { modelId } } });
         return;
       }
@@ -3563,6 +3615,10 @@ async function onActionClick(event) {
       if (index < next.length) next[index] = modelId;
       else next.push(modelId);
       const deduped = [...new Set(next)];
+      if (state?.settings?.roles?.[role]) {
+        state.settings.roles[role].queue = deduped;
+      }
+      scheduleRender();
       void saveSettings({ roles: { [role]: { queue: deduped } } });
       return;
     }
@@ -3570,6 +3626,12 @@ async function onActionClick(event) {
       const role = target.dataset.role;
       const modelId = target.dataset.model;
       ui.picker = null;
+      const rest = roleQueue(role).filter((id) => id !== modelId);
+      if (state?.settings?.roles?.[role]) {
+        state.settings.roles[role].modelId = modelId;
+        state.settings.roles[role].queue = [modelId, ...rest];
+      }
+      scheduleRender();
       void saveSettings({ roles: { [role]: { modelId } } });
       return;
     }
@@ -3578,6 +3640,10 @@ async function onActionClick(event) {
       const modelId = target.dataset.model;
       const next = roleQueue(role).filter((id) => id !== modelId);
       if (!next.length) return;
+      if (state?.settings?.roles?.[role]) {
+        state.settings.roles[role].queue = next;
+      }
+      scheduleRender();
       void saveSettings({ roles: { [role]: { queue: next } } });
       return;
     }

@@ -131,7 +131,14 @@ export function buildLoginLaunchSpec(engineId, def, region = "cn", profileDir = 
     };
   }
 
-  // Generic fallback for other extensible CLIs (opencode, kimi, codebuddy, cursor-cli, custom...)
+  if (engineId === "codebuddy") {
+    return {
+      ok: false,
+      error: "CodeBuddy CLI 需在交互终端中登录：请打开终端运行 codebuddy，输入 /login 完成登录（支持微信 / Google / GitHub），然后回来点「刷新检测」。",
+    };
+  }
+
+  // Generic fallback for other extensible CLIs (opencode, kimi, cursor-cli, custom...)
   const rawLogin = String(def.loginCmd || "").trim();
   const parts = rawLogin ? rawLogin.split(/\s+/).filter(Boolean) : [def.command, "login"];
   const baseArgs = parts.length > 1 ? parts.slice(1) : ["login"];
@@ -150,7 +157,7 @@ function buildProfileOverlay(engineId, profileDir) {
   const dir = String(profileDir || "").trim();
   if (!dir) return { env: {}, extraArgs: [] };
   if (engineId === "codex") return { env: { CODEX_HOME: dir }, extraArgs: [] };
-  if (engineId === "qoder") return { env: {}, extraArgs: ["--config-dir", dir] };
+  if (engineId === "qoder" || engineId === "qoder-cn") return { env: {}, extraArgs: ["--config-dir", dir] };
   if (engineId === "opencode") return { env: { XDG_CONFIG_HOME: dir }, extraArgs: [] };
   return { env: {}, extraArgs: [] };
 }
@@ -385,10 +392,19 @@ export async function startCliLogin({
       return;
     }
     session.finishedAt = Date.now();
-    if (code === 0) {
+    const sawAuthProof =
+      Boolean(session.authUrl) ||
+      Boolean(session.qrDataUrl) ||
+      /(?:login\s+success|logged\s+in|authenticated|successfully\s+(?:logged|signed)|登录成功|认证成功|授权成功)/i.test(
+        session.rawTail
+      );
+    if (code === 0 && sawAuthProof) {
       session.status = "succeeded";
       session.message = "登录成功！";
       session.error = "";
+    } else if (code === 0) {
+      session.status = "failed";
+      session.error = `该 CLI 未返回登录链接或授权回执（可能仅支持交互式终端登录），请在终端运行 "${def.command}" 完成登录后点「刷新检测」。`;
     } else {
       session.status = "failed";
       const lastLine = session.rawTail

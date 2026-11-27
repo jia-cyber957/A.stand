@@ -279,8 +279,8 @@ async function main() {
     assert.ok(legacyNpm.args.includes("@qoder-ai/qodercli@latest"));
     assert.equal(buildCliInstallSpec({ engineId: "unknown", mode: "install" }).ok, false);
 
-    assert.deepEqual(parseInstallProgress("npm http fetch GET 200 tarball", 10), { percent: 35, stage: "下载安装包" });
-    assert.deepEqual(parseInstallProgress("node-gyp rebuild", 35), { percent: 70, stage: "执行原生初始化脚本" });
+    assert.deepEqual(parseInstallProgress("npm http fetch GET 200 tarball", 10), { percent: 25, stage: "正在从 npm 下载安装包" });
+    assert.deepEqual(parseInstallProgress("node-gyp rebuild", 35), { percent: 75, stage: "执行原生初始化脚本" });
     assert.equal(compareVersions("v2.1.0", "2.0.9"), 1);
     assert.equal(compareVersions("2.0.0", "2.0.0"), 0);
   });

@@ -239,6 +239,34 @@ function probeDshAccount() {
   };
 }
 
+function probeCodebuddyAccount() {
+  const root = path.join(os.homedir(), ".codebuddy");
+  try {
+    if (fs.existsSync(root)) {
+      const entries = fs.readdirSync(root, { withFileTypes: true });
+      const hasAuthFile = entries.some((ent) => {
+        if (!ent.isFile()) return false;
+        if (!/^(?:auth|credentials?|tokens?|account)\.(?:json|ya?ml|toml)$/i.test(ent.name)) return false;
+        try {
+          return fs.statSync(path.join(root, ent.name)).size > 20;
+        } catch {
+          return false;
+        }
+      });
+      if (hasAuthFile) {
+        return {
+          username: "CodeBuddy 本地登录态",
+          email: "",
+          loginMethod: "codebuddy",
+          loggedIn: true,
+          detail: "~/.codebuddy",
+        };
+      }
+    }
+  } catch {}
+  return { username: "", email: "", loginMethod: "codebuddy", loggedIn: false, detail: "" };
+}
+
 async function probeAccount(engineId, def, profileDir) {
   const base = {
     engineId,
@@ -252,6 +280,7 @@ async function probeAccount(engineId, def, profileDir) {
   const overlay = buildProfileLaunchOverlay(engineId, profileDir);
   if (engineId === "codex") return { ...base, ...probeCodexConfig(profileDir) };
   if (engineId === "deepseek-harness") return { ...base, ...probeDshAccount() };
+  if (engineId === "codebuddy") return { ...base, ...probeCodebuddyAccount() };
   if (engineId === "opencode") return { ...base, ...probeOpencodeConfig(profileDir) };
 
   if (engineId === "doubao" || engineId === "qoder" || engineId === "qoder-cn" || engineId === "minimax") {

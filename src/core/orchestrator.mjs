@@ -724,7 +724,7 @@ export class RelayOrchestrator {
   // Cold dashboard reads never spawn a CLI: cache hits are sync, misses probe in the background.
   #getCliAccountsSnapshot(engines) {
     const out = {};
-    for (const engineId of ["codex", "deepseek-harness", "doubao", "minimax", "qoder-cn", "qoder", "opencode"]) {
+    for (const engineId of ["codex", "deepseek-harness", "doubao", "minimax", "qoder-cn", "qoder", "opencode", "codebuddy"]) {
       const info = engines?.[engineId];
       if (!info) continue;
       if (!info.installed && !info.loggedIn) {

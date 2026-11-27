@@ -181,6 +181,10 @@ export function createCliDetailModal(host) {
   function renderAccountsSection(eid, eng) {
     const st = getState() || {};
     const liveAcc = view.accountsData?.account || st.cliAccounts?.[eid] || null;
+    const loginSess = st.cliLogins?.[eid] || null;
+    const loggingIn = Boolean(
+      loginSess && (loginSess.status === "starting" || loginSess.status === "waiting_browser" || loginSess.status === "waiting_qr")
+    );
     const rawProfiles =
       Array.isArray(view.accountsData?.profiles) && view.accountsData.profiles.length > 0
         ? view.accountsData.profiles
@@ -192,7 +196,7 @@ export function createCliDetailModal(host) {
       view.accountsData?.supportsMultiAccountIsolation ??
       ["codex", "qoder", "qoder-cn", "opencode"].includes(eid);
     const canInAppLogin = Boolean(
-      eng.extensible || ["doubao", "qoder", "qoder-cn", "minimax", "opencode"].includes(eid)
+      eid !== "codebuddy" && (eng.extensible || ["doubao", "qoder", "qoder-cn", "minimax", "opencode"].includes(eid))
     );
     const cooled = engineCooldownModels(eid);
     const showCodexQuota = eid === "codex" && Boolean(st.codexRateLimits);
@@ -212,18 +216,24 @@ export function createCliDetailModal(host) {
             ? discoveredCount > 0 && eid === "opencode"
             : Boolean(liveAcc?.loggedIn ?? (eng.loggedIn || eng.status === "ready"))
           : true;
-        const showLoginBtn = canInAppLogin || (eid === "codex" && !isDef);
+        const isLoggingThis = isDef && loggingIn;
+        const showLoginBtn = !isLoggingThis && (canInAppLogin || (eid === "codex" && !isDef));
+        const statusText = isLoggingThis
+          ? L("登录中…", "Signing in…")
+          : loggedIn
+          ? L("已登录", "Signed in")
+          : L("待登录", "Sign in needed");
         return `<div class="cli-detail-acc-row">
           <div class="cli-detail-acc-top">
             <button class="cli-acc-check ${prof.enabled ? "on" : ""}" data-action="cd-toggle-profile" data-profile="${esc(prof.id)}" ${isDef && enabledMultiCount <= 1 ? "disabled" : ""} title="${esc(L("启用/停用该账号参与轮换", "Toggle account in rotation"))}">
               ${prof.enabled ? iconSvg("check", 11) : ""}
             </button>
-            <span class="cli-detail-acc-name truncate">${esc(accLabel)}</span>
+            <span class="cli-detail-acc-name truncate">${esc(isLoggingThis && accLabel === "未登录" ? L("等待授权中…", "Waiting for auth…") : accLabel)}</span>
             ${isDef && liveAcc?.loginMethod ? `<span class="tag plain">${esc(liveAcc.loginMethod)}</span>` : ""}
             ${isDef && eid === "codex" && st.codexRateLimits?.planType ? `<span class="tag plain mono">${esc(String(st.codexRateLimits.planType).toUpperCase())}</span>` : ""}
             ${!isDef ? `<span class="tag plain">${esc(L("隔离目录", "Isolated"))}</span>` : ""}
             <span class="spacer"></span>
-            <span class="status-pill ${loggedIn ? "on" : "warn"}"><span class="dot"></span>${esc(loggedIn ? L("已登录", "Signed in") : L("待登录", "Sign in needed"))}</span>
+            <span class="status-pill ${isLoggingThis ? "warn" : loggedIn ? "on" : "warn"}"><span class="dot"></span>${esc(statusText)}</span>
             ${showLoginBtn
               ? `<button class="btn xs ${loggedIn ? "" : "primary"}" data-action="cli-login-start" data-engine="${esc(eid)}" data-profile="${esc(prof.id)}">${iconSvg("key")} ${esc(loggedIn ? L("切换/重登", "Re-sign in") : L("登录", "Sign in"))}</button>`
               : ""}
@@ -231,6 +241,9 @@ export function createCliDetailModal(host) {
               ? `<button class="btn xs danger" data-action="cd-del-profile" data-profile="${esc(prof.id)}" title="${esc(L("删除该隔离账号", "Delete isolated account"))}">${iconSvg("trash")}</button>`
               : ""}
           </div>
+          ${isDef && eid === "codebuddy" && !loggedIn
+            ? `<div class="field-hint">${esc(L("CodeBuddy CLI 需在终端运行 codebuddy 后输入 /login 完成登录，完成后点下方「重新获取模型」。", "Sign in by running codebuddy then /login in your terminal, then click Refresh models."))}</div>`
+            : ""}
           ${isDef && showCodexQuota ? `<div class="cli-detail-quota">${renderQuotaBars()}</div>` : ""}
         </div>`;
       })
@@ -276,9 +289,22 @@ export function createCliDetailModal(host) {
   }
 
   function renderModelsSection(eid) {
+    const st = getState() || {};
+    const eng = st.engines?.[eid] || {};
+    const liveAcc = view.accountsData?.account || st.cliAccounts?.[eid] || null;
+    const loginSess = st.cliLogins?.[eid] || null;
+    const loggingIn = Boolean(
+      loginSess && (loginSess.status === "starting" || loginSess.status === "waiting_browser" || loginSess.status === "waiting_qr")
+    );
+    const isLoggedOut = !loggingIn && liveAcc?.status === "logged_out" && eid !== "opencode";
     const discovered = allDiscoveredModels(eid);
     const selSet = view.selectedSet || new Set(discovered.map((m) => m.id));
     const list = view.modelTab === "selected" ? discovered.filter((m) => selSet.has(m.id)) : discovered;
+
+    const loggedOutNotice =
+      isLoggedOut && discovered.length > 0
+        ? `<div class="field-hint" style="color:var(--amber)">${esc(L("当前尚未登录：下方为该 CLI 预置/缓存模型清单，完成登录后即可正常调用。", "Not signed in yet: these discovered/cached models will work once signed in."))}</div>`
+        : "";
 
     const pillsHtml = list.length
       ? `<div class="cli-model-pills">
@@ -311,6 +337,7 @@ export function createCliDetailModal(host) {
              <button class="btn xs" data-action="cd-bulk-models" data-val="none">${esc(L("全不选", "Clear"))}</button>`
           : ""}
       </div>
+      ${loggedOutNotice}
       ${pillsHtml}
       <div class="row" style="gap:8px;flex-wrap:wrap;padding-top:2px">
         <button class="btn xs" data-action="cd-refresh-models">${iconSvg("refresh")} ${esc(L("重新获取模型", "Refresh models"))}</button>

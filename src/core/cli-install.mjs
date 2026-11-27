@@ -94,7 +94,14 @@ export function buildCliInstallSpec({ engineId, mode = "install", npmMajor = 0 }
   if (!preset) {
     return { ok: false, error: `In-app installation is not supported for "${engineId}"` };
   }
-  const args = ["install", "-g", mode === "update" ? `${preset.pkg}@latest` : preset.pkg, "--no-audit", "--no-fund"];
+  const args = [
+    "install",
+    "-g",
+    mode === "update" ? `${preset.pkg}@latest` : preset.pkg,
+    "--no-audit",
+    "--no-fund",
+    "--loglevel=http",
+  ];
   if (npmMajor >= 11 && preset.scripts.length) {
     args.push(`--allow-scripts=${preset.scripts.join(",")}`);
   }
@@ -127,11 +134,16 @@ export function parseInstallProgress(text, percent = 0) {
   let next = percent;
   let stage = "";
   if (/node-gyp|preinstall|postinstall|install script|gyp info|building native|rebuild/.test(raw)) {
-    next = Math.max(next, 70);
+    next = Math.max(next, 75);
     stage = "执行原生初始化脚本";
-  } else if (/http fetch|tarball|download|reify|extract|fetch manifest/.test(raw)) {
-    next = Math.max(next, 35);
-    stage = "下载安装包";
+  } else if (/reify|extract|unpack/.test(raw)) {
+    next = Math.max(next, 58);
+    stage = "解压并写入全局目录";
+  } else if (/http fetch|tarball|download|fetch manifest|idealtree/.test(raw)) {
+    // Advance smoothly across multiple npm http fetch lines (25% -> 52%) so users see live progress.
+    const bump = next < 25 ? 25 : Math.min(52, next + 4);
+    next = Math.max(next, bump);
+    stage = "正在从 npm 下载安装包";
   }
   if (/(?:added|changed|updated)\s+\d+\s+packages|up to date/.test(raw)) {
     next = Math.max(next, 95);
@@ -230,6 +242,7 @@ export async function startCliInstall({
     }
     if (progress.stage && progress.stage !== session.stage) {
       session.stage = progress.stage;
+      session.message = `${progress.stage}…`;
       changed = true;
     }
     if (changed) emit(session);
