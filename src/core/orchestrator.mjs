@@ -1,10 +1,13 @@
 import crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { API_PROVIDERS, CLI_DEFAULT_MODELS_MAP, PLUGIN_VERSION } from "./constants.mjs";
 import { EXTENSIBLE_CLI_PRESETS, findExtensibleCliDef } from "./cli-registry.mjs";
+import { getAllCliInstalls } from "./cli-install.mjs";
+import { getCachedCliAccountInfo, probeCliAccountInfo, supportsMultiAccountIsolation } from "./cli-profiles.mjs";
 import { detectEngines, normalizeWorkspaceKey, readDshConfigModels, resolveCliPresetBinary } from "./paths.mjs";
 import { assertCanReuseApiKey, maskSecret } from "./store.mjs";
 import { createJobWorktree, detectGitRepo, finalizeJobWorktree } from "./worktree.mjs";
@@ -43,6 +46,121 @@ export function mergeTurn1Rules(customRules, extensionText) {
   const extra = String(extensionText || "").trim();
   if (!extra) return base;
   return base ? `${base}\n\n${extra}` : extra;
+}
+
+const HANDOFF_ACTIVITY_LIMIT = 15;
+const HANDOFF_OUTPUT_LIMIT = 1_200;
+const HANDOFF_PROGRESS_KINDS = new Set([
+  "cmd", "cmd_done", "cmd_err", "read", "search", "edit", "write", "file", "tool", "tool_call",
+]);
+const HANDOFF_SKIP_KINDS = new Set([
+  "start", "touch", "log", "triage", "triage_alert", "steer", "interrupt", "fallback", "error",
+  "thought", "output",
+]);
+
+function gitStatusShort(cwd) {
+  const dir = String(cwd || "").trim();
+  if (!dir) return "（未提供工作目录，已跳过 git status）";
+  try {
+    const out = execFileSync("git", ["-c", "safe.directory=*", "status", "--short"], {
+      cwd: dir,
+      encoding: "utf8",
+      timeout: 2_000,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return out ? out.slice(0, 4_000) : "工作区干净（无未提交改动）";
+  } catch {
+    return "（当前目录不是 Git 仓库或 git 不可用，已安全跳过 git status）";
+  }
+}
+
+/**
+ * Zero-AI, zero-network handoff brief. It is intentionally synchronous and reads only local state:
+ * task goal, completed tool steps, `git status --short`, and the tail of the interrupted output.
+ */
+export function buildLocalHandoffBrief({
+  originalPrompt = "",
+  fromLabel = "",
+  reason = "",
+  activities = [],
+  cwd = "",
+  lastOutput = "",
+} = {}) {
+  const goal = String(originalPrompt || "").replace(/\r\n/g, "\n").trim().slice(0, 4_000);
+  const steps = [];
+  const seen = new Set();
+  for (const activity of Array.isArray(activities) ? activities : []) {
+    const kind = String(activity?.kind || activity?.type || "");
+    if (!kind || HANDOFF_SKIP_KINDS.has(kind)) continue;
+    if (kind === "cmd" && activity?.status === "running") continue;
+    if (!HANDOFF_PROGRESS_KINDS.has(kind) && !String(activity?.summary || "").trim()) continue;
+    const line = sanitizeHandoffText(activity?.summary || activity?.title || "", 240);
+    if (!line) continue;
+    const key = line.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    steps.push(`- ${line}`);
+    if (steps.length >= HANDOFF_ACTIVITY_LIMIT) break;
+  }
+
+  const tail = String(lastOutput || "").replace(/\r\n/g, "\n").slice(-HANDOFF_OUTPUT_LIMIT).trim();
+  const from = sanitizeHandoffText(fromLabel, 80) || "上一个执行通道";
+  const why = sanitizeHandoffText(reason, 120) || "渠道故障";
+  return [
+    "## 1. 原始任务目标",
+    goal || "(未提供原始任务)",
+    "## 2. 已完成操作",
+    steps.length ? steps.join("\n") : "- 暂无已完成的实质性操作",
+    "## 3. 当前现场（git status --short）",
+    gitStatusShort(cwd),
+    "## 4. 中断前最后输出",
+    tail || "(无输出)",
+    "## 5. 接力要求",
+    `上一棒 ${from} 因 ${why} 中断。请直接基于硬盘当前现场继续完成原任务，先核对已有改动与未完成步骤；` +
+      "不要推倒重做已完成的工作，也不要重复执行已经成功的命令。",
+  ].join("\n\n");
+}
+
+const CHANNEL_CANCEL_RE = /\b(?:cancelled|canceled|aborted|interrupted|interrupt requested)\b|用户取消|已取消/i;
+const CHANNEL_BAD_REQUEST_RE =
+  /\b400\b|bad request|invalid request|request (?:too large|invalid)|prompt (?:is )?too long|context (?:length|window)|too many tokens|max(?:imum)? tokens|内容违规|请求(?:参数|格式|过长|超长)/i;
+const CHANNEL_TIMEOUT_RE =
+  /\btime(?:d)?\s*out\b|timeout|exceeded .*deadline|silent for|stalled|no activity|超时|静默|卡死/i;
+const CHANNEL_SERVER_RE =
+  /(?:http|status|code|server|upstream|response)\D{0,16}5\d\d|5\d\d\s+(?:internal server error|bad gateway|service unavailable|gateway timeout)|internal server error|bad gateway|service unavailable|gateway timeout|econnreset|econnrefused|etimedout|epipe|socket hang up|connection (?:reset|closed|refused|aborted|terminated|timed out)|network error|fetch failed|disconnected|process (?:exited|terminated)|app-server (?:exited|terminated)|stdin closed|connection lost|连接(?:中断|重置|断开|失败)/i;
+const CHANNEL_AUTH_RE =
+  /\b401\b|unauthori[sz]ed|invalid[ _-]?(?:api[ _-]?key|token|credential)|authentication (?:failed|required)|login (?:expired|required)|not logged in|session expired|未登录|登录(?:已)?(?:失效|过期)/i;
+
+/**
+ * Only three channel faults may rotate to the next healthy model/account. User cancellation,
+ * invalid/oversized 400 requests and silent/stalled child agents must stay on the check-in path.
+ */
+export function classifyChannelFailure(err) {
+  if (!err) return null;
+  if (err.isPromptTimeout) return null;
+  if (err.isQuotaDepleted) return "quota";
+  if (err.isRateLimit) return "rate_limit";
+  const text = `${err.name || ""} ${err.message || err}`.trim();
+  if (!text) return null;
+  if (CHANNEL_CANCEL_RE.test(text)) return null;
+  if (CHANNEL_BAD_REQUEST_RE.test(text)) return null;
+  if (/\b429\b|rate[\s_-]?limit|too many requests/i.test(text)) return "rate_limit";
+  if (/\bquota\b|insufficient (?:quota|credits?|balance)|balance depleted|credits? exhausted/i.test(text)) {
+    return "quota";
+  }
+  if (CHANNEL_SERVER_RE.test(text)) return "server";
+  if (CHANNEL_AUTH_RE.test(text)) return "auth";
+  if (CHANNEL_TIMEOUT_RE.test(text)) return null;
+  return null;
+}
+
+function channelFailureLabel(kind) {
+  if (kind === "rate_limit") return "429 限流";
+  if (kind === "quota") return "额度耗尽";
+  if (kind === "server") return "5xx/连接中断";
+  if (kind === "auth") return "401 登录失效";
+  return "渠道故障";
 }
 
 export function formatMappedDriveSandboxHint({ platform, role, engine, cwd, activities, errorText, resultText }) {
@@ -518,6 +636,8 @@ export class RelayOrchestrator {
     };
     this.extensibleEngines = new Map(); // engineId -> { sig, engine }
     this.cliModelProbes = new Map(); // engineId -> Promise (non-blocking dashboard discovery)
+    this.cliAccountSnapshots = new Map(); // engineId -> last non-sensitive account summary
+    this.cliAccountProbes = new Map(); // engineId -> Promise (never blocks dashboard state)
     this.shuttingDown = false;
     this.jobs = new Map(); // jobId -> job state
     this.activeWriters = new Map(); // workspaceKey -> jobId
@@ -555,6 +675,61 @@ export class RelayOrchestrator {
       .catch(() => {})
       .finally(() => this.cliModelProbes.delete(engineId));
     this.cliModelProbes.set(engineId, probe);
+  }
+
+  #cliAccountDef(engineId, info = {}) {
+    if (info.command) return info;
+    if (engineId === "codex") return { command: "codex" };
+    if (engineId === "doubao") return { command: "doubao" };
+    if (engineId === "qoder") return { command: "qodercli" };
+    if (engineId === "minimax") return { command: "mcode" };
+    return info;
+  }
+
+  #startCliAccountProbe(engineId, def) {
+    if (this.shuttingDown || this.cliAccountProbes.has(engineId)) return;
+    const probe = Promise.resolve()
+      .then(() => probeCliAccountInfo(engineId, def, ""))
+      .then((account) => {
+        this.cliAccountSnapshots.set(engineId, account);
+        this.#emitStateChange("cli_account_ready", { engineId });
+      })
+      .catch(() => {})
+      .finally(() => this.cliAccountProbes.delete(engineId));
+    this.cliAccountProbes.set(engineId, probe);
+  }
+
+  // Cold dashboard reads never spawn a CLI: cache hits are sync, misses probe in the background.
+  #getCliAccountsSnapshot(engines) {
+    const out = {};
+    for (const engineId of ["codex", "doubao", "qoder", "minimax", "opencode"]) {
+      const info = engines?.[engineId];
+      if (!info) continue;
+      if (!info.installed && !info.loggedIn) {
+        out[engineId] = {
+          engineId,
+          status: "not_installed",
+          loggedIn: false,
+          accountLabel: "未安装",
+          checkedAt: "",
+        };
+        continue;
+      }
+      const cached = getCachedCliAccountInfo(engineId, "");
+      if (cached) {
+        out[engineId] = cached;
+        continue;
+      }
+      out[engineId] = this.cliAccountSnapshots.get(engineId) || {
+        engineId,
+        status: "probing",
+        loggedIn: Boolean(info.loggedIn),
+        accountLabel: "正在读取账号…",
+        checkedAt: "",
+      };
+      this.#startCliAccountProbe(engineId, this.#cliAccountDef(engineId, info));
+    }
+    return out;
   }
 
   // ---- Lightweight state-change emitter (SSE consumers subscribe here) ----
@@ -1018,6 +1193,24 @@ export class RelayOrchestrator {
       if (configured) return `${configured} (Codex CLI)`;
     }
     return model.name || model.modelName || model.engine || "";
+  }
+
+  #hasMeaningfulProgress(job) {
+    return (job.activities || []).some((activity) => {
+      const kind = String(activity?.kind || activity?.type || "");
+      if (!HANDOFF_PROGRESS_KINDS.has(kind) || activity?.type === "error") return false;
+      if (kind === "cmd" && activity?.status === "running") return false;
+      return Boolean(String(activity?.summary || activity?.title || "").trim());
+    });
+  }
+
+  #handoffOutput(job) {
+    const rows = (job.activities || []).slice(-20);
+    return rows
+      .map((activity) => String(activity?.detail || activity?.summary || "").trim())
+      .filter(Boolean)
+      .join("\n")
+      .slice(-HANDOFF_OUTPUT_LIMIT);
   }
 
   #formatJobModelDisplay(j) {
@@ -1891,6 +2084,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       let terminalError = "Unknown subagent execution error";
       try {
         let lastErr = null;
+        let handoffPrompt = "";
         let fallbackPrefixNote =
           skippedCooldowns.length > 0
             ? `fallback from ${skippedCooldowns[0].model.name} (resets ${formatResetTime(skippedCooldowns[0].cd.untilMs)})`
@@ -1917,10 +2111,10 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
           job.sessionId = existingSessionId || "";
 
           try {
-            const turnPrompt =
-              idx > 0 && !canReuse
-                ? `[Fallback Handoff: primary model hit quota limit; take over cleanly]\n${prompt}`
-                : prompt;
+            const turnPrompt = idx > 0 && !canReuse
+              ? handoffPrompt || `[Fallback Handoff: primary model hit a channel fault; take over cleanly]\n${prompt}`
+              : prompt;
+            handoffPrompt = "";
 
             const res = await engine.runTurn({
               cwd: effectiveCwd,
@@ -2050,27 +2244,42 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
               terminalError = err?.message || String(err);
               return;
             }
-            if (err?.isRateLimit || err?.isQuotaDepleted) {
-              const untilMs = err.isQuotaDepleted
-                ? null
-                : err.resetsAtMs || Date.now() + 5 * 60 * 60 * 1000;
-              this.store.setCooldown(model.id, {
-                untilMs,
-                reason: err.isQuotaDepleted ? "balance_depleted" : "rate_limit_reached",
-                manualOnly: Boolean(err.isQuotaDepleted),
-              });
-              if (!this.store.settings.autoFallbackOnLimit || idx === available.length - 1) {
-                break;
+            const channelFailure = classifyChannelFailure(err);
+            if (channelFailure) {
+              let untilMs = null;
+              if (channelFailure === "rate_limit" || channelFailure === "quota") {
+                untilMs = channelFailure === "quota"
+                  ? null
+                  : err.resetsAtMs || Date.now() + 5 * 60 * 60 * 1000;
+                this.store.setCooldown(model.id, {
+                  untilMs,
+                  reason: channelFailure === "quota" ? "balance_depleted" : "rate_limit_reached",
+                  manualOnly: channelFailure === "quota",
+                });
               }
-              fallbackPrefixNote = `fallback from ${this.#displayModelName(model)} (resets ${formatResetTime(untilMs)})`;
+              if (!this.store.settings.autoFallbackOnLimit || idx === available.length - 1) break;
+
+              const fromLabel = this.#displayModelName(model);
+              const reason = channelFailureLabel(channelFailure);
+              if (!canReuse && this.#hasMeaningfulProgress(job)) {
+                handoffPrompt = buildLocalHandoffBrief({
+                  originalPrompt: prompt,
+                  fromLabel,
+                  reason,
+                  activities: job.activities,
+                  cwd: effectiveCwd,
+                  lastOutput: this.#handoffOutput(job),
+                });
+              }
+              fallbackPrefixNote = `fallback from ${fromLabel} (${reason})`;
               this.#recordActivity(job, {
                 type: "fallback",
-                summary: `${this.#displayModelName(model)} hit limit; switching to ${this.#displayModelName(available[idx + 1])}`,
+                summary: `${fromLabel} ${reason}; switching to ${this.#displayModelName(available[idx + 1])}`,
               });
               this.#writeStatusSnapshot(job, { force: true });
               continue;
             }
-            // Non-rate-limit error: fail immediately without burning fallback models
+            // User cancellation, invalid 400 requests and silent/hung agents stay on the check-in path.
             break;
           }
         }
@@ -2728,15 +2937,24 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
               this.#markJobTerminal(job, "interrupted", err?.message || String(err));
               return;
             }
-            if (err?.isRateLimit || err?.isQuotaDepleted) {
-              const untilMs = err.isQuotaDepleted ? null : err.resetsAtMs || Date.now() + 5 * 60 * 60 * 1000;
-              this.store.setCooldown(model.id, {
-                untilMs,
-                reason: err.isQuotaDepleted ? "balance_depleted" : "rate_limit_reached",
-                manualOnly: Boolean(err.isQuotaDepleted),
-              });
+            const channelFailure = classifyChannelFailure(err);
+            if (channelFailure) {
+              if (channelFailure === "rate_limit" || channelFailure === "quota") {
+                const untilMs = channelFailure === "quota"
+                  ? null
+                  : err.resetsAtMs || Date.now() + 5 * 60 * 60 * 1000;
+                this.store.setCooldown(model.id, {
+                  untilMs,
+                  reason: channelFailure === "quota" ? "balance_depleted" : "rate_limit_reached",
+                  manualOnly: channelFailure === "quota",
+                });
+              }
               if (!this.store.settings.autoFallbackOnLimit || idx === available.length - 1) break;
-              fallbackPrefixNote = `fallback from ${model.name} (resets ${formatResetTime(untilMs)})`;
+              fallbackPrefixNote = `fallback from ${model.name} (${channelFailureLabel(channelFailure)})`;
+              this.#recordActivity(job, {
+                type: "fallback",
+                summary: `${model.name} ${channelFailureLabel(channelFailure)}; switching to ${available[idx + 1]?.name || "next model"}`,
+              });
               continue;
             }
             break;
@@ -3345,6 +3563,10 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
     for (const [id, info] of Object.entries(engines)) {
       cliEnginesMeta[id] = { ...info };
     }
+    const cliAccountProfiles = {};
+    for (const engineId of ["codex", "qoder", "opencode"]) {
+      if (supportsMultiAccountIsolation(engineId)) cliAccountProfiles[engineId] = this.store.getCliAccountProfiles(engineId);
+    }
 
     return {
       settings,
@@ -3359,6 +3581,10 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       customCliEngines,
       cliEnginesMeta,
       cliSubModels,
+      cliModelWhitelist: this.store.getCliModelWhitelist(),
+      cliAccountProfiles,
+      cliAccounts: this.#getCliAccountsSnapshot(engines),
+      cliInstalls: getAllCliInstalls(),
       cooldowns: this.store.getAllActiveCooldowns(),
       sessions: this.store.listSessions(),
       telemetry: this.telemetry.getSummary(30),

@@ -2,6 +2,7 @@ import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { findExtensibleCliDef } from "./cli-registry.mjs";
+import { CLI_ENGINES_META } from "./constants.mjs";
 import { resolveCliPresetBinary } from "./paths.mjs";
 
 const isWin = process.platform === "win32";
@@ -56,13 +57,32 @@ export function openExternalUrl(rawUrl) {
   }
 }
 
-function buildLoginLaunchSpec(engineId, def, region = "cn") {
-  const bin = resolveCliPresetBinary(def);
+function resolveLoginDef(engineId, customEngines) {
+  const extensible = findExtensibleCliDef(engineId, customEngines);
+  if (extensible) return extensible;
+  const meta = CLI_ENGINES_META[engineId];
+  if (!meta) return null;
+  const command = String(meta.loginCmd || engineId).trim().split(/\s+/)[0] || engineId;
+  return { ...meta, protocol: "headless", command };
+}
+
+/**
+ * Qoder's native `login` opens the browser itself (even with NO_BROWSER=1), so the wrapper must
+ * never open the same auth URL a second time. Other CLIs still auto-open once.
+ */
+export function resolveLoginAutoOpen(engineId, requested = true) {
+  if (engineId === "qoder") return false;
+  return requested !== false;
+}
+
+export function buildLoginLaunchSpec(engineId, def, region = "cn", profileDir = "", resolveBinary = resolveCliPresetBinary) {
+  const bin = resolveBinary(def);
   if (!bin) {
     return { ok: false, error: `CLI binary not found for "${engineId}". Please install it first.` };
   }
 
   const baseEnv = { ...process.env };
+  const overlay = buildProfileOverlay(engineId, profileDir);
 
   if (engineId === "doubao") {
     // Clearing proxy variables prevents local proxy interference with Doubao's native QR auth endpoint.
@@ -82,6 +102,7 @@ function buildLoginLaunchSpec(engineId, def, region = "cn") {
       args: ["login", "--qr=png"],
       useShell: bin.useShell,
       env: cleanEnv,
+      autoOpen: resolveLoginAutoOpen(engineId, true),
     };
   }
 
@@ -94,6 +115,7 @@ function buildLoginLaunchSpec(engineId, def, region = "cn") {
       args: ["login", "--no-browser", "--region", safeRegion],
       useShell: bin.useShell,
       env: { ...baseEnv, NO_BROWSER: "1" },
+      autoOpen: resolveLoginAutoOpen(engineId, true),
     };
   }
 
@@ -102,30 +124,42 @@ function buildLoginLaunchSpec(engineId, def, region = "cn") {
       ok: true,
       mode: "browser",
       command: bin.command,
-      args: ["login"],
+      args: [...overlay.extraArgs, "login"],
       useShell: bin.useShell,
-      env: { ...baseEnv, NO_BROWSER: "1" },
+      env: { ...baseEnv, ...overlay.env, NO_BROWSER: "1" },
+      autoOpen: resolveLoginAutoOpen(engineId, false),
     };
   }
 
   // Generic fallback for other extensible CLIs (opencode, kimi, codebuddy, cursor-cli, custom...)
   const rawLogin = String(def.loginCmd || "").trim();
   const parts = rawLogin ? rawLogin.split(/\s+/).filter(Boolean) : [def.command, "login"];
-  const args = parts.length > 1 ? parts.slice(1) : ["login"];
+  const baseArgs = parts.length > 1 ? parts.slice(1) : ["login"];
   return {
     ok: true,
     mode: "browser",
     command: bin.command,
-    args,
+    args: [...overlay.extraArgs, ...baseArgs],
     useShell: bin.useShell,
-    env: { ...baseEnv, NO_BROWSER: "1" },
+    env: { ...baseEnv, ...overlay.env, NO_BROWSER: "1" },
+    autoOpen: resolveLoginAutoOpen(engineId, true),
   };
+}
+
+function buildProfileOverlay(engineId, profileDir) {
+  const dir = String(profileDir || "").trim();
+  if (!dir) return { env: {}, extraArgs: [] };
+  if (engineId === "codex") return { env: { CODEX_HOME: dir }, extraArgs: [] };
+  if (engineId === "qoder") return { env: {}, extraArgs: ["--config-dir", dir] };
+  if (engineId === "opencode") return { env: { XDG_CONFIG_HOME: dir }, extraArgs: [] };
+  return { env: {}, extraArgs: [] };
 }
 
 function toPublicSnapshot(session) {
   if (!session) return null;
   return {
     engineId: session.engineId,
+    profileId: session.profileId || "",
     mode: session.mode,
     region: session.region,
     status: session.status,
@@ -194,9 +228,11 @@ export async function startCliLogin({
   customEngines = [],
   region = "cn",
   autoOpen = true,
+  profileId = "",
+  profileDir = "",
   onUpdate = null,
 } = {}) {
-  const def = findExtensibleCliDef(engineId, customEngines);
+  const def = resolveLoginDef(engineId, customEngines);
   if (!def) {
     return { ok: false, error: `Unknown CLI engine "${engineId}"` };
   }
@@ -207,11 +243,17 @@ export async function startCliLogin({
     await new Promise((r) => setTimeout(r, 200));
   }
 
-  const spec = buildLoginLaunchSpec(engineId, def, region);
+  const spec = buildLoginLaunchSpec(engineId, def, region, profileDir);
   if (!spec.ok) return spec;
+  if (profileDir) {
+    try {
+      fs.mkdirSync(profileDir, { recursive: true });
+    } catch {}
+  }
 
   const session = {
     engineId,
+    profileId: profileId || "",
     mode: spec.mode,
     region: region === "global" ? "global" : "cn",
     status: "starting",
@@ -304,7 +346,7 @@ export async function startCliLogin({
       session.status = "waiting_browser";
       session.message = "请在浏览器中完成官方登录授权";
       changed = true;
-      if (autoOpen && !session.browserOpened) {
+      if (spec.autoOpen && autoOpen && !session.browserOpened) {
         session.browserOpened = true;
         openExternalUrl(cleaned);
       }

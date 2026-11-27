@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { API_PROVIDERS, CLI_ENGINES_META, DEFAULT_MODELS } from "./constants.mjs";
 import { EXTENSIBLE_CLI_PRESETS, MAX_CUSTOM_ENGINES, sanitizeCustomCliEngine } from "./cli-registry.mjs";
+import { supportsMultiAccountIsolation } from "./cli-profiles.mjs";
 import { normalizeWorkspaceKey, readDshConfigModels } from "./paths.mjs";
 
 export function isDynamicModelId(id) {
@@ -95,6 +96,73 @@ function cleanModelNames(names = []) {
   return [...new Set(names.map((name) => String(name || "").trim()).filter(Boolean))];
 }
 
+const CLI_PROFILE_ID_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+const CLI_PROFILE_ENGINES = Object.freeze(["codex", "qoder", "opencode"]);
+const MAX_CLI_PROFILES = 20;
+
+function newDefaultProfile() {
+  return {
+    id: "default",
+    label: "默认账号",
+    enabled: true,
+    isDefault: true,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function defaultCliAccountProfiles() {
+  return Object.fromEntries(CLI_PROFILE_ENGINES.map((engineId) => [engineId, [newDefaultProfile()]]));
+}
+
+function normalizeCliModelWhitelist(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out = {};
+  for (const [engineId, value] of Object.entries(raw)) {
+    if (!CLI_PROFILE_ID_RE.test(engineId) || !Array.isArray(value)) continue;
+    const models = [...new Set(
+      value
+        .filter((item) => typeof item === "string")
+        .map((item) => item.trim().slice(0, 200))
+        .filter(Boolean)
+    )].slice(0, 64);
+    if (models.length) out[engineId] = models;
+  }
+  return out;
+}
+
+function normalizeCliAccountProfiles(raw) {
+  const fallback = defaultCliAccountProfiles();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return fallback;
+  const out = {};
+  for (const engineId of CLI_PROFILE_ENGINES) {
+    const list = Array.isArray(raw[engineId]) ? raw[engineId] : [];
+    const profiles = [];
+    const seen = new Set();
+    let hasDefault = false;
+    for (const item of list) {
+      if (!item || typeof item !== "object") continue;
+      const id = String(item.id || "").trim();
+      if (!CLI_PROFILE_ID_RE.test(id) || seen.has(id)) continue;
+      seen.add(id);
+      const isDefault = id === "default";
+      if (isDefault) hasDefault = true;
+      profiles.push({
+        id,
+        label: String(item.label || (isDefault ? "默认账号" : id)).trim().slice(0, 40) || id,
+        enabled: isDefault ? true : item.enabled !== false,
+        isDefault,
+        createdAt: typeof item.createdAt === "string" && !Number.isNaN(Date.parse(item.createdAt))
+          ? item.createdAt
+          : new Date().toISOString(),
+      });
+      if (profiles.length >= MAX_CLI_PROFILES) break;
+    }
+    if (!hasDefault) profiles.unshift(newDefaultProfile());
+    out[engineId] = profiles;
+  }
+  return out;
+}
+
 function newModelId() {
   return `custom-${crypto.randomUUID()}`;
 }
@@ -180,6 +248,8 @@ export class RelayStore {
       models: structuredClone(DEFAULT_MODELS),
       channels: [],
       customCliEngines: [],
+      cliModelWhitelist: {},
+      cliAccountProfiles: defaultCliAccountProfiles(),
     };
   }
 
@@ -279,12 +349,15 @@ export class RelayStore {
       models: mergedModels,
       channels,
       customCliEngines: sanitizeCustomCliEngineList(raw.customCliEngines),
+      cliModelWhitelist: normalizeCliModelWhitelist(raw.cliModelWhitelist),
+      cliAccountProfiles: normalizeCliAccountProfiles(raw.cliAccountProfiles),
     };
     if (legacy.length && JSON.stringify(migratedKeys) !== JSON.stringify(this.secrets.apiKeys)) {
       this.secrets.apiKeys = migratedKeys;
       this.saveSecrets();
     }
     if (raw.version !== 3 || legacy.length || JSON.stringify(channels) !== JSON.stringify(originalChannels)
+        || !Object.hasOwn(raw, "cliModelWhitelist") || !Object.hasOwn(raw, "cliAccountProfiles")
         || currentModels.some((m) => Object.hasOwn(m, "apiKey"))) {
       atomicWriteJson(this.settingsPath, settings);
     }
@@ -539,6 +612,97 @@ export class RelayStore {
 
   getSettingsForUi() {
     return this.getPublicState();
+  }
+
+  getCliModelWhitelist() {
+    return structuredClone(this.settings.cliModelWhitelist || {});
+  }
+
+  setCliModelWhitelist(engineId, modelIds) {
+    const id = String(engineId || "").trim();
+    if (!CLI_PROFILE_ID_RE.test(id)) return { ok: false, error: "Invalid CLI engine id" };
+    if (!Array.isArray(modelIds)) return { ok: false, error: "modelIds must be an array" };
+    const models = [...new Set(
+      modelIds
+        .filter((item) => typeof item === "string")
+        .map((item) => item.trim().slice(0, 200))
+        .filter(Boolean)
+    )].slice(0, 64);
+    if (models.length) this.settings.cliModelWhitelist[id] = models;
+    else delete this.settings.cliModelWhitelist[id];
+    this.saveSettings();
+    return { ok: true, modelIds: models };
+  }
+
+  getCliAccountProfiles(engineId) {
+    if (!supportsMultiAccountIsolation(engineId)) return [];
+    if (!Array.isArray(this.settings.cliAccountProfiles?.[engineId])) {
+      this.settings.cliAccountProfiles = {
+        ...(this.settings.cliAccountProfiles || {}),
+        [engineId]: [newDefaultProfile()],
+      };
+      this.saveSettings();
+    }
+    return structuredClone(this.settings.cliAccountProfiles[engineId]);
+  }
+
+  addCliAccountProfile(engineId, label) {
+    if (!supportsMultiAccountIsolation(engineId)) {
+      return { ok: false, error: `Engine "${engineId}" does not support isolated account directories` };
+    }
+    const cleanLabel = String(label || "").trim().slice(0, 40);
+    if (!cleanLabel) return { ok: false, error: "Account label is required" };
+    const profiles = this.getCliAccountProfiles(engineId);
+    if (profiles.length >= MAX_CLI_PROFILES) {
+      return { ok: false, error: `At most ${MAX_CLI_PROFILES} accounts are allowed per CLI` };
+    }
+    const profile = {
+      id: `profile-${crypto.randomUUID().replace(/-/g, "").slice(0, 10)}`,
+      label: cleanLabel,
+      enabled: true,
+      isDefault: false,
+      createdAt: new Date().toISOString(),
+    };
+    this.settings.cliAccountProfiles[engineId] = [...profiles, profile];
+    this.saveSettings();
+    return { ok: true, profile: { ...profile } };
+  }
+
+  updateCliAccountProfile(engineId, profileId, patch = {}) {
+    if (!supportsMultiAccountIsolation(engineId)) {
+      return { ok: false, error: `Engine "${engineId}" does not support isolated account directories` };
+    }
+    const profiles = this.getCliAccountProfiles(engineId);
+    const index = profiles.findIndex((profile) => profile.id === profileId);
+    if (index < 0) return { ok: false, error: "Account profile not found" };
+    const next = { ...profiles[index] };
+    if (patch.label !== undefined) {
+      const label = String(patch.label || "").trim().slice(0, 40);
+      if (!label) return { ok: false, error: "Account label is required" };
+      next.label = label;
+    }
+    if (patch.enabled !== undefined) {
+      if (next.isDefault && patch.enabled === false) {
+        return { ok: false, error: "The default account cannot be disabled" };
+      }
+      next.enabled = Boolean(patch.enabled);
+    }
+    this.settings.cliAccountProfiles[engineId] = profiles.map((profile, i) => (i === index ? next : profile));
+    this.saveSettings();
+    return { ok: true, profile: { ...next } };
+  }
+
+  deleteCliAccountProfile(engineId, profileId) {
+    if (!supportsMultiAccountIsolation(engineId)) {
+      return { ok: false, error: `Engine "${engineId}" does not support isolated account directories` };
+    }
+    const profiles = this.getCliAccountProfiles(engineId);
+    const target = profiles.find((profile) => profile.id === profileId);
+    if (!target) return { ok: false, error: "Account profile not found" };
+    if (target.isDefault) return { ok: false, error: "The default account cannot be deleted" };
+    this.settings.cliAccountProfiles[engineId] = profiles.filter((profile) => profile.id !== profileId);
+    this.saveSettings();
+    return { ok: true };
   }
 
   getModelById(modelId) {

@@ -14,6 +14,20 @@ import {
   reopenCliLoginBrowser,
   startCliLogin,
 } from "../core/cli-login.mjs";
+import {
+  cancelAllCliInstalls,
+  cancelCliInstall,
+  checkUpdates,
+  getCliInstallStatus,
+  startCliInstall,
+} from "../core/cli-install.mjs";
+import {
+  probeCliAccountInfo,
+  resolveProfileDir,
+  supportsMultiAccountIsolation,
+} from "../core/cli-profiles.mjs";
+import { findExtensibleCliDef } from "../core/cli-registry.mjs";
+import { detectEngines } from "../core/paths.mjs";
 import { createRelayMcpServer } from "./mcp-factory.mjs";
 
 const DEFAULT_PORT = 3426;
@@ -677,6 +691,18 @@ export async function createDaemonHttpServer({
       return;
     }
 
+    if (req.method === "GET" && resource === "updates" && id === "check") {
+      const customEngines = Array.isArray(store.settings?.customCliEngines) ? store.settings.customCliEngines : [];
+      const detectedEngines = detectEngines(false, store.dataDir, customEngines);
+      const result = await checkUpdates({
+        currentVersion: version,
+        detectedEngines,
+        force: parseBooleanFlag(url.searchParams.get("force")),
+      });
+      sendJson(res, 200, result);
+      return;
+    }
+
     if (resource === "cli-engines") {
       if (req.method === "POST" && segments.length === 2) {
         const body = await readJsonBody(req);
@@ -703,6 +729,113 @@ export async function createDaemonHttpServer({
         });
         return;
       }
+      if (id && action === "install") {
+        const subAction = segments[4] ? decodeURIComponent(segments[4]) : "";
+        if (req.method === "GET" && !subAction) {
+          sendJson(res, 200, { ok: true, install: getCliInstallStatus(id) });
+          return;
+        }
+        if (req.method === "POST" && !subAction) {
+          const body = await readJsonBody(req);
+          if (!body.ok) return sendJson(res, body.status, { ok: false, error: body.error });
+          const mode = body.value?.mode ?? "install";
+          if (mode !== "install" && mode !== "update") {
+            return sendJson(res, 400, { ok: false, error: 'mode must be "install" or "update"' });
+          }
+          const result = await startCliInstall({
+            engineId: id,
+            customEngines: Array.isArray(store.settings?.customCliEngines) ? store.settings.customCliEngines : [],
+            mode,
+            onUpdate: () => broadcast("cli_install"),
+          });
+          broadcast("state_changed");
+          sendJson(res, result.ok ? 200 : 400, result);
+          return;
+        }
+        if (req.method === "POST" && subAction === "cancel") {
+          const cancelled = cancelCliInstall(id);
+          broadcast("cli_install");
+          sendJson(res, 200, cancelled);
+          return;
+        }
+      }
+      if (id && action === "whitelist" && req.method === "POST") {
+        const body = await readJsonBody(req);
+        if (!body.ok) return sendJson(res, body.status, { ok: false, error: body.error });
+        const result = store.setCliModelWhitelist(id, body.value?.modelIds);
+        if (!result.ok) return sendJson(res, 400, result);
+        broadcast("settings_changed");
+        sendJson(res, 200, {
+          ok: true,
+          engineId: id,
+          modelIds: result.modelIds,
+          state: await buildStatePayload(false, false),
+        });
+        return;
+      }
+      if (id && action === "accounts") {
+        const profileId = segments[4] ? decodeURIComponent(segments[4]) : "";
+        const isolated = supportsMultiAccountIsolation(id);
+        const customEngines = Array.isArray(store.settings?.customCliEngines) ? store.settings.customCliEngines : [];
+        const def = findExtensibleCliDef(id, customEngines) ||
+          (CLI_ENGINES_META[id] ? { ...CLI_ENGINES_META[id], command: id } : null);
+
+        if (req.method === "GET" && !profileId) {
+          const account = def ? await probeCliAccountInfo(id, def, "") : null;
+          sendJson(res, 200, {
+            ok: true,
+            engineId: id,
+            supportsMultiAccountIsolation: isolated,
+            profiles: store.getCliAccountProfiles(id),
+            account,
+          });
+          return;
+        }
+        if (req.method === "POST" && !profileId) {
+          const body = await readJsonBody(req);
+          if (!body.ok) return sendJson(res, body.status, { ok: false, error: body.error });
+          const result = store.addCliAccountProfile(id, body.value?.label);
+          if (!result.ok) return sendJson(res, 400, result);
+          broadcast("state_changed");
+          sendJson(res, 200, {
+            ok: true,
+            engineId: id,
+            profile: result.profile,
+            profiles: store.getCliAccountProfiles(id),
+          });
+          return;
+        }
+        if (req.method === "PATCH" && profileId) {
+          const body = await readJsonBody(req);
+          if (!body.ok) return sendJson(res, body.status, { ok: false, error: body.error });
+          const result = store.updateCliAccountProfile(id, profileId, body.value || {});
+          if (!result.ok) return sendJson(res, 400, result);
+          broadcast("state_changed");
+          sendJson(res, 200, {
+            ok: true,
+            engineId: id,
+            profile: result.profile,
+            profiles: store.getCliAccountProfiles(id),
+          });
+          return;
+        }
+        if (req.method === "DELETE" && profileId) {
+          const result = store.deleteCliAccountProfile(id, profileId);
+          if (!result.ok) return sendJson(res, result.error === "Account profile not found" ? 404 : 400, result);
+          if (isolated && profileId !== "default") {
+            try {
+              fs.rmSync(resolveProfileDir(store.dataDir, id, profileId), { recursive: true, force: true });
+            } catch {}
+          }
+          broadcast("state_changed");
+          sendJson(res, 200, {
+            ok: true,
+            engineId: id,
+            profiles: store.getCliAccountProfiles(id),
+          });
+          return;
+        }
+      }
       if (id && action === "login") {
         const subAction = segments[4] ? decodeURIComponent(segments[4]) : "";
         if (req.method === "GET" && !subAction) {
@@ -713,11 +846,31 @@ export async function createDaemonHttpServer({
           const body = await readJsonBody(req);
           if (!body.ok) return sendJson(res, body.status, { ok: false, error: body.error });
           const region = body.value?.region === "global" ? "global" : "cn";
+          const requestedProfile = String(body.value?.profileId || "").trim();
+          const isolated = supportsMultiAccountIsolation(id);
+          let profileId = isolated ? requestedProfile || "default" : "";
+          let profileDir = "";
+          if (profileId) {
+            const profile = store.getCliAccountProfiles(id).find((item) => item.id === profileId);
+            if (!profile) return sendJson(res, 400, { ok: false, error: "Account profile not found" });
+            if (!profile.enabled) return sendJson(res, 400, { ok: false, error: "Account profile is disabled" });
+            if (profileId !== "default") {
+              try {
+                profileDir = resolveProfileDir(store.dataDir, id, profileId);
+              } catch (err) {
+                return sendJson(res, 400, { ok: false, error: err?.message || String(err) });
+              }
+            }
+          } else if (requestedProfile && requestedProfile !== "default") {
+            return sendJson(res, 400, { ok: false, error: `Engine "${id}" does not support isolated accounts` });
+          }
           const result = await startCliLogin({
             engineId: id,
             customEngines: Array.isArray(store.settings?.customCliEngines) ? store.settings.customCliEngines : [],
             region,
             autoOpen: body.value?.autoOpen !== false,
+            profileId,
+            profileDir,
             onUpdate: (snapshot) => {
               broadcast("state_changed");
               if (snapshot?.status === "succeeded") {
@@ -973,6 +1126,9 @@ export async function createDaemonHttpServer({
     } catch {}
     try {
       cancelAllCliLogins();
+    } catch {}
+    try {
+      cancelAllCliInstalls();
     } catch {}
     try {
       unsubscribeOrchestrator?.();
