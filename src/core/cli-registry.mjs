@@ -19,14 +19,14 @@ export const EXTENSIBLE_CLI_PRESETS = Object.freeze([
   },
   {
     id: "qoder", labelZh: "Qoder CLI", labelEn: "Qoder CLI", shortTag: "QD",
-    protocol: "acp", command: "qodercli", args: ["--acp"], windowsPaths: [],
-    installCmd: "npm install -g @qoder-ai/qodercli", loginCmd: "qodercli login", downloadUrl: "https://qoder.com",
-    readOnlyMode: "plan", writeMode: "build", capabilities: ACP_CAPS,
+    protocol: "headless", command: "qodercli", args: ["-p", "{prompt}"], windowsPaths: [],
+    installCmd: "npm install -g @qoder-ai/qodercli --allow-scripts=@qoder-ai/qodercli,sharp", loginCmd: "qodercli login", downloadUrl: "https://qoder.com",
+    readOnlyMode: "", writeMode: "", capabilities: HEADLESS_CAPS,
   },
   {
     id: "minimax", labelZh: "MiniMax Code", labelEn: "MiniMax Code", shortTag: "MM",
     protocol: "acp", command: "mcode", args: ["acp"], windowsPaths: [],
-    installCmd: "npm install -g mcode", loginCmd: "mcode login", downloadUrl: "https://www.minimax.io",
+    installCmd: "npm install -g @minimax-ai/code@latest --allow-scripts=@minimax-ai/code,better-sqlite3", loginCmd: "mcode login", downloadUrl: "https://www.minimax.io",
     readOnlyMode: "plan", writeMode: "build", capabilities: ACP_CAPS,
   },
   {
@@ -61,10 +61,10 @@ export const EXTENSIBLE_CLI_PRESETS = Object.freeze([
   },
   {
     id: "doubao", labelZh: "豆包 CLI", labelEn: "Doubao CLI", shortTag: "DB",
-    protocol: "headless", command: "doubao", args: ["-p", "{prompt}"],
+    protocol: "acp", command: "doubao", args: ["acp", "serve"],
     windowsPaths: ["%LOCALAPPDATA%\\doubao_cli\\app\\current\\doubao.exe"],
-    installCmd: "npm install -g @bytedance/doubao-cli --foreground-scripts", loginCmd: "doubao login", downloadUrl: "https://www.doubao.com",
-    readOnlyMode: "", writeMode: "", capabilities: HEADLESS_CAPS,
+    installCmd: "npm install -g @bytedance/doubao-cli --foreground-scripts", loginCmd: "doubao login --qr=png", downloadUrl: "https://www.doubao.com",
+    readOnlyMode: "plan", writeMode: "auto", capabilities: ACP_CAPS,
   },
 ]);
 

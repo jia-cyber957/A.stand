@@ -99,24 +99,25 @@ function expandWindowsEnv(raw) {
 export function resolveCliPresetBinary(def) {
   if (!def?.command) return null;
   const fromPath = resolveGenericBinary(def.command);
-  if (fromPath) return fromPath;
+  if (fromPath && !fromPath.useShell) return fromPath;
   try {
     if (path.isAbsolute(def.command) && fs.existsSync(def.command)) {
       return { command: def.command, useShell: /\.(cmd|bat)$/i.test(def.command) };
     }
   } catch {}
-  if (!isWin) return null;
-  for (const candidate of def.windowsPaths || []) {
-    if (typeof candidate !== "string" || !candidate.trim()) continue;
-    const expanded = expandWindowsEnv(candidate.trim());
-    if (!expanded || expanded.includes("%")) continue;
-    try {
-      if (fs.existsSync(expanded)) {
-        return { command: expanded, useShell: /\.(cmd|bat)$/i.test(expanded) };
-      }
-    } catch {}
+  if (isWin) {
+    for (const candidate of def.windowsPaths || []) {
+      if (typeof candidate !== "string" || !candidate.trim()) continue;
+      const expanded = expandWindowsEnv(candidate.trim());
+      if (!expanded || expanded.includes("%")) continue;
+      try {
+        if (fs.existsSync(expanded)) {
+          return { command: expanded, useShell: /\.(cmd|bat)$/i.test(expanded) };
+        }
+      } catch {}
+    }
   }
-  return null;
+  return fromPath || null;
 }
 
 export function readCodexConfigSummary() {

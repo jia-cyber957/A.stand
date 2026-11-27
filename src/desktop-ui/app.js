@@ -1886,8 +1886,10 @@ function renderEngineRow(eid) {
       ? `<span class="tag plain">Headless</span>`
       : "";
   const subCount = (state?.cliSubModels?.[eid] || []).filter((m) => !m.isDefault).length;
+  const canInAppLogin = Boolean(eng.installed && (eng.extensible || eid === "doubao" || eid === "qoder" || eid === "minimax" || eid === "opencode"));
+  const loginBarHtml = canInAppLogin ? getCliCatalogModal().renderLoginBar(eid) : "";
 
-  return `<div class="engine-row ${showQuota ? "has-quota" : ""}">
+  return `<div class="engine-row ${showQuota || loginBarHtml ? "has-quota" : ""}">
     <div class="engine-avatar">${esc(engineTag(eid))}</div>
     <div class="engine-main">
       <div class="engine-name">
@@ -1905,6 +1907,7 @@ function renderEngineRow(eid) {
         ${test ? `<span style="color:${test.ok ? "var(--green)" : "var(--red)"}">${esc(test.ok ? `${t("connOk")}${test.latencyMs ? ` (${test.latencyMs}ms)` : ""}` : `${t("connFail")}${test.error ? `: ${test.error}` : ""}`)}</span>` : ""}
       </div>
       ${showQuota ? `<div class="engine-quota">${renderQuotaBars()}</div>` : ""}
+      ${loginBarHtml}
       ${cooled.length
         ? `<div class="row wrap" style="gap:6px">${cooled
             .map(
@@ -1917,6 +1920,9 @@ function renderEngineRow(eid) {
     </div>
     <div class="engine-actions">
       ${eid === "codex" ? `<button class="btn xs" data-action="refresh-quota" title="${esc(t("refreshQuota"))}">${iconSvg("refresh")}</button>` : ""}
+      ${canInAppLogin
+        ? `<button class="btn xs primary" data-action="cli-login-start" data-engine="${esc(eid)}">${iconSvg("key")} ${esc(isEn() ? "Sign in" : "登录")}</button>`
+        : ""}
       <button class="btn xs" data-action="test-cli" data-engine="${esc(eid)}" ${test && test.loading ? "disabled" : ""}>
         ${iconSvg("zap")} ${esc(test && test.loading ? t("testing") : t("testConnection"))}
       </button>

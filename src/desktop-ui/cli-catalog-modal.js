@@ -62,7 +62,104 @@ export function createCliCatalogModal(host) {
     saving: false,
     error: "",
     form: null,
+    loginBusyId: "",
+    dismissedLogins: {}, // engineId -> finishedAt
   };
+
+  function getLoginSession(eid) {
+    const map = getState()?.cliLogins || {};
+    const s = map[eid] || null;
+    if (!s) return null;
+    if (s.status === "cancelled") return null;
+    if ((s.status === "succeeded" || s.status === "failed") && s.finishedAt && view.dismissedLogins[eid] === s.finishedAt) {
+      return null;
+    }
+    return s;
+  }
+
+  function renderLoginBar(eid) {
+    const busy = view.loginBusyId === eid;
+    const session = getLoginSession(eid);
+    if (!busy && !session) return "";
+    const status = busy && !session ? "starting" : session?.status || "starting";
+    const label = engineLabel(eid);
+
+    if (status === "starting") {
+      return `<div class="cli-login-bar">
+        <div class="cli-login-head">
+          <span class="cli-spinner" aria-hidden="true"></span>
+          <span class="cli-login-title">${esc(L(`正在启动 ${label} 登录…`, `Starting ${label} sign-in…`))}</span>
+          <button class="btn xs ghost" data-action="cli-login-cancel" data-engine="${esc(eid)}">${esc(L("取消", "Cancel"))}</button>
+        </div>
+      </div>`;
+    }
+
+    if (status === "waiting_qr" && session?.qrDataUrl) {
+      return `<div class="cli-login-bar qr">
+        <img class="cli-login-qr" src="${esc(session.qrDataUrl)}" alt="${esc(L(`${label} 登录二维码`, `${label} login QR code`))}" />
+        <div class="cli-login-qr-body">
+          <div class="cli-login-head">
+            <span class="cli-spinner" aria-hidden="true"></span>
+            <span class="cli-login-title">${esc(session.message || L(`请使用手机 App 扫码完成 ${label} 登录`, `Scan the QR code to sign in to ${label}`))}</span>
+          </div>
+          <div class="cli-login-hint">${esc(L("手机确认后会自动完成登录并刷新模型，无需打开终端。", "Login completes automatically once confirmed on your phone."))}</div>
+          <div class="cli-login-actions">
+            <button class="btn xs" data-action="cli-login-start" data-engine="${esc(eid)}">${iconSvg("refresh")} ${esc(L("刷新二维码", "Refresh QR"))}</button>
+            <button class="btn xs ghost" data-action="cli-login-cancel" data-engine="${esc(eid)}">${esc(L("取消", "Cancel"))}</button>
+          </div>
+        </div>
+      </div>`;
+    }
+
+    if (status === "waiting_browser") {
+      const regionToggle =
+        eid === "minimax"
+          ? `<div class="cli-login-regions">
+              <button class="btn xs ${session?.region !== "global" ? "primary" : ""}" data-action="cli-login-start" data-engine="minimax" data-region="cn">${esc(L("中国版", "CN"))}</button>
+              <button class="btn xs ${session?.region === "global" ? "primary" : ""}" data-action="cli-login-start" data-engine="minimax" data-region="global">${esc(L("国际版", "Global"))}</button>
+            </div>`
+          : "";
+      return `<div class="cli-login-bar">
+        <div class="cli-login-head">
+          <span class="cli-spinner" aria-hidden="true"></span>
+          <div class="cli-login-head-text">
+            <div class="cli-login-title">${esc(L(`请在浏览器中完成 ${label} 登录`, `Finish signing in to ${label} in your browser`))}</div>
+            <div class="cli-login-hint">${esc(L("已自动打开系统默认浏览器，完成授权后这里会自动同步。", "Default browser opened automatically; status updates here once authorized."))}</div>
+          </div>
+          ${regionToggle}
+          <button class="btn xs ghost" data-action="cli-login-cancel" data-engine="${esc(eid)}">${esc(L("取消", "Cancel"))}</button>
+        </div>
+        ${session?.userCode ? `<div class="cli-login-code-row"><span>${esc(L("授权码：", "Code: "))}</span><code class="cli-login-code mono">${esc(session.userCode)}</code></div>` : ""}
+        ${session?.authUrl
+          ? `<div class="cli-login-url-row">
+              <div class="cli-login-url mono truncate" title="${esc(session.authUrl)}">${esc(session.authUrl)}</div>
+              <button class="btn xs" data-action="cli-copy" data-text="${esc(session.authUrl)}">${iconSvg("copy")} ${esc(L("复制链接", "Copy"))}</button>
+              <button class="btn xs primary" data-action="cli-login-reopen" data-engine="${esc(eid)}">${iconSvg("external")} ${esc(L("重新打开", "Reopen"))}</button>
+            </div>`
+          : ""}
+      </div>`;
+    }
+
+    if (status === "succeeded") {
+      return `<div class="cli-login-bar ok">
+        <div class="cli-login-head">
+          <span class="cli-login-ok-icon">${iconSvg("checkCircle", 16)}</span>
+          <span class="cli-login-title">${esc(L(`${label} 登录成功！已刷新连接与模型列表`, `${label} signed in! Refreshed models.`))}</span>
+          <button class="btn xs ghost" data-action="cli-login-dismiss" data-engine="${esc(eid)}">${esc(L("收起", "Dismiss"))}</button>
+        </div>
+      </div>`;
+    }
+
+    return `<div class="cli-login-bar err">
+      <div class="cli-login-head">
+        <span class="cli-login-title" style="color:var(--red)">${esc(session?.error || L("登录失败，请重试", "Login failed, please retry"))}</span>
+        <div class="cli-login-actions">
+          <button class="btn xs" data-action="cli-login-start" data-engine="${esc(eid)}">${esc(L("重试", "Retry"))}</button>
+          <button class="btn xs ghost" data-action="cli-login-dismiss" data-engine="${esc(eid)}">${esc(L("关闭", "Close"))}</button>
+        </div>
+      </div>
+    </div>`;
+  }
 
   function resetForm(existing = null) {
     const isEdit = Boolean(existing?.id);
@@ -173,14 +270,17 @@ export function createCliCatalogModal(host) {
                     </div>
                   </div>
                   <div class="cli-preset-actions">
-                    ${p.installCmd
+                    ${!installed && p.installCmd
                       ? `<button class="btn xs" data-action="cli-copy" data-text="${esc(p.installCmd)}" title="${esc(p.installCmd)}">${iconSvg("copy")} ${esc(L("安装命令", "Install"))}</button>`
                       : ""}
-                    ${p.loginCmd
+                    ${installed
+                      ? `<button class="btn xs primary" data-action="cli-login-start" data-engine="${esc(p.id)}" ${view.loginBusyId === p.id ? "disabled" : ""}>${iconSvg("key")} ${esc(L("登录", "Sign in"))}</button>`
+                      : p.loginCmd
                       ? `<button class="btn xs" data-action="cli-copy" data-text="${esc(p.loginCmd)}" title="${esc(p.loginCmd)}">${iconSvg("key")} ${esc(L("登录命令", "Login"))}</button>`
                       : ""}
                   </div>
-                </div>`;
+                </div>
+                ${renderLoginBar(p.id)}`;
               })
               .join("")
           : `<div class="empty-state">${esc(L("没有匹配的 CLI 预设", "No matching CLI presets"))}</div>`}
@@ -313,7 +413,67 @@ export function createCliCatalogModal(host) {
     }
     if (action === "cli-copy") {
       const text = target.dataset.text || "";
-      if (text) void copyText(text, L("命令已复制，粘贴到终端执行即可", "Command copied — run it in your terminal"));
+      if (text) void copyText(text, L("已复制到剪贴板", "Copied to clipboard"));
+      return true;
+    }
+    if (action === "cli-login-start") {
+      const eid = target.dataset.engine || "";
+      const region = target.dataset.region === "global" ? "global" : "cn";
+      if (!eid) return true;
+      delete view.dismissedLogins[eid];
+      view.loginBusyId = eid;
+      scheduleRender();
+      try {
+        const res = await api(`/api/cli-engines/${encodeURIComponent(eid)}/login`, {
+          method: "POST",
+          body: { region, autoOpen: true },
+        });
+        view.loginBusyId = "";
+        applyPayload(res);
+        if (!res?.state) await refreshState({ silent: true });
+        if (res?.login?.mode === "browser" && res?.login?.authUrl) {
+          showToast(L("已打开浏览器，请在浏览器中完成授权", "Browser opened — finish sign-in there"));
+        } else if (res?.login?.mode === "qr" && res?.login?.qrDataUrl) {
+          showToast(L("二维码已生成，请使用豆包 App 扫码确认", "QR code ready — scan with Doubao app"));
+        }
+      } catch (err) {
+        view.loginBusyId = "";
+        await refreshState({ silent: true });
+        showError("", err);
+      }
+      scheduleRender();
+      return true;
+    }
+    if (action === "cli-login-reopen") {
+      const eid = target.dataset.engine || "";
+      if (!eid) return true;
+      try {
+        await api(`/api/cli-engines/${encodeURIComponent(eid)}/login/reopen`, { method: "POST", body: {} });
+        showToast(L("已重新打开浏览器授权页", "Reopened login page in browser"));
+      } catch (err) {
+        showError("", err);
+      }
+      return true;
+    }
+    if (action === "cli-login-cancel") {
+      const eid = target.dataset.engine || "";
+      if (!eid) return true;
+      view.loginBusyId = "";
+      try {
+        const res = await api(`/api/cli-engines/${encodeURIComponent(eid)}/login/cancel`, { method: "POST", body: {} });
+        applyPayload(res);
+        if (!res?.state) await refreshState({ silent: true });
+      } catch (err) {
+        showError("", err);
+      }
+      scheduleRender();
+      return true;
+    }
+    if (action === "cli-login-dismiss") {
+      const eid = target.dataset.engine || "";
+      const s = getState()?.cliLogins?.[eid];
+      if (eid && s?.finishedAt) view.dismissedLogins[eid] = s.finishedAt;
+      scheduleRender();
       return true;
     }
     if (action === "cli-refresh-detect") {
@@ -391,6 +551,7 @@ export function createCliCatalogModal(host) {
   return {
     openCatalog,
     renderModal,
+    renderLoginBar,
     handleInput,
     handleAction,
     reset: () => {

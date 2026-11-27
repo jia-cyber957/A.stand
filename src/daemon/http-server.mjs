@@ -6,6 +6,14 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { API_PROVIDERS, CLI_ENGINES_META, PLUGIN_VERSION } from "../core/constants.mjs";
 import { CLIENT_PRESETS } from "../core/clients.mjs";
 import { appendDaemonEvent, exportSanitizedDiagnostics, openInExplorer } from "../core/diagnostics.mjs";
+import {
+  cancelAllCliLogins,
+  cancelCliLogin,
+  getAllCliLoginStatuses,
+  getCliLoginStatus,
+  reopenCliLoginBrowser,
+  startCliLogin,
+} from "../core/cli-login.mjs";
 import { createRelayMcpServer } from "./mcp-factory.mjs";
 
 const DEFAULT_PORT = 3426;
@@ -208,6 +216,7 @@ export async function createDaemonHttpServer({
       perf: typeof orchestrator.getPerfSummary === "function" ? orchestrator.getPerfSummary() : null,
       clients: clientRegistry.listPublic(),
       clientPresets: CLIENT_PRESETS,
+      cliLogins: getAllCliLoginStatuses(),
     };
   }
 
@@ -694,6 +703,50 @@ export async function createDaemonHttpServer({
         });
         return;
       }
+      if (id && action === "login") {
+        const subAction = segments[4] ? decodeURIComponent(segments[4]) : "";
+        if (req.method === "GET" && !subAction) {
+          sendJson(res, 200, { ok: true, login: getCliLoginStatus(id) });
+          return;
+        }
+        if (req.method === "POST" && !subAction) {
+          const body = await readJsonBody(req);
+          if (!body.ok) return sendJson(res, body.status, { ok: false, error: body.error });
+          const region = body.value?.region === "global" ? "global" : "cn";
+          const result = await startCliLogin({
+            engineId: id,
+            customEngines: Array.isArray(store.settings?.customCliEngines) ? store.settings.customCliEngines : [],
+            region,
+            autoOpen: body.value?.autoOpen !== false,
+            onUpdate: (snapshot) => {
+              broadcast("state_changed");
+              if (snapshot?.status === "succeeded") {
+                orchestrator
+                  .getDashboardState(true, false)
+                  .then(() => broadcast("state_changed"))
+                  .catch(() => {});
+              }
+            },
+          });
+          broadcast("state_changed");
+          sendJson(res, result.ok ? 200 : 400, {
+            ...result,
+            state: await buildStatePayload(result.login?.status === "succeeded", false),
+          });
+          return;
+        }
+        if (req.method === "POST" && subAction === "reopen") {
+          const opened = reopenCliLoginBrowser(id);
+          sendJson(res, opened.ok ? 200 : 400, opened);
+          return;
+        }
+        if (req.method === "POST" && subAction === "cancel") {
+          const cancelled = cancelCliLogin(id);
+          broadcast("state_changed");
+          sendJson(res, 200, { ...cancelled, state: await buildStatePayload(false, false) });
+          return;
+        }
+      }
     }
 
     if (resource === "models") {
@@ -917,6 +970,9 @@ export async function createDaemonHttpServer({
     }
     try {
       unsubscribeRegistry?.();
+    } catch {}
+    try {
+      cancelAllCliLogins();
     } catch {}
     try {
       unsubscribeOrchestrator?.();
