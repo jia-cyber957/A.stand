@@ -3,7 +3,9 @@ import fs from "node:fs";
 import path from "node:path";
 
 function git(cwd, args, timeout = 5000) {
-  return execFileSync("git", args, {
+  // Shared/SMB repositories commonly trip Git's dubious-ownership guard; `safe.directory=*` keeps
+  // worktree isolation working without mutating the user's global Git config.
+  return execFileSync("git", ["-c", "safe.directory=*", ...args], {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
@@ -12,14 +14,76 @@ function git(cwd, args, timeout = 5000) {
   });
 }
 
+/** Windows path namespace: `drive` (Z:\...), `unc` (\\host\share\...) or `posix`. */
+function pathNamespace(value) {
+  const raw = String(value || "");
+  if (/^[\\/]{2}[^\\/]/.test(raw)) return "unc";
+  if (/^[A-Za-z]:[\\/]/.test(raw) || /^[A-Za-z]:$/.test(raw)) return "drive";
+  return "posix";
+}
+
+/** Normalize `git rev-parse --show-prefix` output to a native relative path ("" at repo root). */
+export function relSubdirFromPrefix(prefix) {
+  return String(prefix || "")
+    .replace(/\r?\n$/, "")
+    .replace(/\\/g, "/")
+    .replace(/^\/+|\/+$/g, "")
+    .split("/")
+    .filter(Boolean)
+    .join(path.sep);
+}
+
+/**
+ * Derive the repository root on the SAME path namespace as `dir` by walking `relSubdir`'s
+ * segment count upwards. This avoids `path.relative()` returning an absolute path when Git
+ * reports a UNC toplevel for a mapped drive (Z:\share\repo vs \\host\share\repo).
+ */
+export function resolveRepoRootFromPrefix(dir, relSubdir = "") {
+  let root = path.resolve(dir);
+  const segments = String(relSubdir || "").split(/[\\/]+/).filter(Boolean);
+  for (let i = 0; i < segments.length; i++) root = path.dirname(root);
+  return path.normalize(root);
+}
+
+function hasGitMarker(root) {
+  if (!root) return false;
+  try {
+    return fs.existsSync(path.join(root, ".git"));
+  } catch {
+    return false;
+  }
+}
+
+function realpathSameNamespace(cwd) {
+  try {
+    const real = fs.realpathSync.native ? fs.realpathSync.native(cwd) : fs.realpathSync(cwd);
+    return real && pathNamespace(real) === pathNamespace(cwd) ? real : "";
+  } catch {
+    return "";
+  }
+}
+
 export function detectGitRepo(cwd) {
   try {
-    const dir = fs.realpathSync(cwd);
-    const repoRoot = path.normalize(git(dir, ["rev-parse", "--show-toplevel"]).replace(/\r?\n$/, ""));
+    let dir = path.resolve(cwd);
+    const realDir = realpathSameNamespace(dir);
+    if (realDir) dir = realDir;
+
+    // `--show-prefix` is relative to the repository root and always uses `/`, so it stays
+    // reliable across drive-vs-UNC aliases (unlike path.relative between two namespaces).
+    const relSubdir = relSubdirFromPrefix(git(dir, ["rev-parse", "--show-prefix"]));
     const headSha = git(dir, ["rev-parse", "HEAD"]).trim();
-    const relSubdir = path.relative(repoRoot, dir);
-    if (relSubdir === ".." || relSubdir.startsWith(`..${path.sep}`) || path.isAbsolute(relSubdir)) {
-      return { isGit: false };
+
+    let repoRoot = relSubdir ? "" : dir;
+    if (!repoRoot || !hasGitMarker(repoRoot)) {
+      const candidates = [];
+      if (relSubdir) candidates.push(resolveRepoRootFromPrefix(dir, relSubdir));
+      try {
+        const top = path.normalize(git(dir, ["rev-parse", "--show-toplevel"]).replace(/\r?\n$/, ""));
+        if (top) candidates.push(top);
+      } catch {}
+      candidates.push(dir);
+      repoRoot = candidates.find(hasGitMarker) || candidates[0] || dir;
     }
     return { isGit: true, repoRoot, headSha, relSubdir };
   } catch {

@@ -219,6 +219,78 @@ function cwdKey(value) {
   }
 }
 
+function tryRealpath(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    return fs.realpathSync.native ? fs.realpathSync.native(raw) : fs.realpathSync(raw);
+  } catch {
+    try {
+      return fs.realpathSync(raw);
+    } catch {
+      return "";
+    }
+  }
+}
+
+function isDrivePath(value) {
+  return /^[A-Za-z]:[\\/]/.test(String(value || "")) || /^[A-Za-z]:$/.test(String(value || ""));
+}
+
+function isUncPath(value) {
+  return /^[\\/]{2}[^\\/]/.test(String(value || ""));
+}
+
+/**
+ * A path's comparable tail: drive letter and UNC server are stripped, so
+ * `Z:\share\repo\src` and `\\host\share\repo\src` both become `share/repo/src`.
+ * Only used for the drive-vs-UNC SMB case; never relaxes same-namespace mismatches.
+ */
+function pathTailSegments(value) {
+  const norm = String(value || "").trim().replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!norm) return [];
+  let parts = norm.split("/").filter(Boolean);
+  if (isUncPath(norm) && parts.length > 0) parts = parts.slice(1);
+  else if (/^[A-Za-z]:$/.test(parts[0] || "")) parts = parts.slice(1);
+  return parts.map((part) => (process.platform === "win32" ? part.toLowerCase() : part));
+}
+
+/**
+ * Compare two cwds, tolerating Windows SMB mapped-drive aliases (Z:\share\repo vs
+ * \\host\share\repo). The tail fallback only applies when one side is a drive path and the
+ * other is UNC, and only when the projection record was read from `<sessionId>.json`.
+ */
+export function acpCwdEquivalent(a, b, options = {}) {
+  const left = String(a || "").trim();
+  const right = String(b || "").trim();
+  if (!left || !right) return true;
+  if (cwdKey(left) === cwdKey(right)) return true;
+
+  const alias = (isDrivePath(left) && isUncPath(right)) || (isUncPath(left) && isDrivePath(right));
+  if (alias && options.sessionId && options.sessionIdMatched !== false) {
+    // Cheap tail match first: a valid mapped drive must not pay an SMB realpath round-trip.
+    const leftTail = pathTailSegments(left);
+    const rightTail = pathTailSegments(right);
+    if (leftTail.length > 0 && rightTail.length > 0) {
+      const common = Math.min(leftTail.length, rightTail.length);
+      let same = true;
+      for (let i = 0; i < common; i++) {
+        if (leftTail[leftTail.length - 1 - i] !== rightTail[rightTail.length - 1 - i]) {
+          same = false;
+          break;
+        }
+      }
+      if (same) return true;
+    }
+  }
+
+  // Canonicalize as a best-effort fallback (handles localized share names where Z:\公共 maps to
+  // \\host\Important). Only reached for aliases whose tails differ, or same-namespace paths.
+  const leftReal = tryRealpath(left);
+  const rightReal = tryRealpath(right);
+  return Boolean(leftReal && rightReal && cwdKey(leftReal) === cwdKey(rightReal));
+}
+
 const PROJECTION_BUCKET_FIELDS = ["uncachedInputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens"];
 
 function validBuckets(buckets) {
@@ -306,7 +378,7 @@ export function captureAcpProjectionBaseline(snapshot) {
 export function evaluateAcpProjectionUsage(snapshot, options = {}) {
   if (!snapshot) return { ok: false, reason: "no-projection-record" };
   const identity = snapshot.identity || {};
-  if (options.cwd && identity.cwd && cwdKey(identity.cwd) !== cwdKey(options.cwd)) {
+  if (options.cwd && identity.cwd && !acpCwdEquivalent(identity.cwd, options.cwd, options)) {
     return { ok: false, reason: "cwd-mismatch" };
   }
   const tokenUsage = snapshot.tokenUsage;
@@ -433,6 +505,125 @@ export function evaluateAcpProjectionUsage(snapshot, options = {}) {
     note: "tokenUsage.val.last is the latest provider step; tokenUsage.val.totals is session-cumulative, so it is never reported as a turn total.",
   };
   return { ok: true, usage, provenance, turnTotals, context };
+}
+
+// dsh write-behind projection cache: poll long enough to survive a slow Turn-1 flush, but only
+// when the cache plugin's sessions directory exists at all (zero overhead for plugin-less dsh).
+export const PROJECTION_POLL_ATTEMPTS = 12;
+export const PROJECTION_POLL_INTERVAL_MS = 100;
+
+export function projectionCacheSessionsDir(dshHome) {
+  return dshHome ? path.join(dshHome, "storages", "session_projcache", "sessions") : "";
+}
+
+/**
+ * Poll for a fresh projection sample. The sessions directory must already exist; if it does not,
+ * the cache plugin is absent and we return immediately instead of waiting 1.2s per turn.
+ *
+ * `readRecord(dshHome, sessionId)` is injected so the polling contract is unit-testable without
+ * spawning dsh. Returns `{ record, evaluated }` for the freshest sample, or null.
+ */
+export async function readFreshProjectionSample({
+  dshHome,
+  sessionId,
+  baseline,
+  options = {},
+  readRecord,
+  attempts = PROJECTION_POLL_ATTEMPTS,
+  intervalMs = PROJECTION_POLL_INTERVAL_MS,
+  sleep,
+} = {}) {
+  if (!dshHome || !sessionId || typeof readRecord !== "function") return null;
+  const sessionsDir = projectionCacheSessionsDir(dshHome);
+  if (!fs.existsSync(toLongFsPath(sessionsDir))) return null;
+  const wait = typeof sleep === "function" ? sleep : (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  let best = null;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const record = readRecord(dshHome, sessionId);
+    if (record) {
+      const evaluated = evaluateAcpProjectionUsage(record.snapshot, {
+        ...options,
+        baseline,
+        mtimeMs: record.mtimeMs,
+      });
+      if (evaluated.ok) return { record, evaluated };
+      best = { record, evaluated };
+    }
+    if (attempt < attempts - 1) await wait(intervalMs);
+  }
+  return best;
+}
+
+function extractLeadingJsonObject(text) {
+  if (!text.startsWith("{")) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) return { json: text.slice(0, i + 1), remainder: text.slice(i + 1) };
+    }
+  }
+  return null;
+}
+
+/**
+ * Detect the raw `{"content":"","tool_calls":[...]}` protocol dump that a misbehaving upstream
+ * sometimes emits as assistant prose instead of executing the tools.
+ *
+ * Conservative by construction: the trimmed output must START with `{` (or a ```json fence), the
+ * whole payload must be a tool_calls envelope with empty content, and any bytes outside the JSON
+ * object may only be stray closing braces/commas. A normal answer that merely mentions
+ * `"tool_calls"` in prose or a documentation snippet cannot match.
+ */
+export function isLeakedToolCallsOutput(text) {
+  if (typeof text !== "string") return false;
+  let body = text.trim();
+  if (!body) return false;
+  const fenced = body.match(/^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n?```$/i);
+  if (fenced) body = fenced[1].trim();
+  if (!body.startsWith("{")) return false;
+  if (!/"tool_calls"\s*:\s*\[/.test(body)) return false;
+  if (!(/"content"\s*:\s*""/.test(body) || /"type"\s*:\s*"function"/.test(body))) return false;
+
+  const extracted = extractLeadingJsonObject(body);
+  if (extracted) {
+    const tail = extracted.remainder.trim();
+    if (tail && !/^[}\]\s,;]*$/.test(tail)) return false;
+    try {
+      const parsed = JSON.parse(extracted.json);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+      if (!Array.isArray(parsed.tool_calls)) return false;
+      if (typeof parsed.content === "string" && parsed.content.trim() !== "") return false;
+      return true;
+    } catch {
+      // Malformed/truncated dump (e.g. one extra trailing `}`): still a leak when structurally
+      // tool_calls-shaped and an empty content field proves it is not human prose.
+      return true;
+    }
+  }
+
+  // Unbalanced object (truncated mid-stream). Accept only when the payload is unambiguous and no
+  // natural-language lines leak outside it.
+  if (!/[}\]][\s}\]]*$/.test(body)) return false;
+  const proseLines = body.split(/\r?\n/).filter((line) => {
+    const clean = line.trim();
+    if (!clean) return false;
+    if (/^[{"}\],;\s]*$/.test(clean)) return false;
+    if (!/\s/.test(clean)) return false;
+    return !/[{}[\]]/.test(clean);
+  });
+  return proseLines.length === 0;
 }
 
 /** Raised when a prompt is requested for a session that already has an unacknowledged turn. */
@@ -1132,25 +1323,14 @@ export class AcpEngine {
    * returns immediately, and polling stops as soon as a fresh sample appears.
    */
   async #readFreshProjectionSample(dshHome, sessionId, baseline, options) {
-    let best = null;
-    for (let attempt = 0; attempt < 8; attempt++) {
-      const record = this.#readProjectionCacheRecord(dshHome, sessionId);
-      if (!record) {
-        // No record file on the first attempt means the cache is not in use: do not poll.
-        if (attempt === 0) return null;
-        await new Promise((resolve) => setTimeout(resolve, 80));
-        continue;
-      }
-      const evaluated = evaluateAcpProjectionUsage(record.snapshot, {
-        ...options,
-        baseline,
-        mtimeMs: record.mtimeMs,
-      });
-      if (evaluated.ok) return { record, evaluated };
-      best = { record, evaluated };
-      await new Promise((resolve) => setTimeout(resolve, 80));
-    }
-    return best;
+    return readFreshProjectionSample({
+      dshHome,
+      sessionId,
+      baseline,
+      // The record is read from `<sessionId>.json`, so the filename already binds it to this turn.
+      options: { ...options, sessionIdMatched: true },
+      readRecord: (home, sid) => this.#readProjectionCacheRecord(home, sid),
+    });
   }
 
   async #readDshSessionCacheUsage(dshHome, sessionId, prevTurnCount = 0) {
@@ -2010,12 +2190,27 @@ export class AcpEngine {
         usageProvenance.projection = projectionEval.provenance;
         if (projectionEval.turnTotals) usageProvenance.turnTotals = projectionEval.turnTotals;
       }
+      if (!usage?.cacheReported) {
+        // Transparent unreported reason for `telemetry.jsonl`; never fabricate a cache sample.
+        const skipReason = String(
+          usageProvenance?.skipReason ||
+            usageProvenance?.projectionSkipReason ||
+            usageProvenance?.reason ||
+            (hasRpcCache ? "cache-not-reported-by-upstream" : "projection-cache-unavailable")
+        ).trim().slice(0, 200) || "cache-not-reported-by-upstream";
+        usageProvenance = { ...usageProvenance, skipReason };
+      }
       const stopReason = String(res?.stopReason || res?.stop_reason || diskSnap?.lastStopReason || "").toLowerCase();
       const truncatedByMaxTokens =
         stopReason === "max_tokens" || stopReason === "max-tokens" || stopReason === "length";
       finalizeThought();
       finishMessage();
       let finalText = Array.from(messages.values()).at(-1)?.text.trim() || "(no response text)";
+      if (isLeakedToolCallsOutput(finalText)) {
+        throw new Error(
+          "[PROTOCOL_LEAK] Upstream model emitted raw tool_calls JSON as plain text instead of executing tools; retry or switch model."
+        );
+      }
       if (truncatedByMaxTokens) {
         const notice =
           `⚠️ [Output truncated: model hit its max_tokens output limit (${stopReason}). Resume with the same sessionId (e.g. "continue") to finish the remaining output.]`;
