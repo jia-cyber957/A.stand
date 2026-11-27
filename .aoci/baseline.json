@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-27T03:49:41Z",
-  "updated_at": "2026-11-27T05:21:30Z",
+  "updated_at": "2026-11-27T05:37:34Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -65,9 +65,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "2ebf288d18ce1d1020d4a8a070603d0b71ae6f0ab8f409a1a1e3d82b07b5d26e",
-      "size": 27972,
-      "normalized_sha256": "2ebf288d18ce1d1020d4a8a070603d0b71ae6f0ab8f409a1a1e3d82b07b5d26e"
+      "sha256": "540337c40d1363bfb66591712bac769f1b93a3c1aa17080e2242f30d9db6ff70",
+      "size": 27880,
+      "normalized_sha256": "540337c40d1363bfb66591712bac769f1b93a3c1aa17080e2242f30d9db6ff70"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -101,9 +101,9 @@
     },
     "desktop/src-tauri/capabilities/default.json": {
       "role": "index",
-      "sha256": "637db63b5b9ad8e0c85f7576262811d4da561a09da529ea93944a8e76c1007ed",
-      "size": 547,
-      "normalized_sha256": "4dea3aa4511d189611c4b57eddbe092e8682d9cde3cd6f6f979264bbe4963c8a"
+      "sha256": "cd78259b8fba94dddbb4358c497039b8d37981fc93c64951c58a44fc4f9f32b4",
+      "size": 464,
+      "normalized_sha256": "ef47f7c760cba71f995063153113ab20a9ac8e6a427db29a71bb4edda7c79e47"
     },
     "desktop/src-tauri/icons/icon.ico": {
       "role": "index",
@@ -129,9 +129,9 @@
     },
     "desktop/src-tauri/src/main.rs": {
       "role": "index",
-      "sha256": "5fe6e53621e59194a2527d26d4f069c786dd9d64c2164a68514100eba23a9859",
-      "size": 5070,
-      "normalized_sha256": "f027c80dd11ae073be34c19fe2d5da5f7df3d1d898684907a3a93485daa5a409"
+      "sha256": "1449c30154f66b03d5314e4ce7829b2e9a30b4a1b434282537ff2bfa7a8169b2",
+      "size": 6362,
+      "normalized_sha256": "d008d5dd3998229c72ec0d60c84d1cb63983088d9fda852ef996ef9040e3cc01"
     },
     "desktop/src-tauri/src/tray.rs": {
       "role": "index",
@@ -141,9 +141,9 @@
     },
     "desktop/src-tauri/tauri.conf.json": {
       "role": "index",
-      "sha256": "41be21528ada5371a890d0ab4b11af8293b54000180e2204537e261d07a84aad",
-      "size": 1300,
-      "normalized_sha256": "400173e9a850d12dc5c203c2c2b7ea791915340f2de3ea67cab8acf149d9a916"
+      "sha256": "c09df0fe06f9209ee71b771dad430819a7b1c0f3eb359c49ae823140a40b7b51",
+      "size": 1301,
+      "normalized_sha256": "1cc8d997972551b143f22d40af6e521034fe59d575dbc8a8ef09c5fb23145f47"
     },
     "docs/ARCHITECTURE.md": {
       "role": "index",
@@ -153,9 +153,9 @@
     },
     "docs/CURRENT.md": {
       "role": "index",
-      "sha256": "67948897932d506ce8832afa6c6fd1e29856703ada31db473e1b3b1936326d24",
-      "size": 2373,
-      "normalized_sha256": "67948897932d506ce8832afa6c6fd1e29856703ada31db473e1b3b1936326d24"
+      "sha256": "6eca7b912d518565408e851652832ba02151b8c4f2dd345487fcf9ddb0a585b4",
+      "size": 2491,
+      "normalized_sha256": "6eca7b912d518565408e851652832ba02151b8c4f2dd345487fcf9ddb0a585b4"
     },
     "docs/DECISIONS.md": {
       "role": "index",
@@ -302,9 +302,9 @@
     },
     "scripts/package-desktop.mjs": {
       "role": "index",
-      "sha256": "731607741986765055af1ce9af7a322e4f8e9836a4f5c6dc49e5c2030bf01122",
-      "size": 8990,
-      "normalized_sha256": "36aac36136980be32a2b34b7fc5d38ece1ea84cfc17514f5b39e9ea3f48989e0"
+      "sha256": "1e8e5fc416cc7f356ea056c6fbb263cbbb5e3b3cb5d609af5dbbc398a99e9c2a",
+      "size": 9253,
+      "normalized_sha256": "e899b9c5fdbe3ee3de5c358bcd3b1096835b5495e2990c7952e84bf6ec72fbe9"
     },
     "scripts/test-v2-fixes.mjs": {
       "role": "index",
@@ -332,9 +332,9 @@
     },
     "src/core/clients.mjs": {
       "role": "index",
-      "sha256": "e75541eeb27f430252817717ebe94bf62be5052e5646626a276cdc5cd2e774a1",
-      "size": 17709,
-      "normalized_sha256": "e75541eeb27f430252817717ebe94bf62be5052e5646626a276cdc5cd2e774a1"
+      "sha256": "61257a1b7e783368d1d937292feb1803e0f581946b4f0232411b32390d33c0ea",
+      "size": 21012,
+      "normalized_sha256": "61257a1b7e783368d1d937292feb1803e0f581946b4f0232411b32390d33c0ea"
     },
     "src/core/constants.mjs": {
       "role": "index",
@@ -386,15 +386,15 @@
     },
     "src/daemon/http-server.mjs": {
       "role": "index",
-      "sha256": "40ea6b7d49a18607bdf8e538339a7c074a0462d239840b3fc289574d522babfb",
-      "size": 33720,
-      "normalized_sha256": "c9c58a812c422e28b6d6e04b54ec94a40badc86b7e4b7863ae035220ca5c518a"
+      "sha256": "33343d6dcb0ec89208d5d39e08ec4905927055678b1a237c0f00184ebb911d8f",
+      "size": 34673,
+      "normalized_sha256": "fd7e836939f71b6b8b0a79e2bd6c7e64e2f656b64308855b4183b9c2208c8010"
     },
     "src/daemon/index.mjs": {
       "role": "index",
-      "sha256": "fab8d320a62525d7ea8278383a2d4691660c9342167427b8603735d20ce183ca",
-      "size": 8917,
-      "normalized_sha256": "3c515aad2b3fb020f8c5730a2fae4f25c1b2a58f3fb7888ccad8f35976c28ef1"
+      "sha256": "a5f12e4dbbd4e317d201351c52fdcc3416e0a22b2f444e9d95865fa201a9a47e",
+      "size": 9184,
+      "normalized_sha256": "8a306c1b75b066fce0fd95c889e3f09a2ba1d0cbd9032bb84c70df178ba41388"
     },
     "src/daemon/mcp-factory.mjs": {
       "role": "index",
@@ -410,9 +410,9 @@
     },
     "src/desktop-ui/app.js": {
       "role": "index",
-      "sha256": "8c53504a0b10f50e43f10aff5a9c992cc7541feee4f894786145e6feccf54e02",
-      "size": 150345,
-      "normalized_sha256": "8c53504a0b10f50e43f10aff5a9c992cc7541feee4f894786145e6feccf54e02"
+      "sha256": "7517b01232d03048a683a229b4c35dce80cb807905618c86e08863372e8d221d",
+      "size": 149888,
+      "normalized_sha256": "7517b01232d03048a683a229b4c35dce80cb807905618c86e08863372e8d221d"
     },
     "src/desktop-ui/extensions-view.js": {
       "role": "index",
@@ -422,9 +422,9 @@
     },
     "src/desktop-ui/icons.js": {
       "role": "index",
-      "sha256": "9f7588f0566576786d60d2a7b7fa2b5365ab1754317067c7b710afc08eb3b7ef",
-      "size": 15738,
-      "normalized_sha256": "9f7588f0566576786d60d2a7b7fa2b5365ab1754317067c7b710afc08eb3b7ef"
+      "sha256": "4676b525fee88a997c2c2ff41732f259c81ed15c9b77069c232253b6f8a3a997",
+      "size": 17884,
+      "normalized_sha256": "4676b525fee88a997c2c2ff41732f259c81ed15c9b77069c232253b6f8a3a997"
     },
     "src/desktop-ui/styles.css": {
       "role": "index",
