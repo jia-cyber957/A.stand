@@ -8,10 +8,34 @@
 
 const UI_ICONS = {
   brand: `
-    <path d="M8.2 18.5 12 4.5l3.8 14" />
-    <path d="M4.8 18.5 9.1 8.2" />
-    <path d="M19.2 18.5 14.9 8.2" />
-    <path d="M6.4 15.1h11.2" />`,
+    <defs>
+      <linearGradient id="astand-brand-bg" x1="16" y1="8" x2="112" y2="120" gradientUnits="userSpaceOnUse">
+        <stop offset="0%" stop-color="#27272A" />
+        <stop offset="50%" stop-color="#141416" />
+        <stop offset="100%" stop-color="#09090B" />
+      </linearGradient>
+      <linearGradient id="astand-brand-back" x1="60" y1="26" x2="108" y2="102" gradientUnits="userSpaceOnUse">
+        <stop offset="0%" stop-color="#A1A1AA" />
+        <stop offset="55%" stop-color="#63636B" />
+        <stop offset="100%" stop-color="#3F3F46" />
+      </linearGradient>
+      <linearGradient id="astand-brand-front" x1="32" y1="24" x2="80" y2="104" gradientUnits="userSpaceOnUse">
+        <stop offset="0%" stop-color="#FAFAFA" />
+        <stop offset="45%" stop-color="#D4D4D8" />
+        <stop offset="100%" stop-color="#71717A" />
+      </linearGradient>
+      <linearGradient id="astand-brand-bar" x1="40" y1="74" x2="104" y2="82" gradientUnits="userSpaceOnUse">
+        <stop offset="0%" stop-color="#52525B" />
+        <stop offset="50%" stop-color="#A1A1AA" />
+        <stop offset="100%" stop-color="#3F3F46" />
+      </linearGradient>
+    </defs>
+    <g transform="scale(0.1875)" stroke="none">
+      <rect x="6" y="6" width="116" height="116" rx="28" fill="url(#astand-brand-bg)" stroke="#3F3F46" stroke-width="2" />
+      <path d="M77 28L108 98H96.5L77 52.5L57.5 98H46.5L77 28Z" fill="url(#astand-brand-back)" />
+      <path d="M40 72H94C99 72 103 76 105 82H95C93 79 90 78 86 78H38L40 72Z" fill="url(#astand-brand-bar)" />
+      <path d="M51 28L82 98H70L51 53.5L32 98H20.5L51 28Z" fill="url(#astand-brand-front)" />
+    </g>`,
   clients: `
     <rect x="3.5" y="5" width="17" height="12.5" rx="2.4" />
     <path d="M8 21h8" />

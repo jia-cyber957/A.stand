@@ -183,7 +183,10 @@ const STRINGS = {
   copyPromptBig: ["一键复制 AI 接入 Prompt", "Copy AI setup prompt"],
   waitingHandshake: ["等待上游首次握手…", "Waiting for the first upstream handshake…"],
   connectedAs: ["已识别并连接：%s", "Connected: %s"],
-  waitingHint: ["保持此窗口打开，客户端连接后会自动变绿。", "Keep this window open — it turns green as soon as the client connects."],
+  waitingHint: [
+    "发给 AI 写入配置后，如未立刻变绿，请在该 AI 里刷新 MCP 或再发一条消息",
+    "After sending it to your AI, if this does not turn green, refresh MCP or send one more message in that client",
+  ],
   promptMissing: ["服务端未返回接入 Prompt，请改用 HTTP 配置 JSON。", "The server did not return a setup prompt; use the HTTP config JSON instead."],
   viewPrompt: ["查看接入 Prompt", "View setup prompt"],
 
@@ -1464,7 +1467,7 @@ function renderClientsPage() {
       ${iconSvg(ui.maskTokens ? "eyeOff" : "eye")} ${esc(t("maskTokens"))}
     </button>
     <div class="topbar-spacer"></div>
-    <button class="btn primary" data-action="open-register">${iconSvg("plus")} ${esc(t("addClient"))}</button>
+    <button class="btn primary" data-action="open-register" ${ui.creatingClient ? "disabled" : ""}>${iconSvg("plus")} ${esc(ui.creatingClient ? t("generating") : t("addClient"))}</button>
   </div>`;
 
   let list = "";
@@ -1474,7 +1477,7 @@ function renderClientsPage() {
         <div class="empty-icon">${iconSvg("inbox", 18)}</div>
         <div style="font-size:13px;font-weight:600;color:var(--ink);margin-bottom:4px">${esc(t("noClients"))}</div>
         <div style="max-width:400px;margin:0 auto 14px">${esc(t("noClientsDesc"))}</div>
-        <button class="btn primary" data-action="open-register">${iconSvg("plus")} ${esc(t("addClient"))}</button>
+        <button class="btn primary" data-action="open-register" ${ui.creatingClient ? "disabled" : ""}>${iconSvg("plus")} ${esc(ui.creatingClient ? t("generating") : t("addClient"))}</button>
       </div>
     </div>`;
   } else if (!active.length && !disabled.length) {
@@ -2429,7 +2432,6 @@ function renderOverlay() {
   const modal = ui.modal;
   if (!modal) return "";
   if (modal.type === "client") return renderClientDrawer(modal);
-  if (modal.type === "register") return renderRegisterModal();
   if (modal.type === "setup") return renderSetupModal();
   if (modal.type === "channel") return renderChannelModal();
   if (modal.type === "job") return renderJobModal();
@@ -2452,30 +2454,6 @@ function modalHeader(title, sub, closeAction = "close-modal") {
     </div>
     <button class="icon-btn sm plain" data-action="${closeAction}" aria-label="${esc(t("close"))}">${iconSvg("close")}</button>
   </div>`;
-}
-
-function renderRegisterModal() {
-  return overlayShell(`<div class="modal narrow" role="dialog" aria-modal="true" aria-label="${esc(t("registerTitle"))}">
-    ${modalHeader(t("registerTitle"), t("registerSub"))}
-    <div class="modal-body">
-      <div class="field">
-        <label class="field-label" for="reg-nickname">${esc(t("nicknameLabel"))}</label>
-        <input class="input" id="reg-nickname" data-focus-key="reg-nickname" data-ui="register-name" placeholder="${esc(t("nicknamePlaceholder"))}" value="${esc(ui.registerName || "")}" maxlength="60" autocomplete="off" />
-      </div>
-      <div class="step-hint">${iconSvg("spark")}<span>${esc(t("registerHint"))}</span></div>
-      <div class="icon-grid" style="grid-template-columns:repeat(8,minmax(0,1fr))">
-        ${CLIENT_ICON_KEYS.map((key) => `<span class="icon-choice" title="${esc(key)}">${clientIconSvg(key, 18)}</span>`).join("")}
-      </div>
-      ${ui.registerError ? `<div class="field-hint" style="color:var(--red)">${esc(ui.registerError)}</div>` : ""}
-    </div>
-    <div class="modal-foot">
-      <div class="spacer"></div>
-      <button class="btn" data-action="close-modal">${esc(t("cancel"))}</button>
-      <button class="btn primary" data-action="create-client" ${ui.creatingClient ? "disabled" : ""}>
-        ${iconSvg("spark")} ${esc(ui.creatingClient ? t("generating") : t("generateToken"))}
-      </button>
-    </div>
-  </div>`);
 }
 
 function setupPromptText(setup) {
@@ -2829,6 +2807,34 @@ async function loadClientSetup(clientId, { open = true } = {}) {
   return { setup, token: res?.token || "", client };
 }
 
+async function createClientAndOpenSetup() {
+  if (ui.creatingClient) return;
+  ui.creatingClient = true;
+  ui.registerError = "";
+  scheduleRender();
+  try {
+    const res = await api("/api/clients", { method: "POST", body: {} });
+    if (res?.token) ui.tokenCache[res.client?.id || ""] = res.token;
+    applyPayload(res);
+    if (!res?.state) await refreshState({ silent: true });
+    const client = res?.client ? normalizeClient(res.client) : null;
+    ui.setup = {
+      clientId: client?.id || res?.client?.id || "",
+      token: res?.token || "",
+      ...normalizeSetup(res?.setup, res?.token),
+      clientName: client?.name || "",
+    };
+    ui.setupTab = "prompt";
+    openModal({ type: "setup" });
+  } catch (err) {
+    ui.registerError = err?.message || t("saveFailed");
+    showError("", err);
+  } finally {
+    ui.creatingClient = false;
+    scheduleRender();
+  }
+}
+
 function normalizeSetup(raw, token) {
   const setup = raw || {};
   return {
@@ -2991,39 +2997,8 @@ async function onActionClick(event) {
       scheduleRender();
       return;
     case "open-register":
-      ui.registerError = "";
-      ui.registerName = "";
-      openModal({ type: "register" });
+      await createClientAndOpenSetup();
       return;
-    case "create-client": {
-      const input = document.getElementById("reg-nickname");
-      const label = (input ? input.value : ui.registerName || "").trim();
-      ui.creatingClient = true;
-      ui.registerError = "";
-      scheduleRender();
-      try {
-        const res = await api("/api/clients", { method: "POST", body: label ? { label } : {} });
-        if (res?.token) ui.tokenCache[res.client?.id || ""] = res.token;
-        applyPayload(res);
-        if (!res?.state) await refreshState({ silent: true });
-        const client = res?.client ? normalizeClient(res.client) : null;
-        ui.setup = {
-          clientId: client?.id || res?.client?.id || "",
-          token: res?.token || "",
-          ...normalizeSetup(res?.setup, res?.token),
-          clientName: client?.name || "",
-        };
-        ui.setupTab = "prompt";
-        ui.creatingClient = false;
-        ui.registerName = "";
-        openModal({ type: "setup" });
-      } catch (err) {
-        ui.creatingClient = false;
-        ui.registerError = err?.message || t("saveFailed");
-        scheduleRender();
-      }
-      return;
-    }
     case "setup-tab":
       ui.setupTab = target.dataset.tab || "prompt";
       scheduleRender();
