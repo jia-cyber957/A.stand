@@ -57,12 +57,24 @@ export function createCliCatalogModal(host) {
 
   const L = (zh, enText) => (isEn() ? enText : zh);
 
+  const DUAL_REGION_CLI_META = {
+    codebuddy: {
+      cn: ["国内版（微信 · codebuddy.cn）", "China (WeChat · codebuddy.cn)"],
+      global: ["国际版（Google/GitHub · codebuddy.ai）", "Global (Google/GitHub · codebuddy.ai)"],
+    },
+    minimax: {
+      cn: ["国内版（中国站 · CN）", "China (CN)"],
+      global: ["国际版（海外站 · Global）", "Global"],
+    },
+  };
+
   const view = {
     tab: "presets", // "presets" | "custom"
     search: "",
     saving: false,
     error: "",
     form: null,
+    regionPicker: null, // { engineId, profileId }
     loginBusyId: "",
     installBusyId: "",
     dismissedLogins: {}, // engineId -> finishedAt
@@ -151,11 +163,29 @@ export function createCliCatalogModal(host) {
   }
 
   function renderLoginBar(eid) {
+    const label = engineLabel(eid);
+    const dualMeta = DUAL_REGION_CLI_META[eid] || null;
+    if (dualMeta && view.regionPicker?.engineId === eid) {
+      const pid = view.regionPicker.profileId || "";
+      return `<div class="cli-login-bar">
+        <div class="cli-login-head">
+          <div class="cli-login-head-text">
+            <div class="cli-login-title">${esc(L(`选择 ${label} 登录版本`, `Choose ${label} login region`))}</div>
+            <div class="cli-login-hint">${esc(L("同一 CLI 支持国内版与国际版账号，也可通过多账号同时保留两套登录态。", "Supports both China & Global accounts; you can also keep both via multi-account."))}</div>
+          </div>
+          <button class="btn xs ghost" data-action="cli-login-region-cancel">${esc(L("取消", "Cancel"))}</button>
+        </div>
+        <div class="cli-login-actions" style="flex-wrap:wrap">
+          <button class="btn xs primary" data-action="cli-login-start" data-engine="${esc(eid)}" data-region="cn" data-profile="${esc(pid)}">${iconSvg("key")} ${esc(L(dualMeta.cn[0], dualMeta.cn[1]))}</button>
+          <button class="btn xs" data-action="cli-login-start" data-engine="${esc(eid)}" data-region="global" data-profile="${esc(pid)}">${iconSvg("globe")} ${esc(L(dualMeta.global[0], dualMeta.global[1]))}</button>
+        </div>
+      </div>`;
+    }
+
     const busy = view.loginBusyId === eid;
     const session = getLoginSession(eid);
     if (!busy && !session) return "";
     const status = busy && !session ? "starting" : session?.status || "starting";
-    const label = engineLabel(eid);
 
     if (status === "starting") {
       return `<div class="cli-login-bar">
@@ -185,13 +215,13 @@ export function createCliCatalogModal(host) {
     }
 
     if (status === "waiting_browser") {
-      const regionToggle =
-        eid === "minimax"
-          ? `<div class="cli-login-regions">
-              <button class="btn xs ${session?.region !== "global" ? "primary" : ""}" data-action="cli-login-start" data-engine="minimax" data-region="cn">${esc(L("中国版", "CN"))}</button>
-              <button class="btn xs ${session?.region === "global" ? "primary" : ""}" data-action="cli-login-start" data-engine="minimax" data-region="global">${esc(L("国际版", "Global"))}</button>
-            </div>`
-          : "";
+      const pidAttr = session?.profileId ? ` data-profile="${esc(session.profileId)}"` : "";
+      const regionToggle = dualMeta
+        ? `<div class="cli-login-regions">
+            <button class="btn xs ${session?.region !== "global" ? "primary" : ""}" data-action="cli-login-start" data-engine="${esc(eid)}" data-region="cn"${pidAttr}>${esc(L("国内版", "CN"))}</button>
+            <button class="btn xs ${session?.region === "global" ? "primary" : ""}" data-action="cli-login-start" data-engine="${esc(eid)}" data-region="global"${pidAttr}>${esc(L("国际版", "Global"))}</button>
+          </div>`
+        : "";
       return `<div class="cli-login-bar">
         <div class="cli-login-head">
           <span class="cli-spinner" aria-hidden="true"></span>
@@ -536,11 +566,24 @@ export function createCliCatalogModal(host) {
       scheduleRender();
       return true;
     }
+    if (action === "cli-login-region-cancel") {
+      view.regionPicker = null;
+      scheduleRender();
+      return true;
+    }
     if (action === "cli-login-start") {
       const eid = target.dataset.engine || "";
-      const region = target.dataset.region === "global" ? "global" : "cn";
+      const rawRegion = target.dataset.region || "";
       const profileId = target.dataset.profile || "";
       if (!eid) return true;
+      if (DUAL_REGION_CLI_META[eid] && !rawRegion) {
+        view.regionPicker = { engineId: eid, profileId };
+        delete view.dismissedLogins[eid];
+        scheduleRender();
+        return true;
+      }
+      const region = rawRegion === "global" ? "global" : "cn";
+      if (view.regionPicker?.engineId === eid) view.regionPicker = null;
       delete view.dismissedLogins[eid];
       view.loginBusyId = eid;
       scheduleRender();

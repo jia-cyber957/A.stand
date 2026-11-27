@@ -38,6 +38,8 @@ export function createCliDetailModal(host) {
 
   const L = (zh, enText) => (isEn() ? enText : zh);
 
+  const DUAL_REGION_ENGINES = new Set(["codebuddy", "minimax"]);
+
   const view = {
     engineId: "",
     modelTab: "all", // "all" FIRST by default, "selected" second
@@ -45,6 +47,7 @@ export function createCliDetailModal(host) {
     loadingAccounts: false,
     addingProfile: false,
     profileLabelDraft: "",
+    profileRegionDraft: "cn",
     savingWhitelist: false,
     testing: false,
     testResult: null,
@@ -268,7 +271,13 @@ export function createCliDetailModal(host) {
       ? view.addingProfile
         ? `<div class="stack" style="gap:6px">
             <div class="cli-detail-add-form">
-              <input class="input" data-cd-field="profileLabel" data-focus-key="cd-prof-label" placeholder="${esc(L("输入账号备注（如：备用号 2）", "Account label (e.g. Backup #2)"))}" value="${esc(view.profileLabelDraft)}" maxlength="40" />
+              <input class="input" data-cd-field="profileLabel" data-focus-key="cd-prof-label" placeholder="${esc(L("输入账号备注（如：国际版 / 备用号 2）", "Account label (e.g. Global / Backup #2)"))}" value="${esc(view.profileLabelDraft)}" maxlength="40" />
+              ${DUAL_REGION_ENGINES.has(eid)
+                ? `<div class="seg" role="tablist" style="flex-shrink:0">
+                    <button class="seg-btn ${view.profileRegionDraft !== "global" ? "active" : ""}" data-action="cd-profile-region" data-region="cn">${esc(L("国内版", "CN"))}</button>
+                    <button class="seg-btn ${view.profileRegionDraft === "global" ? "active" : ""}" data-action="cd-profile-region" data-region="global">${esc(L("国际版", "Global"))}</button>
+                  </div>`
+                : ""}
               <button class="btn xs primary" data-action="cd-save-profile">${esc(L("创建并登录", "Create & sign in"))}</button>
               <button class="btn xs ghost" data-action="cd-cancel-add-profile">${esc(L("取消", "Cancel"))}</button>
             </div>
@@ -523,6 +532,12 @@ export function createCliDetailModal(host) {
     if (action === "cd-open-add-profile") {
       view.addingProfile = true;
       view.profileLabelDraft = "";
+      view.profileRegionDraft = "cn";
+      scheduleRender();
+      return true;
+    }
+    if (action === "cd-profile-region") {
+      view.profileRegionDraft = target.dataset.region === "global" ? "global" : "cn";
       scheduleRender();
       return true;
     }
@@ -532,7 +547,12 @@ export function createCliDetailModal(host) {
       return true;
     }
     if (action === "cd-save-profile") {
-      const label = view.profileLabelDraft.trim() || L("备用账号", "Backup account");
+      const region = DUAL_REGION_ENGINES.has(view.engineId) && view.profileRegionDraft === "global" ? "global" : "cn";
+      const label =
+        view.profileLabelDraft.trim() ||
+        (DUAL_REGION_ENGINES.has(view.engineId) && region === "global"
+          ? L("国际版账号", "Global account")
+          : L("备用账号", "Backup account"));
       try {
         const res = await api(`/api/cli-engines/${encodeURIComponent(view.engineId)}/accounts`, {
           method: "POST",
@@ -545,7 +565,7 @@ export function createCliDetailModal(host) {
           showToast(L("隔离账号已创建，正在发起登录…", "Isolated account created — starting sign-in…"));
           await api(`/api/cli-engines/${encodeURIComponent(view.engineId)}/login`, {
             method: "POST",
-            body: { region: "cn", profileId: res.profile.id, autoOpen: true },
+            body: { region, profileId: res.profile.id, autoOpen: true },
           });
           await refreshState({ silent: true });
         }
