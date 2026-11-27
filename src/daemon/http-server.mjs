@@ -5,7 +5,7 @@ import path from "node:path";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { API_PROVIDERS, CLI_ENGINES_META, PLUGIN_VERSION } from "../core/constants.mjs";
 import { CLIENT_PRESETS } from "../core/clients.mjs";
-import { exportSanitizedDiagnostics, openInExplorer } from "../core/diagnostics.mjs";
+import { appendDaemonEvent, exportSanitizedDiagnostics, openInExplorer } from "../core/diagnostics.mjs";
 import { createRelayMcpServer } from "./mcp-factory.mjs";
 
 const DEFAULT_PORT = 3426;
@@ -253,10 +253,13 @@ export async function createDaemonHttpServer({
     broadcast("client_session_closed");
   }
 
+  const logEvent = (type, detail = {}) => appendDaemonEvent(store.dataDir, { type, ...detail });
+
   const sessionSweeper = setInterval(() => {
     const cutoff = Date.now() - SESSION_IDLE_TTL_MS;
     for (const [sid, entry] of [...sessions.entries()]) {
       if (entry.lastUsedAt < cutoff) {
+        logEvent("mcp_session_evicted", { sessionId: sid, clientId: entry.clientId, transport: entry.transportKind });
         dropSession(sid, true);
       }
     }
@@ -270,10 +273,14 @@ export async function createDaemonHttpServer({
       onsessioninitialized: (sessionId) => {
         holder.sessionId = sessionId;
         registerSession({ transport, server, clientId, transportKind, sessionId });
+        logEvent("mcp_session_opened", { sessionId, clientId, transport: transportKind });
       },
     });
     transport.onclose = () => {
-      if (holder.sessionId) dropSession(holder.sessionId);
+      if (holder.sessionId) {
+        logEvent("mcp_session_closed", { sessionId: holder.sessionId, clientId, transport: transportKind });
+        dropSession(holder.sessionId);
+      }
     };
     const server = createRelayMcpServer({
       store,
@@ -283,6 +290,7 @@ export async function createDaemonHttpServer({
       clientId,
       transportKind,
       onEvent: (reason) => broadcast(reason),
+      onToolCall: (info) => logEvent("mcp_tool_call", info),
     });
     await server.connect(transport);
     return { transport, server };
@@ -296,9 +304,16 @@ export async function createDaemonHttpServer({
       const info = message.params?.clientInfo;
       if (!info || typeof info !== "object") continue;
       try {
-        clientRegistry.recordHandshake(clientId, {
+        const updated = clientRegistry.recordHandshake(clientId, {
           name: typeof info.name === "string" ? info.name : "",
           version: typeof info.version === "string" ? info.version : "",
+          transport: transportKind,
+        });
+        logEvent("client_handshake", {
+          clientId,
+          detectedClientName: info.name || "",
+          detectedClientVersion: info.version || "",
+          matchedIcon: updated?.iconKey || "generic",
           transport: transportKind,
         });
         broadcast("client_connected");
@@ -307,13 +322,19 @@ export async function createDaemonHttpServer({
   }
 
   async function handleMcp(req, res, url) {
+    const transportKind = req.headers["x-astand-transport"] === "stdio-bridge" ? "stdio-bridge" : "http";
     const auth = clientRegistry.authenticate(extractMcpToken(req, url));
     if (!auth.ok) {
+      logEvent("mcp_auth_failed", {
+        status: auth.status || 401,
+        reason: auth.error || "Unauthorized",
+        method: req.method,
+        transport: transportKind,
+      });
       sendJsonRpcError(res, auth.status || 401, auth.error || "Unauthorized");
       return;
     }
     const clientId = auth.client.id;
-    const transportKind = req.headers["x-astand-transport"] === "stdio-bridge" ? "stdio-bridge" : "http";
     const sessionIdHeader = req.headers["mcp-session-id"];
     const sessionId = typeof sessionIdHeader === "string" ? sessionIdHeader.trim() : "";
 

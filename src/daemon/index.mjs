@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PLUGIN_VERSION } from "../core/constants.mjs";
 import { ClientRegistry } from "../core/clients.mjs";
+import { appendDaemonEvent } from "../core/diagnostics.mjs";
 import { ExtensionRegistry } from "../core/extensions.mjs";
 import { RelayOrchestrator } from "../core/orchestrator.mjs";
 import { RelayStore } from "../core/store.mjs";
@@ -156,6 +157,7 @@ async function main() {
       existing.pid !== process.pid &&
       (await healthResponds(existing.port, expectedDataDirHash))
     ) {
+      appendDaemonEvent(dataDir, { type: "daemon_reuse", existingPid: existing.pid, port: existing.port });
       if (cli.printReady) emitReady(existing);
       return 0;
     }
@@ -194,12 +196,21 @@ async function main() {
       version: PLUGIN_VERSION,
     };
     writeDaemonFile(daemonFile, info);
+    appendDaemonEvent(dataDir, {
+      type: "daemon_start",
+      version: PLUGIN_VERSION,
+      pid: process.pid,
+      port: handle.port,
+      node: process.version,
+      platform: process.platform,
+    });
     if (cli.printReady) emitReady(info);
 
     let shuttingDown = false;
     async function shutdown(code = 0) {
       if (shuttingDown) return;
       shuttingDown = true;
+      appendDaemonEvent(dataDir, { type: "daemon_shutdown", pid: process.pid, code });
       try {
         await handle.close();
       } catch {}

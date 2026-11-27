@@ -88,6 +88,30 @@ function listJobIds(dataDir) {
   }
   return [...byJob.entries()].sort((a, b) => b[1] - a[1]).map(([id]) => id);
 }
+const DAEMON_EVENTS_FILE = "daemon-events.jsonl";
+const DAEMON_EVENTS_MAX_BYTES = 1_500_000;
+const DAEMON_EVENTS_KEEP_LINES = 1500;
+
+export function appendDaemonEvent(dataDir, event = {}) {
+  if (!dataDir || !event || typeof event !== "object") return;
+  try {
+    const root = path.resolve(dataDir);
+    fs.mkdirSync(root, { recursive: true });
+    const filePath = path.join(root, DAEMON_EVENTS_FILE);
+    const clean = stripApiKeys(event);
+    const row = { ts: new Date().toISOString(), ...clean };
+    const line = redactText(JSON.stringify(row)) + "\n";
+    fs.appendFileSync(filePath, line, "utf8");
+    try {
+      if (fs.statSync(filePath).size > DAEMON_EVENTS_MAX_BYTES) {
+        const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/).filter(Boolean);
+        const trimmed = lines.slice(-DAEMON_EVENTS_KEEP_LINES).join("\n") + "\n";
+        fs.writeFileSync(filePath, trimmed, "utf8");
+      }
+    } catch {}
+  } catch {}
+}
+
 function summarize(dataDir, jobIds, version, daemonInfo, includedJobs) {
   const readCount = (file, key) => {
     try {
@@ -116,6 +140,24 @@ function summarize(dataDir, jobIds, version, daemonInfo, includedJobs) {
     } catch {}
   }
   failed.sort((a, b) => b.at - a.at);
+  const recentEvents = [];
+  let authFailures = 0;
+  let handshakes = 0;
+  const evText = safeReadText(path.join(dataDir, DAEMON_EVENTS_FILE)) || "";
+  for (const line of evText.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      const ev = JSON.parse(line);
+      if (ev?.type === "mcp_auth_failed" || ev?.type === "host_rejected" || ev?.type === "origin_rejected") authFailures++;
+      if (ev?.type === "client_handshake") handshakes++;
+      recentEvents.push(ev);
+    } catch {}
+  }
+  const tailEvents = recentEvents
+    .slice(-10)
+    .reverse()
+    .map((ev) => `- ${ev.ts || "?"} · ${ev.type || "event"} · ${redactText(JSON.stringify({ ...ev, ts: undefined, type: undefined })).slice(0, 260)}`);
+
   const host = daemonInfo?.host || "127.0.0.1";
   const port = daemonInfo?.port ?? "?";
   return [
@@ -133,7 +175,11 @@ function summarize(dataDir, jobIds, version, daemonInfo, includedJobs) {
     `- Telemetry turns: ${turns}`,
     `- Cache turns reported: ${reported}`,
     `- Cache turns unreported: ${turns - reported}`,
+    `- Daemon events logged: ${recentEvents.length} (handshakes=${handshakes}, auth/origin rejections=${authFailures})`,
     `- Job artifacts included: ${includedJobs}`,
+    "",
+    "## Recent Daemon & Upstream Communication Events",
+    ...(tailEvents.length ? tailEvents : ["- (none)"]),
     "",
     "## Last failed / errored jobs",
     ...(failed.length ? failed.slice(0, 5).map((row) => `- ${redactText(row.line).slice(0, 400)}`) : ["- (none)"]),
@@ -222,7 +268,7 @@ export async function exportSanitizedDiagnostics({
     const text = safeReadText(path.join(root, source));
     if (text != null) fs.writeFileSync(path.join(stageDir, target), sanitizeJson(text, secrets), "utf8");
   }
-  for (const source of ["telemetry.jsonl", "job-perf.jsonl"]) {
+  for (const source of ["telemetry.jsonl", "job-perf.jsonl", DAEMON_EVENTS_FILE]) {
     const text = safeReadText(path.join(root, source));
     if (text != null) fs.writeFileSync(path.join(stageDir, source), sanitizeJsonl(text, secrets), "utf8");
   }

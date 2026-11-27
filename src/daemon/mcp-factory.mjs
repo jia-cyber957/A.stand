@@ -30,6 +30,7 @@ export function createRelayMcpServer({
   clientId,
   transportKind = "http",
   onEvent,
+  onToolCall,
 } = {}) {
   if (!orchestrator) throw new Error("createRelayMcpServer requires an orchestrator");
   if (!clientRegistry) throw new Error("createRelayMcpServer requires a clientRegistry");
@@ -51,9 +52,19 @@ export function createRelayMcpServer({
     };
   };
 
-  const recordCall = () => {
+  const recordCall = (toolName = "", meta = {}) => {
     try {
       clientRegistry.recordCall(clientId, transportKind);
+    } catch {}
+    try {
+      const ctx = clientContext();
+      onToolCall?.({
+        clientId,
+        clientLabel: ctx.clientLabel,
+        transport: transportKind,
+        toolName,
+        ...meta,
+      });
     } catch {}
   };
 
@@ -120,7 +131,7 @@ export function createRelayMcpServer({
       },
     },
     async (args, extra) => {
-      recordCall();
+      recordCall("agent_relay_ask", { role: args.role || "oracle", worktree: Boolean(args.worktree), resumed: Boolean(args.sessionId) });
       try {
         const res = await orchestrator.ask({
           ...args,
@@ -165,7 +176,7 @@ export function createRelayMcpServer({
       },
     },
     async ({ jobId, jobIds, waitSec, detail }, extra) => {
-      recordCall();
+      recordCall("agent_relay_poll", { count: Array.isArray(jobIds) ? jobIds.length : jobId ? 1 : 0 });
       const hb = makeHeartbeat(extra);
       const res =
         Array.isArray(jobIds) && jobIds.length > 0
@@ -213,7 +224,7 @@ export function createRelayMcpServer({
       },
     },
     async (args, extra) => {
-      recordCall();
+      recordCall("agent_relay_review", { targetType: args.targetType || "uncommittedChanges" });
       try {
         const res = await orchestrator.review({
           ...args,
@@ -259,7 +270,7 @@ export function createRelayMcpServer({
       },
     },
     async (args) => {
-      recordCall();
+      recordCall("agent_relay_session", { action: args.action || "" });
       try {
         const res = await orchestrator.sessionAction(args);
         const text = typeof res.text === "string" ? res.text : JSON.stringify(res, null, 2);
