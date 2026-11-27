@@ -14,7 +14,11 @@ import {
 import { buildLoginLaunchSpec, resolveLoginAutoOpen } from "../src/core/cli-login.mjs";
 import {
   buildProfileLaunchOverlay,
+  ensureCodeArtsProfileReady,
+  ensureProfileDirReady,
   parseDoubaoAuthStatus,
+  parseJunieListModels,
+  parseKiroWhoami,
   parseMiniMaxProviderList,
   parseQoderStatus,
   resolveProfileDir,
@@ -168,7 +172,7 @@ async function main() {
   });
 
   await test("profile isolation matrix, safe paths and launch overlays", () => {
-    const trueIds = ["codex", "deepseek-harness", "qoder", "qoder-cn", "opencode", "codebuddy", "minimax", "doubao"];
+    const trueIds = ["codex", "deepseek-harness", "qoder", "qoder-cn", "opencode", "codebuddy", "minimax", "doubao", "junie", "kiro", "codearts"];
     for (const id of trueIds) assert.equal(supportsMultiAccountIsolation(id), true, id);
     for (const id of ["kimi", "qwen", "gemini", "cursor-cli", "claude-code"]) {
       assert.equal(supportsMultiAccountIsolation(id), false, id);
@@ -199,6 +203,66 @@ async function main() {
     assert.equal(mm.env.HOME, codexDir);
     assert.equal(mm.env.USERPROFILE, codexDir);
     assert.deepEqual(buildProfileLaunchOverlay("doubao", codexDir), { env: {}, extraArgs: [] });
+
+    const originalJavaOpts = process.env.JAVA_TOOL_OPTIONS;
+    process.env.JAVA_TOOL_OPTIONS = "-Xmx256m";
+    try {
+      const junie = buildProfileLaunchOverlay("junie", codexDir);
+      assert.equal(junie.env.JUNIE_DATA, path.join(os.homedir(), ".local", "share", "junie"));
+      assert.equal(junie.env.HOME, codexDir);
+      assert.equal(junie.env.USERPROFILE, codexDir);
+      assert.equal(junie.env.JAVA_TOOL_OPTIONS, `-Xmx256m -Duser.home=${codexDir}`);
+      assert.deepEqual(junie.extraArgs, []);
+    } finally {
+      if (originalJavaOpts === undefined) delete process.env.JAVA_TOOL_OPTIONS;
+      else process.env.JAVA_TOOL_OPTIONS = originalJavaOpts;
+    }
+    const junieClean = buildProfileLaunchOverlay("junie", codexDir);
+    assert.ok(!/\s{2,}/.test(junieClean.env.JAVA_TOOL_OPTIONS), "JAVA_TOOL_OPTIONS must be appended cleanly");
+    assert.ok(junieClean.env.JAVA_TOOL_OPTIONS.endsWith(`-Duser.home=${codexDir}`));
+
+    const kiro = buildProfileLaunchOverlay("kiro", codexDir);
+    assert.equal(kiro.env.HOME, codexDir);
+    assert.equal(kiro.env.USERPROFILE, codexDir);
+    assert.equal(kiro.env.LOCALAPPDATA, path.join(codexDir, "AppData", "Local"));
+    assert.equal(kiro.env.APPDATA, path.join(codexDir, "AppData", "Roaming"));
+
+    const codearts = buildProfileLaunchOverlay("codearts", codexDir);
+    assert.equal(codearts.env.HOME, codexDir);
+    assert.equal(codearts.env.USERPROFILE, codexDir);
+    assert.equal(codearts.env.XDG_DATA_HOME, path.join(codexDir, "data"));
+    assert.equal(codearts.env.XDG_CONFIG_HOME, path.join(codexDir, "config"));
+    assert.equal(codearts.env.XDG_STATE_HOME, path.join(codexDir, "state"));
+    assert.equal(codearts.env.XDG_CACHE_HOME, path.join(codexDir, "cache"));
+  });
+
+  await test("kiro/codearts profile dirs are created before first spawn", () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "astand-profile-ready-"));
+    try {
+      const kiroDir = resolveProfileDir(base, "kiro", "work");
+      const kiroReady = ensureProfileDirReady("kiro", kiroDir);
+      assert.equal(kiroReady.ok, true);
+      assert.equal(fs.existsSync(path.join(kiroDir, "AppData", "Local")), true);
+      assert.equal(fs.existsSync(path.join(kiroDir, "AppData", "Roaming")), true);
+
+      const codeartsDir = resolveProfileDir(base, "codearts", "work");
+      const settingsFile = ensureCodeArtsProfileReady(codeartsDir);
+      assert.equal(fs.existsSync(settingsFile), true);
+      const settings = JSON.parse(fs.readFileSync(settingsFile, "utf8"));
+      assert.deepEqual(settings.security.folderTrust, { enabled: false });
+      assert.deepEqual(settings.security.trustedFolders, []);
+
+      const ready = ensureProfileDirReady("codearts", codeartsDir);
+      assert.equal(ready.ok, true);
+      assert.equal(fs.existsSync(path.join(codeartsDir, "data", "opencode", "settings.json")), true);
+      assert.equal(fs.existsSync(path.join(codeartsDir, "cache")), true);
+      // Pre-existing settings are never overwritten by a later launch.
+      fs.writeFileSync(settingsFile, JSON.stringify({ security: { folderTrust: { enabled: true } } }), "utf8");
+      ensureCodeArtsProfileReady(codeartsDir);
+      assert.equal(JSON.parse(fs.readFileSync(settingsFile, "utf8")).security.folderTrust.enabled, true);
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
   });
 
   await test("account parsers expose only non-sensitive identity fields", () => {
@@ -216,6 +280,38 @@ async function main() {
 
     assert.equal(parseMiniMaxProviderList("minimax_oauth   active   default").loggedIn, true);
     assert.equal(parseMiniMaxProviderList("minimax_oauth   disabled").loggedIn, false);
+
+    assert.equal(parseKiroWhoami('{"account":null}').loggedIn, false);
+    assert.equal(parseKiroWhoami("error: timed out waiting for connection").loggedIn, false);
+    const kiro = parseKiroWhoami(
+      'warning: log line before payload\n{"account":{"emailAddress":"dev@example.com","userName":"dev","accessToken":"sk-secret-value","accountName":"Example Org"}}'
+    );
+    assert.equal(kiro.loggedIn, true);
+    assert.equal(kiro.email, "dev@example.com");
+    assert.equal(kiro.username, "dev");
+    assert.equal(kiro.loginMethod, "kiro");
+    assert.ok(!JSON.stringify(kiro).includes("sk-secret-value"));
+    assert.ok(!JSON.stringify(kiro).includes("accessToken"));
+  });
+
+  await test("junie model catalog parser tolerates the JVM log prefix", () => {
+    const text = [
+      "Cannot initialize file logging (pid=38208): FILE appender is missing or not started",
+      "Logback error: openFile(...) call failed.: FileNotFoundException (拒绝访问。)",
+      '{"models":[{"id":"junie-lite","displayName":"Junie Lite","default":true},',
+      '{"id":"claude-sonnet-5-5","displayName":"Claude Sonnet 5.5"}]}',
+    ].join("\n");
+    const models = parseJunieListModels(text);
+    assert.equal(models.length, 2);
+    assert.deepEqual(
+      models.map((m) => [m.id, m.modelName, m.isDefault]),
+      [
+        ["cli:junie:junie-lite", "junie-lite", false],
+        ["cli:junie:claude-sonnet-5-5", "claude-sonnet-5-5", false],
+      ]
+    );
+    assert.equal(parseJunieListModels("no json here").length, 0);
+    assert.deepEqual(parseJunieListModels('{"models":[]}'), []);
   });
 
   await test("qoder login never double-opens while minimax/others keep auto-open", () => {
@@ -234,6 +330,37 @@ async function main() {
     const codexSpec = buildLoginLaunchSpec("codex", { command: "codex", loginCmd: "codex login" }, "cn", "C:\\profiles\\codex", fakeResolver);
     assert.equal(codexSpec.env.CODEX_HOME, "C:\\profiles\\codex");
     assert.deepEqual(codexSpec.args, ["login"]);
+  });
+
+  await test("junie/kiro/codearts login specs use native auth protocols", () => {
+    const fakeResolver = () => ({ command: process.execPath, useShell: false });
+    const profileDir = "C:\\profiles\\work";
+
+    const junie = buildLoginLaunchSpec("junie", { command: "junie", loginCmd: "junie" }, "cn", profileDir, fakeResolver);
+    assert.equal(junie.ok, true);
+    assert.equal(junie.mode, "acp_auth");
+    assert.deepEqual(junie.args, ["--acp=true"]);
+    assert.equal(junie.authMethodId, "jetbrains-account");
+    assert.equal(junie.autoOpen, false);
+    assert.equal(resolveLoginAutoOpen("junie", true), false);
+    assert.equal(junie.env.JUNIE_DATA, path.join(os.homedir(), ".local", "share", "junie"));
+    assert.ok(junie.env.JAVA_TOOL_OPTIONS.endsWith(`-Duser.home=${profileDir}`));
+
+    const kiro = buildLoginLaunchSpec("kiro", { command: "kiro-cli", loginCmd: "kiro-cli login" }, "cn", profileDir, fakeResolver);
+    assert.equal(kiro.ok, true);
+    assert.equal(kiro.mode, "browser");
+    assert.deepEqual(kiro.args, ["login", "--license", "free", "--use-device-flow"]);
+    assert.equal(kiro.autoOpen, true);
+    assert.equal(kiro.env.LOCALAPPDATA, path.join(profileDir, "AppData", "Local"));
+    assert.equal(kiro.env.APPDATA, path.join(profileDir, "AppData", "Roaming"));
+
+    const codearts = buildLoginLaunchSpec("codearts", { command: "codearts", loginCmd: "codearts auth login" }, "cn", profileDir, fakeResolver);
+    assert.equal(codearts.ok, true);
+    assert.equal(codearts.mode, "browser");
+    assert.deepEqual(codearts.args, ["auth", "login"]);
+    assert.equal(codearts.fallbackAuthUrl, "https://codearts.huaweicloud.com/portal/settings/cli-auth");
+    assert.match(codearts.guidance, /CODEARTS_CLI_AK/);
+    assert.equal(codearts.env.XDG_DATA_HOME, path.join(profileDir, "data"));
   });
 
   await test("store persists CLI model whitelist and account profile CRUD", async () => {

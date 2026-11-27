@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -10,6 +10,7 @@ import { getAllCliInstalls } from "./cli-install.mjs";
 import {
   clearCliAccountCache,
   getCachedCliAccountInfo,
+  parseJunieListModels,
   probeCliAccountInfo,
   supportsMultiAccountIsolation,
 } from "./cli-profiles.mjs";
@@ -37,6 +38,50 @@ const GATEKEEPER_REASON_MAX = 180;
 const TRIAGE_DETAIL_MAX = 600;
 
 const __orchestratorDir = path.dirname(fileURLToPath(import.meta.url));
+
+const JUNIE_MODEL_CACHE_TTL_MS = 10 * 60_000;
+let junieModelDiscoveryCache = { ts: 0, models: [] };
+
+/** Run `junie list-models` (fixed argv, no shell interpolation) and return its raw output. */
+function runJunieModelList(bin, timeoutMs = 6_000) {
+  return new Promise((resolve) => {
+    if (!bin?.command) return resolve("");
+    const quote = (value) => `"${String(value).replace(/"/g, '""')}"`;
+    const useShell = Boolean(bin.useShell) && process.platform === "win32";
+    const command = useShell ? process.env.ComSpec || "cmd.exe" : bin.command;
+    const args = ["list-models"];
+    const execArgs = useShell ? ["/d", "/s", "/c", `"${[quote(bin.command), ...args.map(quote)].join(" ")}"`] : args;
+    execFile(
+      command,
+      execArgs,
+      {
+        encoding: "utf8",
+        timeout: timeoutMs,
+        windowsHide: true,
+        maxBuffer: 1024 * 1024,
+        shell: false,
+        ...(useShell ? { windowsVerbatimArguments: true } : {}),
+      },
+      (err, stdout, stderr) => resolve(`${stdout || ""}\n${stderr || ""}`)
+    );
+  });
+}
+
+/**
+ * Junie enumerates its real catalog before login, but ACP model discovery may fail or only expose
+ * the pseudo-default. Fall back to the CLI's JSON catalog, cached briefly to keep the panel light.
+ */
+async function discoverJunieModels(descriptor) {
+  const now = Date.now();
+  if (junieModelDiscoveryCache.ts && now - junieModelDiscoveryCache.ts < JUNIE_MODEL_CACHE_TTL_MS) {
+    return junieModelDiscoveryCache.models;
+  }
+  const bin = resolveCliPresetBinary(descriptor || { command: "junie" });
+  if (!bin) return [];
+  const models = parseJunieListModels(await runJunieModelList(bin));
+  if (models.length) junieModelDiscoveryCache = { ts: Date.now(), models };
+  return models;
+}
 
 export function applyTurn1CustomRules(prompt, customRules, isFirstTurn) {
   if (!isFirstTurn) return prompt;
@@ -673,11 +718,30 @@ export class RelayOrchestrator {
     const prevSig = JSON.stringify((engine.latestModels || []).map((m) => m?.id || ""));
     const probe = Promise.resolve()
       .then(() => (this.shuttingDown ? null : engine.listModels(force)))
-      .then((models) => {
-        if (!Array.isArray(models) || models.length === 0) return;
-        const nextSig = JSON.stringify(models.map((m) => m?.id || ""));
+      .then(async (models) => {
+        let effective = Array.isArray(models) ? models : [];
+        // Junie can list its full catalog with `junie list-models` even when logged out, while ACP
+        // discovery may yield only the default entry. Backfill from the CLI JSON in that case.
+        if (engineId === "junie" && !effective.some((model) => model && !model.isDefault)) {
+          const discovered = await discoverJunieModels(engine.descriptor);
+          if (discovered.length && !this.shuttingDown) {
+            const placeholder = effective.find((model) => model?.isDefault) || {
+              id: "cli:junie:default",
+              modelName: "",
+              displayName: "JetBrains Junie (Default)",
+              displayNameZh: "JetBrains Junie（默认）",
+              isDefault: true,
+              engine: "junie",
+            };
+            engine.latestModels = [placeholder, ...discovered];
+            engine.modelsFetchedAt = Date.now();
+            effective = engine.latestModels;
+          }
+        }
+        if (!Array.isArray(effective) || effective.length === 0) return;
+        const nextSig = JSON.stringify(effective.map((m) => m?.id || ""));
         if (nextSig !== prevSig) {
-          this.#emitStateChange("cli_models_ready", { engineId, count: models.length });
+          this.#emitStateChange("cli_models_ready", { engineId, count: effective.length });
         }
       })
       .catch(() => {})
@@ -708,6 +772,9 @@ export class RelayOrchestrator {
     if (engineId === "qoder-cn") return { command: "qoderclicn" };
     if (engineId === "qoder") return { command: "qodercli" };
     if (engineId === "minimax") return { command: "mcode" };
+    if (engineId === "junie") return { command: "junie" };
+    if (engineId === "kiro") return { command: "kiro-cli" };
+    if (engineId === "codearts") return { command: "codearts" };
     return info;
   }
 
@@ -733,7 +800,7 @@ export class RelayOrchestrator {
   // Cold dashboard reads never spawn a CLI: cache hits are sync, misses probe in the background.
   #getCliAccountsSnapshot(engines) {
     const out = {};
-    for (const engineId of ["codex", "deepseek-harness", "doubao", "minimax", "qoder-cn", "qoder", "opencode", "codebuddy"]) {
+    for (const engineId of ["codex", "deepseek-harness", "doubao", "minimax", "qoder-cn", "qoder", "opencode", "codebuddy", "junie", "kiro", "codearts"]) {
       const info = engines?.[engineId];
       if (!info) continue;
       if (!info.installed && !info.loggedIn) {
@@ -3617,10 +3684,12 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       const info = engines[id];
       if (!info || !info.installed || !info.extensible) continue;
       const discoveredConcrete = (cliSubModels[id] || []).some((m) => m && !m.isDefault);
-      if (acc.status === "ready" || discoveredConcrete) {
+      // Junie publishes its full model catalog even when logged out, so models cannot imply a login.
+      const modelsImplyLogin = discoveredConcrete && id !== "junie";
+      if (acc.status === "ready" || modelsImplyLogin) {
         info.loggedIn = true;
         info.status = "ready";
-        if (discoveredConcrete && acc.status !== "ready") {
+        if (modelsImplyLogin && acc.status !== "ready") {
           const cleanPrev =
             acc.accountLabel && acc.accountLabel !== "未登录" && acc.accountLabel !== "正在读取账号…"
               ? acc.accountLabel
@@ -3631,7 +3700,17 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
             loggedIn: true,
             accountLabel:
               cleanPrev ||
-              (id === "opencode" ? "本机桌面配置" : id === "minimax" ? "MiniMax OAuth" : "已登录"),
+              (id === "opencode"
+                ? "本机桌面配置"
+                : id === "minimax"
+                ? "MiniMax OAuth"
+                : id === "junie"
+                ? "JetBrains 账号"
+                : id === "kiro"
+                ? "AWS Kiro 账号"
+                : id === "codearts"
+                ? "华为云 CodeArts"
+                : "已登录"),
           };
         }
       } else if (acc.status === "logged_out") {
@@ -3644,7 +3723,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       cliEnginesMeta[id] = { ...info };
     }
     const cliAccountProfiles = {};
-    for (const engineId of ["codex", "deepseek-harness", "qoder-cn", "qoder", "opencode", "codebuddy", "minimax", "doubao"]) {
+    for (const engineId of ["codex", "deepseek-harness", "qoder-cn", "qoder", "opencode", "codebuddy", "minimax", "doubao", "junie", "kiro", "codearts"]) {
       if (supportsMultiAccountIsolation(engineId)) cliAccountProfiles[engineId] = this.store.getCliAccountProfiles(engineId);
     }
 

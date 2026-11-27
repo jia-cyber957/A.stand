@@ -53,7 +53,7 @@ const API_BASE = (() => {
 
 const PAGES = ["clients", "activity", "roles", "extensions", "providers", "observability", "settings"];
 
-const ENGINE_ORDER = ["codex", "deepseek-harness", "opencode", "doubao", "minimax", "qoder-cn", "qoder", "claude-code", "antigravity"];
+const ENGINE_ORDER = ["codex", "deepseek-harness", "opencode", "doubao", "minimax", "qoder-cn", "qoder", "junie", "kiro", "codearts", "claude-code", "antigravity"];
 
 const ENGINE_FALLBACK_LABELS = {
   codex: { zh: "OpenAI · Codex CLI", en: "OpenAI · Codex CLI", tag: "Codex" },
@@ -2184,6 +2184,9 @@ function engineLoginSummary(eid) {
     if (eid === "codex") rawIdentity = isEn() ? "ChatGPT session" : "ChatGPT 本地登录态";
     else if (eid === "deepseek-harness") rawIdentity = isEn() ? "DeepSeek Official Account" : "DeepSeek 官方账号";
     else if (eid === "minimax") rawIdentity = "MiniMax OAuth";
+    else if (eid === "junie") rawIdentity = isEn() ? "JetBrains account" : "JetBrains 账号";
+    else if (eid === "kiro") rawIdentity = isEn() ? "AWS Kiro account" : "AWS Kiro 账号";
+    else if (eid === "codearts") rawIdentity = isEn() ? "Huawei Cloud AK/SK" : "华为云 AK/SK";
     else if (eid === "opencode") rawIdentity = isEn() ? "Local desktop config" : "本机桌面配置";
     else rawIdentity = isEn() ? "Signed in" : "已登录";
   }
@@ -2254,7 +2257,7 @@ function renderCliAccountCards(eid) {
     loginSess && (loginSess.status === "starting" || loginSess.status === "waiting_browser" || loginSess.status === "waiting_qr")
   );
   const canInAppLogin = Boolean(
-    eng.installed && (eng.extensible || ["doubao", "qoder", "qoder-cn", "minimax", "opencode", "codebuddy"].includes(eid))
+    eng.installed && (eng.extensible || ["doubao", "qoder", "qoder-cn", "minimax", "opencode", "codebuddy", "junie", "kiro", "codearts"].includes(eid))
   );
   const loginBarHtml = eng.installed ? getCliCatalogModal().renderLoginBar(eid) : "";
   const cooled = engineCooldownModels(eid);

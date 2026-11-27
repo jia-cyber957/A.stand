@@ -2,7 +2,7 @@ import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { findExtensibleCliDef } from "./cli-registry.mjs";
-import { buildProfileLaunchOverlay, swapDoubaoAccountVault } from "./cli-profiles.mjs";
+import { buildProfileLaunchOverlay, ensureProfileDirReady, swapDoubaoAccountVault } from "./cli-profiles.mjs";
 import { CLI_ENGINES_META } from "./constants.mjs";
 import { resolveCliPresetBinary } from "./paths.mjs";
 
@@ -12,6 +12,15 @@ const INITIAL_CAPTURE_WAIT_MS = 3500;
 const URL_RE = /https:\/\/[^\s"'<>]+/i;
 const QR_IMAGE_RE = /QR_IMAGE=(.+)/i;
 const USER_CODE_RE = /(?:Code|code|验证码|授权码)\s*[:：]\s*([A-Z0-9-]{4,24})/;
+const JUNIE_LOG_LINE_RE = /log file:\s*(.+?\.log)\b/i;
+const JUNIE_AUTH_URL_RE = /https:\/\/junie\.jetbrains\.com\/cli-auth[^\s"'<>\\]+/i;
+// Junie is a JVM: initialize can take ~8s and the auth URL is written ~4s after authenticate, so the
+// log watcher must outlive the ACP handshake instead of expiring after a few seconds.
+const JUNIE_LOG_POLL_INTERVAL_MS = 250;
+const JUNIE_LOG_POLL_MAX_ATTEMPTS = 160;
+const CODEARTS_AUTH_PORTAL_URL = "https://codearts.huaweicloud.com/portal/settings/cli-auth";
+const CODEARTS_GUIDANCE =
+  "华为云 CodeArts 需在门户页面获取并配置 CODEARTS_CLI_AK / CODEARTS_CLI_SK（或完成门户授权）；配置完成后点「刷新检测」即可。";
 
 /** @type {Map<string, any>} */
 const activeSessions = new Map();
@@ -72,7 +81,9 @@ function resolveLoginDef(engineId, customEngines) {
  * never open the same auth URL a second time. Other CLIs still auto-open once.
  */
 export function resolveLoginAutoOpen(engineId, requested = true) {
-  if (engineId === "qoder" || engineId === "qoder-cn" || engineId === "codebuddy") return false;
+  // Junie only prints its auth URL into a log file, so auto-opening would race the capture and
+  // duplicate tabs. Qoder/CodeBuddy already open the browser themselves.
+  if (engineId === "qoder" || engineId === "qoder-cn" || engineId === "codebuddy" || engineId === "junie") return false;
   return requested !== false;
 }
 
@@ -145,6 +156,50 @@ export function buildLoginLaunchSpec(engineId, def, region = "cn", profileDir = 
     };
   }
 
+  if (engineId === "junie") {
+    // JetBrains account auth is driven over ACP; the auth URL only shows up in Junie's log file.
+    return {
+      ok: true,
+      mode: "acp_auth",
+      command: bin.command,
+      args: ["--acp=true"],
+      useShell: bin.useShell,
+      env: { ...baseEnv, ...overlay.env },
+      autoOpen: resolveLoginAutoOpen(engineId, true),
+      authMethodId: "jetbrains-account",
+    };
+  }
+
+  if (engineId === "kiro") {
+    // The device-flow login must keep its stdin pipe open, otherwise kiro-cli never flushes the
+    // one-time code / verification URL.
+    return {
+      ok: true,
+      mode: "browser",
+      command: bin.command,
+      args: ["login", "--license", "free", "--use-device-flow"],
+      useShell: bin.useShell,
+      env: { ...baseEnv, ...overlay.env },
+      autoOpen: resolveLoginAutoOpen(engineId, true),
+    };
+  }
+
+  if (engineId === "codearts") {
+    // CodeArts has no OAuth callback of its own: surface the Huawei Cloud CLI auth portal page and
+    // tell the user which AK/SK pair to configure rather than failing with "未返回登录链接".
+    return {
+      ok: true,
+      mode: "browser",
+      command: bin.command,
+      args: ["auth", "login"],
+      useShell: bin.useShell,
+      env: { ...baseEnv, ...overlay.env },
+      autoOpen: resolveLoginAutoOpen(engineId, true),
+      fallbackAuthUrl: CODEARTS_AUTH_PORTAL_URL,
+      guidance: CODEARTS_GUIDANCE,
+    };
+  }
+
   // Generic fallback for other extensible CLIs (opencode, kimi, cursor-cli, custom...)
   const rawLogin = String(def.loginCmd || "").trim();
   const parts = rawLogin ? rawLogin.split(/\s+/).filter(Boolean) : [def.command, "login"];
@@ -199,6 +254,7 @@ export function cancelCliLogin(engineId) {
   if (!session) return { ok: true, cancelled: false };
   session.cancelled = true;
   if (session.timer) clearTimeout(session.timer);
+  if (session.logPoll) clearTimeout(session.logPoll);
   if (session.proc && session.status !== "succeeded" && session.status !== "failed") {
     session.status = "cancelled";
     session.finishedAt = Date.now();
@@ -265,15 +321,21 @@ export async function startCliLogin({
     try {
       fs.mkdirSync(profileDir, { recursive: true });
     } catch {}
+    // kiro/codearts abort on a missing app-data / XDG tree before they can even start logging in.
+    if (engineId === "kiro" || engineId === "codearts") ensureProfileDirReady(engineId, profileDir);
   }
 
-  // MiniMax CLI exits immediately with "Already signed in" on re-login unless logged out in this profile first.
-  if (engineId === "minimax") {
+  // MiniMax/Kiro CLIs exit immediately with "Already signed in" on re-login unless logged out in
+  // this profile first.
+  if (engineId === "minimax" || engineId === "kiro") {
     await new Promise((resolve) => {
       const useShell = Boolean(spec.useShell) && isWin;
       const quote = (v) => `"${String(v).replace(/"/g, '""')}"`;
       const cmd = useShell ? process.env.ComSpec || "cmd.exe" : spec.command;
-      const args = useShell ? ["/d", "/s", "/c", `"${quote(spec.command)} "logout""`] : ["logout"];
+      const logoutArgs = ["logout"];
+      const args = useShell
+        ? ["/d", "/s", "/c", `"${[quote(spec.command), ...logoutArgs.map(quote)].join(" ")}"`]
+        : logoutArgs;
       execFile(
         cmd,
         args,
@@ -294,16 +356,22 @@ export async function startCliLogin({
     profileId: profileId || "",
     mode: spec.mode,
     region: region === "global" ? "global" : "cn",
-    status: "starting",
-    authUrl: "",
+    status: spec.fallbackAuthUrl ? "waiting_browser" : "starting",
+    authUrl: spec.fallbackAuthUrl || "",
     userCode: "",
     qrDataUrl: "",
-    message: spec.mode === "qr" ? "正在生成扫码登录二维码…" : "正在获取官方登录链接…",
+    message: spec.fallbackAuthUrl
+      ? spec.guidance || "请在浏览器中完成官方登录授权"
+      : spec.mode === "qr"
+      ? "正在生成扫码登录二维码…"
+      : "正在获取官方登录链接…",
     error: "",
     startedAt: Date.now(),
     finishedAt: 0,
     cancelled: false,
     browserOpened: false,
+    logFilePath: "",
+    logPoll: null,
     proc: null,
     timer: null,
     onUpdate,
@@ -344,7 +412,7 @@ export async function startCliLogin({
         shell: Boolean(spec.useShell),
         windowsHide: true,
         env: spec.env,
-        stdio: [isAcpAuth ? "pipe" : "ignore", "pipe", "pipe"],
+        stdio: [isAcpAuth || engineId === "kiro" ? "pipe" : "ignore", "pipe", "pipe"],
       });
     }
   } catch (err) {
@@ -357,6 +425,16 @@ export async function startCliLogin({
   }
 
   session.proc = proc;
+  if (spec.fallbackAuthUrl) {
+    // The portal URL is known up front: show it immediately instead of waiting for CLI output.
+    if (spec.autoOpen && autoOpen && !session.browserOpened) {
+      session.browserOpened = true;
+      openExternalUrl(session.authUrl);
+    }
+    clearTimeout(initialTimer);
+    emit();
+    resolveInitial();
+  }
   session.timer = setTimeout(() => {
     if (session.status === "starting" || session.status === "waiting_browser" || session.status === "waiting_qr") {
       session.status = "failed";
@@ -377,6 +455,36 @@ export async function startCliLogin({
     } catch {}
   }
 
+  // Junie reports only "log file: <path>" on stderr and writes the real auth URL into that log.
+  // Poll it so the UI still gets a copyable/reopenable link; re-armed after `authenticate` is sent
+  // because the URL only appears once the ACP auth request is actually issued.
+  const pollJunieLogForAuthUrl = (logPath) => {
+    if (!logPath || session.authUrl || session.cancelled) return;
+    if (session.logPoll) clearTimeout(session.logPoll);
+    let attempts = 0;
+    const tick = () => {
+      if (session.cancelled || session.authUrl) return;
+      attempts += 1;
+      let content = "";
+      try {
+        content = fs.readFileSync(logPath, "utf8");
+      } catch {}
+      const match = content.match(JUNIE_AUTH_URL_RE);
+      if (match) {
+        session.authUrl = match[0].replace(/[),.;]+$/, "");
+        session.status = "waiting_browser";
+        session.message = "请在浏览器中完成 JetBrains 账号授权（可复制或重新打开链接）";
+        emit();
+        clearTimeout(initialTimer);
+        resolveInitial();
+        return;
+      }
+      if (attempts >= JUNIE_LOG_POLL_MAX_ATTEMPTS) return;
+      session.logPoll = setTimeout(tick, JUNIE_LOG_POLL_INTERVAL_MS);
+    };
+    session.logPoll = setTimeout(tick, JUNIE_LOG_POLL_INTERVAL_MS);
+  };
+
   const handleChunk = (chunk) => {
     if (session.cancelled) return;
     const rawStr = chunk.toString("utf8");
@@ -385,6 +493,13 @@ export async function startCliLogin({
     let changed = false;
 
     if (isAcpAuth) {
+      if (engineId === "junie" && !session.logFilePath) {
+        const logMatch = text.match(JUNIE_LOG_LINE_RE);
+        if (logMatch) {
+          session.logFilePath = logMatch[1].trim().replace(/^["']|["']$/g, "");
+          pollJunieLogForAuthUrl(session.logFilePath);
+        }
+      }
       acpLineBuf += rawStr;
       const lines = acpLineBuf.split(/\r?\n/);
       acpLineBuf = lines.pop() || "";
@@ -404,6 +519,7 @@ export async function startCliLogin({
               `${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "authenticate", params: { methodId: spec.authMethodId || "internal" } })}\n`
             );
           } catch {}
+          if (engineId === "junie" && session.logFilePath) pollJunieLogForAuthUrl(session.logFilePath);
         } else if (msg.params?.authUrl && !session.authUrl) {
           const cleaned = String(msg.params.authUrl).trim();
           session.authUrl = cleaned;
@@ -419,6 +535,7 @@ export async function startCliLogin({
         } else if (msg.id === 2) {
           clearTimeout(initialTimer);
           if (session.timer) clearTimeout(session.timer);
+          if (session.logPoll) clearTimeout(session.logPoll);
           session.finishedAt = Date.now();
           if (msg.error) {
             session.status = "failed";
@@ -497,7 +614,23 @@ export async function startCliLogin({
   proc.on("exit", (code) => {
     clearTimeout(initialTimer);
     if (session.timer) clearTimeout(session.timer);
-    if (session.cancelled || session.status === "succeeded" || session.status === "failed") {
+    if (session.logPoll) clearTimeout(session.logPoll);
+    if (session.cancelled) {
+      resolveInitial();
+      return;
+    }
+    if (spec.fallbackAuthUrl) {
+      // Portal-based auth has no completion callback: keep the guidance link available and let the
+      // user refresh once AK/SK (or portal auth) has been configured.
+      session.finishedAt = session.finishedAt || Date.now();
+      session.status = "waiting_browser";
+      session.message = spec.guidance || session.message;
+      session.error = "";
+      emit();
+      resolveInitial();
+      return;
+    }
+    if (session.status === "succeeded" || session.status === "failed") {
       resolveInitial();
       return;
     }

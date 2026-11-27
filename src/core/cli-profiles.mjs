@@ -17,6 +17,9 @@ const ISOLATED_ENGINES = Object.freeze([
   "codebuddy",
   "minimax",
   "doubao",
+  "junie",
+  "kiro",
+  "codearts",
 ]);
 
 /** @type {Map<string, { ts: number, value: object }>} */
@@ -44,6 +47,20 @@ export function resolveProfileDir(dataDir, engineId, profileId) {
   return target;
 }
 
+/** HOME/USERPROFILE (+ HOMEDRIVE/HOMEPATH on Windows) redirection shared by home-rooted CLIs. */
+function applyHomeEnv(env, dir) {
+  env.HOME = dir;
+  env.USERPROFILE = dir;
+  if (process.platform === "win32") {
+    const parsed = path.parse(path.resolve(dir));
+    if (parsed.root) {
+      env.HOMEDRIVE = parsed.root.replace(/\\$/, "");
+      env.HOMEPATH = path.resolve(dir).slice(parsed.root.length - 1);
+    }
+  }
+  return env;
+}
+
 /** Environment / argv overlay used when launching a CLI inside an isolated profile. */
 export function buildProfileLaunchOverlay(engineId, profileDir = "") {
   const dir = String(profileDir || "").trim();
@@ -52,18 +69,84 @@ export function buildProfileLaunchOverlay(engineId, profileDir = "") {
   if (engineId === "deepseek-harness") return { env: { DSH_HOME: dir }, extraArgs: [] };
   if (engineId === "qoder" || engineId === "qoder-cn") return { env: {}, extraArgs: ["--config-dir", dir] };
   if (engineId === "opencode") return { env: { XDG_CONFIG_HOME: dir }, extraArgs: [] };
+  if (engineId === "junie") {
+    // Junie is a JVM app: HOME/USERPROFILE are ignored for user.home on Windows, and junie.bat
+    // locates its installed versions through JUNIE_DATA, so both are redirected independently.
+    const env = {
+      JUNIE_DATA: path.join(os.homedir(), ".local", "share", "junie"),
+      JAVA_TOOL_OPTIONS: "",
+    };
+    const existing = String(process.env.JAVA_TOOL_OPTIONS || "").trim();
+    env.JAVA_TOOL_OPTIONS = existing ? `${existing} -Duser.home=${dir}` : `-Duser.home=${dir}`;
+    return { env: applyHomeEnv(env, dir), extraArgs: [] };
+  }
+  if (engineId === "kiro") {
+    // kiro-cli keeps its sqlite state under LOCALAPPDATA/APPDATA; both must resolve inside the
+    // profile (and must already exist) or it aborts with "home directory not found".
+    const env = {
+      LOCALAPPDATA: path.join(dir, "AppData", "Local"),
+      APPDATA: path.join(dir, "AppData", "Roaming"),
+    };
+    return { env: applyHomeEnv(env, dir), extraArgs: [] };
+  }
+  if (engineId === "codearts") {
+    // CodeArts CLI is built on the opencode runtime, which honours the XDG base dirs.
+    const env = {
+      XDG_DATA_HOME: path.join(dir, "data"),
+      XDG_CONFIG_HOME: path.join(dir, "config"),
+      XDG_STATE_HOME: path.join(dir, "state"),
+      XDG_CACHE_HOME: path.join(dir, "cache"),
+    };
+    return { env: applyHomeEnv(env, dir), extraArgs: [] };
+  }
   if (engineId === "codebuddy" || engineId === "minimax") {
-    const env = { HOME: dir, USERPROFILE: dir };
-    if (process.platform === "win32") {
-      const parsed = path.parse(path.resolve(dir));
-      if (parsed.root) {
-        env.HOMEDRIVE = parsed.root.replace(/\\$/, "");
-        env.HOMEPATH = path.resolve(dir).slice(parsed.root.length - 1);
-      }
-    }
-    return { env, extraArgs: [] };
+    return { env: applyHomeEnv({}, dir), extraArgs: [] };
   }
   return { env: {}, extraArgs: [] };
+}
+
+const CODEARTS_OPENCODE_SETTINGS = Object.freeze({
+  security: { folderTrust: { enabled: false }, trustedFolders: [] },
+});
+
+/**
+ * Headless CodeArts refuses to run in an untrusted folder. Seed an isolated profile's opencode
+ * settings with folder trust disabled so non-interactive runs never fail with 文件夹未被信任.
+ */
+export function ensureCodeArtsProfileReady(profileDir = "") {
+  const dir = String(profileDir || "").trim();
+  if (!dir) return "";
+  const settingsDir = path.join(dir, "data", "opencode");
+  const settingsFile = path.join(settingsDir, "settings.json");
+  try {
+    fs.mkdirSync(settingsDir, { recursive: true });
+    if (!fs.existsSync(settingsFile)) {
+      fs.writeFileSync(settingsFile, JSON.stringify(CODEARTS_OPENCODE_SETTINGS, null, 2), "utf8");
+    }
+  } catch {}
+  return settingsFile;
+}
+
+/** Create every writable directory a profile-isolated CLI needs before its first spawn. */
+export function ensureProfileDirReady(engineId, profileDir = "") {
+  const dir = String(profileDir || "").trim();
+  const engine = String(engineId || "");
+  if (!dir || !ISOLATED_ENGINES.includes(engine)) return { ok: false, skipped: true };
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    if (engine === "kiro") {
+      fs.mkdirSync(path.join(dir, "AppData", "Local"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "AppData", "Roaming"), { recursive: true });
+    } else if (engine === "codearts") {
+      for (const sub of ["data", "config", "state", "cache"]) {
+        fs.mkdirSync(path.join(dir, sub), { recursive: true });
+      }
+      ensureCodeArtsProfileReady(dir);
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  }
 }
 
 function doubaoLoginRootDir() {
@@ -157,7 +240,7 @@ export async function swapDoubaoAccountVault({ dataDir, targetProfileId = "defau
   }
 }
 
-function runCli(bin, args, timeoutMs = ACCOUNT_PROBE_TIMEOUT_MS) {
+function runCli(bin, args, timeoutMs = ACCOUNT_PROBE_TIMEOUT_MS, extraEnv = null) {
   return new Promise((resolve) => {
     if (!bin?.command) {
       resolve({ ok: false, stdout: "", stderr: "" });
@@ -176,6 +259,7 @@ function runCli(bin, args, timeoutMs = ACCOUNT_PROBE_TIMEOUT_MS) {
         encoding: "utf8",
         timeout: timeoutMs,
         windowsHide: true,
+        ...(extraEnv ? { env: { ...process.env, ...extraEnv } } : {}),
         ...(useShell ? { windowsVerbatimArguments: true } : {}),
         maxBuffer: 256 * 1024,
         shell: false,
@@ -258,6 +342,84 @@ export function parseMiniMaxProviderList(text) {
     email: "",
     loginMethod: "minimax_oauth",
     loggedIn: active,
+  };
+}
+
+/** Parse `junie list-models` JSON, tolerating the JVM log line printed before the payload. */
+export function parseJunieListModels(text, engineId = "junie") {
+  const raw = String(text || "");
+  const start = raw.indexOf("{");
+  if (start < 0) return [];
+  let parsed = null;
+  try {
+    parsed = JSON.parse(raw.slice(start));
+  } catch {
+    const end = raw.lastIndexOf("}");
+    try {
+      parsed = end > start ? JSON.parse(raw.slice(start, end + 1)) : null;
+    } catch {
+      return [];
+    }
+  }
+  const list = Array.isArray(parsed?.models) ? parsed.models : Array.isArray(parsed) ? parsed : [];
+  const out = [];
+  const seen = new Set();
+  for (const item of list) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const rawId = typeof item.id === "string" ? item.id.trim() : "";
+    if (!rawId || rawId.length > 160 || seen.has(rawId)) continue;
+    seen.add(rawId);
+    const displayName =
+      typeof item.displayName === "string" && item.displayName.trim() ? item.displayName.trim().slice(0, 160) : rawId;
+    out.push({
+      id: `cli:${engineId}:${rawId}`,
+      modelName: rawId,
+      displayName,
+      displayNameZh: displayName,
+      isDefault: false,
+      engine: engineId,
+    });
+  }
+  return out;
+}
+
+/** Parse `kiro-cli whoami --format json`; only identity fields are whitelisted out. */
+export function parseKiroWhoami(text) {
+  const base = { username: "", email: "", loginMethod: "kiro", loggedIn: false, detail: "" };
+  const raw = String(text || "");
+  const start = raw.indexOf("{");
+  if (start < 0) return base;
+  let parsed = null;
+  try {
+    parsed = JSON.parse(raw.slice(start));
+  } catch {
+    const end = raw.lastIndexOf("}");
+    try {
+      parsed = end > start ? JSON.parse(raw.slice(start, end + 1)) : null;
+    } catch {
+      return base;
+    }
+  }
+  const account = parsed?.account ?? parsed?.identity ?? parsed?.user ?? null;
+  if (!account || typeof account !== "object" || Array.isArray(account)) return base;
+  const pick = (...keys) => {
+    for (const key of keys) {
+      const value = account[key];
+      if (typeof value === "string" && value.trim()) return value.trim().slice(0, 160);
+    }
+    return "";
+  };
+  const email = pick("emailAddress", "email", "mail");
+  const username = pick("userName", "username", "displayName", "name", "nickname");
+  const label = pick("accountName", "organizationName", "organization", "accountLabel");
+  const hasIdentity = Object.values(account).some((value) => typeof value === "string" && value.trim());
+  if (!hasIdentity) return base;
+  return {
+    username: username || email.split("@")[0] || label,
+    email,
+    loginMethod: "kiro",
+    loggedIn: true,
+    detail: label ? `account: ${label}` : "",
   };
 }
 
@@ -420,6 +582,141 @@ function probeMiniMaxAccount(profileDir = "") {
   return { username: "", email: "", loginMethod: "minimax_oauth", loggedIn: false, detail: "" };
 }
 
+function readJsonQuiet(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/** Extract identity fields from an arbitrary credential blob without ever surfacing the secret. */
+function identityFromBlob(blob) {
+  const out = { email: "", username: "" };
+  const visit = (node, keyPath, depth) => {
+    if (depth > 3 || !node || typeof node !== "object") return;
+    for (const [key, value] of Object.entries(node)) {
+      const pathKey = `${keyPath}.${key}`.toLowerCase();
+      if (typeof value === "string") {
+        if (/email/.test(key) && /@/.test(value) && !out.email) out.email = value.trim().slice(0, 160);
+        else if (/(username|user_?name|account_?name|display_?name|nickname|login)/.test(pathKey) && value.trim() && !out.username) {
+          out.username = value.trim().slice(0, 160);
+        }
+      } else if (value && typeof value === "object") {
+        visit(value, pathKey, depth + 1);
+      }
+    }
+  };
+  visit(blob, "", 0);
+  return out;
+}
+
+const JUNIE_SKIP_DIRS = new Set(["logs", "versions", "instances", "sessions", "acp-prompt-attachments"]);
+const JUNIE_CRED_RE = /(?:auth|credentials?|tokens?|account|oauth|license|login|session)/i;
+
+function probeJunieAccount(profileDir = "") {
+  const base = { username: "", email: "", loginMethod: "jetbrains-account", loggedIn: false, detail: "" };
+  if (String(process.env.JUNIE_API_KEY || "").trim() || String(process.env.JUNIE_AUTH_TOKEN || "").trim()) {
+    return { ...base, username: "JetBrains API Key", loggedIn: true, detail: "JUNIE_API_KEY" };
+  }
+  const home = profileDir ? path.resolve(profileDir) : os.homedir();
+  const root = path.join(home, ".junie");
+  if (!fs.existsSync(root)) return base;
+
+  let hasCred = false;
+  let email = "";
+  let username = "";
+  const noteBlob = (blob) => {
+    const identity = identityFromBlob(blob);
+    if (!email && identity.email) email = identity.email;
+    if (!username && identity.username) username = identity.username;
+  };
+  const visit = (dir, depth) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const ent of entries) {
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) {
+        if (depth < 2 && !JUNIE_SKIP_DIRS.has(ent.name)) visit(full, depth + 1);
+        continue;
+      }
+      if (!ent.isFile()) continue;
+      let size = 0;
+      try {
+        size = fs.statSync(full).size;
+      } catch {
+        continue;
+      }
+      if (size <= 10) continue;
+      if (/^settings.*\.json$/i.test(ent.name)) {
+        // Settings are only credentials when they actually carry auth/token/account fields.
+        const blob = readJsonQuiet(full);
+        if (blob && typeof blob === "object") {
+          const json = JSON.stringify(blob).toLowerCase();
+          if (/"(?:[a-z0-9_-]*(?:auth|token|credential|account|email|license)[a-z0-9_-]*)"\s*:/.test(json)) {
+            hasCred = true;
+            noteBlob(blob);
+          }
+        }
+        continue;
+      }
+      if (!JUNIE_CRED_RE.test(ent.name)) continue;
+      hasCred = true;
+      if (/\.json$/i.test(ent.name)) noteBlob(readJsonQuiet(full));
+    }
+  };
+  visit(root, 0);
+
+  if (!hasCred) return base;
+  return {
+    ...base,
+    username: username || email.split("@")[0] || "JetBrains 账号",
+    email,
+    loggedIn: true,
+    detail: profileDir ? "isolated HOME" : "~/.junie",
+  };
+}
+
+async function probeKiroAccount(def, profileDir, overlay) {
+  const base = { username: "", email: "", loginMethod: "kiro", loggedIn: false, detail: "" };
+  const bin = resolveCliPresetBinary(def || { command: "kiro-cli" });
+  if (!bin) return { ...base, detail: "CLI not installed" };
+  if (profileDir) ensureProfileDirReady("kiro", profileDir);
+  const result = await runCli(bin, ["whoami", "--format", "json"], ACCOUNT_PROBE_TIMEOUT_MS, overlay?.env || null);
+  return parseKiroWhoami(`${result.stdout}\n${result.stderr}`);
+}
+
+function probeCodeArtsAccount(profileDir = "") {
+  const base = { username: "", email: "", loginMethod: "codearts", loggedIn: false, detail: "" };
+  const hasAk = String(process.env.CODEARTS_CLI_AK || "").trim();
+  const hasSk = String(process.env.CODEARTS_CLI_SK || "").trim();
+  if (hasAk && hasSk) {
+    return { ...base, username: "华为云 AK/SK", loginMethod: "huawei_aksk", loggedIn: true, detail: "CODEARTS_CLI_AK" };
+  }
+  const xdgData = profileDir
+    ? path.join(path.resolve(profileDir), "data")
+    : process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share");
+  const authFile = path.join(xdgData, "opencode", "auth.json");
+  let hasAuth = false;
+  try {
+    if (fs.existsSync(authFile) && fs.statSync(authFile).size > 10) {
+      const parsed = readJsonQuiet(authFile);
+      hasAuth = Boolean(parsed && typeof parsed === "object" && Object.keys(parsed).length > 0);
+    }
+  } catch {}
+  if (!hasAuth) return base;
+  return {
+    ...base,
+    username: "华为云 CodeArts",
+    loggedIn: true,
+    detail: profileDir ? "isolated XDG_DATA_HOME" : "~/.local/share/opencode/auth.json",
+  };
+}
+
 async function probeAccount(engineId, def, profileDir) {
   const base = {
     engineId,
@@ -431,11 +728,16 @@ async function probeAccount(engineId, def, profileDir) {
     detail: "",
   };
   const overlay = buildProfileLaunchOverlay(engineId, profileDir);
+  // Probes that run a CLI inside an isolated profile need its writable dirs to exist first.
+  if (profileDir) ensureProfileDirReady(engineId, profileDir);
   if (engineId === "codex") return { ...base, ...probeCodexConfig(profileDir) };
   if (engineId === "deepseek-harness") return { ...base, ...probeDshAccount(profileDir) };
   if (engineId === "codebuddy") return { ...base, ...probeCodebuddyAccount(profileDir) };
   if (engineId === "minimax") return { ...base, ...probeMiniMaxAccount(profileDir) };
   if (engineId === "opencode") return { ...base, ...probeOpencodeConfig(profileDir) };
+  if (engineId === "junie") return { ...base, ...probeJunieAccount(profileDir) };
+  if (engineId === "kiro") return { ...base, ...(await probeKiroAccount(def, profileDir, overlay)) };
+  if (engineId === "codearts") return { ...base, ...probeCodeArtsAccount(profileDir) };
 
   if (engineId === "doubao" || engineId === "qoder" || engineId === "qoder-cn" || engineId === "minimax") {
     const fallbackCmd =

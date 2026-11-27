@@ -38,8 +38,30 @@ export const EXTENSIBLE_CLI_PRESETS = Object.freeze([
   {
     id: "kimi", labelZh: "Kimi Code CLI", labelEn: "Kimi Code CLI", shortTag: "KM",
     protocol: "acp", command: "kimi", args: ["acp"], windowsPaths: [],
-    installCmd: "uv tool install kimi-cli", loginCmd: "kimi login", downloadUrl: "https://github.com/MoonshotAI/kimi-cli",
+    installCmd: "npm install -g @moonshot-ai/kimi-code", loginCmd: "kimi login", downloadUrl: "https://github.com/MoonshotAI/kimi-cli",
     readOnlyMode: "plan", writeMode: "build", capabilities: ACP_CAPS,
+  },
+  {
+    id: "junie", labelZh: "JetBrains Junie", labelEn: "JetBrains Junie", shortTag: "JN",
+    protocol: "acp", command: "junie", args: ["--acp=true"],
+    windowsPaths: ["%USERPROFILE%\\.local\\bin\\junie.bat"],
+    installCmd: "irm https://junie.jetbrains.com/install.ps1 | iex", loginCmd: "junie", downloadUrl: "https://junie.jetbrains.com",
+    readOnlyMode: "plan", writeMode: "build", capabilities: ACP_CAPS,
+  },
+  {
+    id: "kiro", labelZh: "AWS Kiro CLI", labelEn: "AWS Kiro CLI", shortTag: "KR",
+    protocol: "acp", command: "kiro-cli", args: ["acp"],
+    windowsPaths: ["%LOCALAPPDATA%\\Kiro-Cli\\kiro-cli.exe", "%ProgramFiles%\\Kiro-Cli\\kiro-cli.exe"],
+    installCmd: "irm https://cli.kiro.dev/install.ps1 | iex", loginCmd: "kiro-cli login --license free --use-device-flow", downloadUrl: "https://kiro.dev/cli",
+    readOnlyMode: "plan", writeMode: "build", capabilities: ACP_CAPS,
+  },
+  {
+    id: "codearts", labelZh: "华为云 CodeArts", labelEn: "Huawei Cloud CodeArts", shortTag: "CA",
+    protocol: "headless", command: "codearts", args: ["run", "--format", "default", "{prompt}"],
+    windowsPaths: ["%USERPROFILE%\\.codeartsdoer\\installers\\bin\\codearts.exe", "%USERPROFILE%\\.codeartsdoer\\installers\\codearts.cmd"],
+    installCmd: "irm https://cnnorth4-cloudide-marketplace.obs.cn-north-4.myhuaweicloud.com/codearts/cli_tui/install_script/install.ps1 | iex",
+    loginCmd: "codearts auth login", downloadUrl: "https://codearts.huaweicloud.com/portal/settings/cli-auth",
+    readOnlyMode: "plan", writeMode: "auto", capabilities: HEADLESS_CAPS,
   },
   {
     id: "codebuddy", labelZh: "CodeBuddy CLI", labelEn: "CodeBuddy CLI", shortTag: "CB",

@@ -15,6 +15,7 @@ const NPM_PRESETS = Object.freeze({
   "qoder-cn": { pkg: "@qodercn-ai/qoderclicn", scripts: ["@qodercn-ai/qoderclicn", "sharp"] },
   opencode: { pkg: "opencode-ai", scripts: ["opencode-ai"] },
   codebuddy: { pkg: "@tencent-ai/codebuddy-code", scripts: ["@tencent-ai/codebuddy-code"] },
+  kimi: { pkg: "@moonshot-ai/kimi-code", scripts: ["@moonshot-ai/kimi-code"] },
   qwen: { pkg: "@qwen-code/qwen-code", scripts: ["@qwen-code/qwen-code"] },
   gemini: { pkg: "@google/gemini-cli", scripts: ["@google/gemini-cli"] },
   "claude-code": { pkg: "@anthropic-ai/claude-code", scripts: ["@anthropic-ai/claude-code"] },

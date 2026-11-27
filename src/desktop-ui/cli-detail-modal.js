@@ -155,6 +155,9 @@ export function createCliDetailModal(host) {
       else if (eid === "deepseek-harness") parts.push(L("DeepSeek 官方账号", "DeepSeek Official Account"));
       else if (eid === "opencode") parts.push(L("本机桌面版配置", "Local Desktop Config"));
       else if (eid === "codebuddy") parts.push(L("CodeBuddy 本地登录态", "CodeBuddy local session"));
+      else if (eid === "junie") parts.push(L("JetBrains 账号", "JetBrains account"));
+      else if (eid === "kiro") parts.push(L("AWS Kiro 账号", "AWS Kiro account"));
+      else if (eid === "codearts") parts.push(L("华为云 AK/SK", "Huawei Cloud AK/SK"));
       else if (acc.accountLabel && acc.accountLabel !== "未登录") parts.push(acc.accountLabel);
     } else if (acc.accountLabel) {
       parts.push(acc.accountLabel);
@@ -199,9 +202,9 @@ export function createCliDetailModal(host) {
     const profiles = rawProfiles;
     const supportsMulti =
       view.accountsData?.supportsMultiAccountIsolation ??
-      ["codex", "deepseek-harness", "qoder", "qoder-cn", "opencode", "codebuddy", "minimax", "doubao"].includes(eid);
+      ["codex", "deepseek-harness", "qoder", "qoder-cn", "opencode", "codebuddy", "minimax", "doubao", "junie", "kiro", "codearts"].includes(eid);
     const canInAppLogin = Boolean(
-      eng.extensible || ["doubao", "qoder", "qoder-cn", "minimax", "opencode", "codebuddy"].includes(eid)
+      eng.extensible || ["doubao", "qoder", "qoder-cn", "minimax", "opencode", "codebuddy", "junie", "kiro", "codearts"].includes(eid)
     );
     const cooled = engineCooldownModels(eid);
     const showCodexQuota = eid === "codex" && Boolean(st.codexRateLimits);
