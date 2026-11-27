@@ -168,9 +168,9 @@ async function main() {
   });
 
   await test("profile isolation matrix, safe paths and launch overlays", () => {
-    const trueIds = ["codex", "qoder", "opencode"];
+    const trueIds = ["codex", "deepseek-harness", "qoder", "qoder-cn", "opencode", "codebuddy"];
     for (const id of trueIds) assert.equal(supportsMultiAccountIsolation(id), true, id);
-    for (const id of ["doubao", "minimax", "kimi", "codebuddy", "qwen", "gemini", "cursor-cli", "claude-code"]) {
+    for (const id of ["doubao", "minimax", "kimi", "qwen", "gemini", "cursor-cli", "claude-code"]) {
       assert.equal(supportsMultiAccountIsolation(id), false, id);
     }
 
@@ -185,11 +185,16 @@ async function main() {
     const codex = buildProfileLaunchOverlay("codex", codexDir);
     assert.deepEqual(codex.env, { CODEX_HOME: codexDir });
     assert.deepEqual(codex.extraArgs, []);
+    const dsh = buildProfileLaunchOverlay("deepseek-harness", codexDir);
+    assert.deepEqual(dsh.env, { DSH_HOME: codexDir });
     const qoder = buildProfileLaunchOverlay("qoder", codexDir);
     assert.deepEqual(qoder.extraArgs, ["--config-dir", codexDir]);
     assert.deepEqual(qoder.env, {});
     const opencode = buildProfileLaunchOverlay("opencode", codexDir);
     assert.deepEqual(opencode.env, { XDG_CONFIG_HOME: codexDir });
+    const cb = buildProfileLaunchOverlay("codebuddy", codexDir);
+    assert.equal(cb.env.HOME, codexDir);
+    assert.equal(cb.env.USERPROFILE, codexDir);
     assert.deepEqual(buildProfileLaunchOverlay("doubao", codexDir), { env: {}, extraArgs: [] });
   });
 

@@ -3644,7 +3644,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       cliEnginesMeta[id] = { ...info };
     }
     const cliAccountProfiles = {};
-    for (const engineId of ["codex", "qoder-cn", "qoder", "opencode"]) {
+    for (const engineId of ["codex", "deepseek-harness", "qoder-cn", "qoder", "opencode", "codebuddy"]) {
       if (supportsMultiAccountIsolation(engineId)) cliAccountProfiles[engineId] = this.store.getCliAccountProfiles(engineId);
     }
 

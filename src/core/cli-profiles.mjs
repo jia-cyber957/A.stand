@@ -8,7 +8,7 @@ const ACCOUNT_CACHE_TTL_MS = 60_000;
 const ACCOUNT_PROBE_TIMEOUT_MS = 8_000;
 const PROFILE_ID_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 const ENGINE_ID_RE = /^[a-z0-9][a-z0-9_-]{1,31}$/;
-const ISOLATED_ENGINES = Object.freeze(["codex", "qoder", "qoder-cn", "opencode"]);
+const ISOLATED_ENGINES = Object.freeze(["codex", "deepseek-harness", "qoder", "qoder-cn", "opencode", "codebuddy"]);
 
 /** @type {Map<string, { ts: number, value: object }>} */
 const accountCache = new Map();
@@ -40,8 +40,20 @@ export function buildProfileLaunchOverlay(engineId, profileDir = "") {
   const dir = String(profileDir || "").trim();
   if (!dir) return { env: {}, extraArgs: [] };
   if (engineId === "codex") return { env: { CODEX_HOME: dir }, extraArgs: [] };
+  if (engineId === "deepseek-harness") return { env: { DSH_HOME: dir }, extraArgs: [] };
   if (engineId === "qoder" || engineId === "qoder-cn") return { env: {}, extraArgs: ["--config-dir", dir] };
   if (engineId === "opencode") return { env: { XDG_CONFIG_HOME: dir }, extraArgs: [] };
+  if (engineId === "codebuddy") {
+    const env = { HOME: dir, USERPROFILE: dir };
+    if (process.platform === "win32") {
+      const parsed = path.parse(path.resolve(dir));
+      if (parsed.root) {
+        env.HOMEDRIVE = parsed.root.replace(/\\$/, "");
+        env.HOMEPATH = path.resolve(dir).slice(parsed.root.length - 1);
+      }
+    }
+    return { env, extraArgs: [] };
+  }
   return { env: {}, extraArgs: [] };
 }
 
@@ -219,11 +231,11 @@ function probeOpencodeConfig(profileDir) {
   return { username: "", email: "", loginMethod: "opencode", loggedIn: false, detail: "" };
 }
 
-function probeDshAccount() {
-  const home = os.homedir();
+function probeDshAccount(profileDir = "") {
+  const dshRoot = profileDir ? path.resolve(profileDir) : path.join(os.homedir(), ".dsh");
   const credCandidates = [
-    path.join(home, ".dsh", ".credentials.yaml"),
-    path.join(home, ".dsh", "credentials.yaml"),
+    path.join(dshRoot, ".credentials.yaml"),
+    path.join(dshRoot, "credentials.yaml"),
   ];
   let hasCred = false;
   for (const file of credCandidates) {
@@ -239,12 +251,12 @@ function probeDshAccount() {
     email: "",
     loginMethod: "DeepSeek Account",
     loggedIn: hasCred,
-    detail: hasCred ? "~/.dsh/.credentials.yaml" : "",
+    detail: hasCred ? (profileDir ? "isolated DSH_HOME" : "~/.dsh/.credentials.yaml") : "",
   };
 }
 
-function probeCodebuddyAccount() {
-  const root = path.join(os.homedir(), ".codebuddy");
+function probeCodebuddyAccount(profileDir = "") {
+  const root = profileDir ? path.join(path.resolve(profileDir), ".codebuddy") : path.join(os.homedir(), ".codebuddy");
   try {
     if (fs.existsSync(root)) {
       const entries = fs.readdirSync(root, { withFileTypes: true });
@@ -298,8 +310,8 @@ async function probeAccount(engineId, def, profileDir) {
   };
   const overlay = buildProfileLaunchOverlay(engineId, profileDir);
   if (engineId === "codex") return { ...base, ...probeCodexConfig(profileDir) };
-  if (engineId === "deepseek-harness") return { ...base, ...probeDshAccount() };
-  if (engineId === "codebuddy") return { ...base, ...probeCodebuddyAccount() };
+  if (engineId === "deepseek-harness") return { ...base, ...probeDshAccount(profileDir) };
+  if (engineId === "codebuddy") return { ...base, ...probeCodebuddyAccount(profileDir) };
   if (engineId === "opencode") return { ...base, ...probeOpencodeConfig(profileDir) };
 
   if (engineId === "doubao" || engineId === "qoder" || engineId === "qoder-cn" || engineId === "minimax") {

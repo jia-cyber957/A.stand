@@ -2,6 +2,7 @@ import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { findExtensibleCliDef } from "./cli-registry.mjs";
+import { buildProfileLaunchOverlay } from "./cli-profiles.mjs";
 import { CLI_ENGINES_META } from "./constants.mjs";
 import { resolveCliPresetBinary } from "./paths.mjs";
 
@@ -160,12 +161,7 @@ export function buildLoginLaunchSpec(engineId, def, region = "cn", profileDir = 
 }
 
 function buildProfileOverlay(engineId, profileDir) {
-  const dir = String(profileDir || "").trim();
-  if (!dir) return { env: {}, extraArgs: [] };
-  if (engineId === "codex") return { env: { CODEX_HOME: dir }, extraArgs: [] };
-  if (engineId === "qoder" || engineId === "qoder-cn") return { env: {}, extraArgs: ["--config-dir", dir] };
-  if (engineId === "opencode") return { env: { XDG_CONFIG_HOME: dir }, extraArgs: [] };
-  return { env: {}, extraArgs: [] };
+  return buildProfileLaunchOverlay(engineId, profileDir);
 }
 
 function toPublicSnapshot(session) {

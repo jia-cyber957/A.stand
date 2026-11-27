@@ -196,7 +196,7 @@ export function createCliDetailModal(host) {
     const profiles = rawProfiles;
     const supportsMulti =
       view.accountsData?.supportsMultiAccountIsolation ??
-      ["codex", "qoder", "qoder-cn", "opencode"].includes(eid);
+      ["codex", "deepseek-harness", "qoder", "qoder-cn", "opencode", "codebuddy"].includes(eid);
     const canInAppLogin = Boolean(
       eng.extensible || ["doubao", "qoder", "qoder-cn", "minimax", "opencode", "codebuddy"].includes(eid)
     );
@@ -277,11 +277,27 @@ export function createCliDetailModal(host) {
           </button>`
       : "";
 
+    const singleAccountNote =
+      !supportsMulti && (eid === "doubao" || eid === "minimax")
+        ? `<div class="cli-detail-multi-tip">${esc(
+            eid === "doubao"
+              ? L(
+                  "豆包 CLI 登录态托管于系统共享守护服务，暂无法同机并行多开账号；换号请直接点上方「切换/重登」扫码。",
+                  "Doubao CLI shares a single OS daemon, so isolated multi-account isn't supported; use Re-sign in above to switch accounts."
+                )
+              : L(
+                  "MiniMax Code 凭证托管于系统凭据管理器，暂无法同机并行多开账号；换号请直接点上方「切换/重登」。",
+                  "MiniMax Code stores auth in the OS credential manager, so isolated multi-account isn't supported; use Re-sign in above to switch accounts."
+                )
+          )}</div>`
+        : "";
+
     return `<div class="cli-detail-card">
       ${rowsHtml}
       ${cooldownHtml}
       ${multiTip}
       ${addProfileHtml}
+      ${singleAccountNote}
     </div>
     ${renderLoginBar(eid)}
     ${renderInstallBar(eid)}`;
