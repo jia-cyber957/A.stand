@@ -22,6 +22,7 @@ import {
   startCliInstall,
 } from "../core/cli-install.mjs";
 import {
+  clearCliAccountCache,
   probeCliAccountInfo,
   resolveProfileDir,
   supportsMultiAccountIsolation,
@@ -781,12 +782,18 @@ export async function createDaemonHttpServer({
           (CLI_ENGINES_META[id] ? { ...CLI_ENGINES_META[id], command: id } : null);
 
         if (req.method === "GET" && !profileId) {
+          if (url.searchParams.get("force") === "1") clearCliAccountCache(id);
           const account = def ? await probeCliAccountInfo(id, def, "") : null;
+          const storedProfiles = store.getCliAccountProfiles(id);
+          const profiles =
+            storedProfiles.length > 0
+              ? storedProfiles
+              : [{ id: "default", label: "默认账号", enabled: true, isDefault: true }];
           sendJson(res, 200, {
             ok: true,
             engineId: id,
             supportsMultiAccountIsolation: isolated,
-            profiles: store.getCliAccountProfiles(id),
+            profiles,
             account,
           });
           return;
@@ -874,13 +881,17 @@ export async function createDaemonHttpServer({
             onUpdate: (snapshot) => {
               broadcast("state_changed");
               if (snapshot?.status === "succeeded") {
+                orchestrator.invalidateCliCaches?.(id);
                 orchestrator
-                  .getDashboardState(true, false)
+                  .getDashboardState(false, false)
                   .then(() => broadcast("state_changed"))
                   .catch(() => {});
               }
             },
           });
+          if (result.login?.status === "succeeded") {
+            orchestrator.invalidateCliCaches?.(id);
+          }
           broadcast("state_changed");
           sendJson(res, result.ok ? 200 : 400, {
             ...result,

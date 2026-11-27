@@ -7,7 +7,12 @@ import { fileURLToPath } from "node:url";
 import { API_PROVIDERS, CLI_DEFAULT_MODELS_MAP, PLUGIN_VERSION } from "./constants.mjs";
 import { EXTENSIBLE_CLI_PRESETS, findExtensibleCliDef } from "./cli-registry.mjs";
 import { getAllCliInstalls } from "./cli-install.mjs";
-import { getCachedCliAccountInfo, probeCliAccountInfo, supportsMultiAccountIsolation } from "./cli-profiles.mjs";
+import {
+  clearCliAccountCache,
+  getCachedCliAccountInfo,
+  probeCliAccountInfo,
+  supportsMultiAccountIsolation,
+} from "./cli-profiles.mjs";
 import { detectEngines, normalizeWorkspaceKey, readDshConfigModels, resolveCliPresetBinary } from "./paths.mjs";
 import { assertCanReuseApiKey, maskSecret } from "./store.mjs";
 import { createJobWorktree, detectGitRepo, finalizeJobWorktree } from "./worktree.mjs";
@@ -677,10 +682,27 @@ export class RelayOrchestrator {
     this.cliModelProbes.set(engineId, probe);
   }
 
+  invalidateCliCaches(engineId = "") {
+    clearCliAccountCache(engineId);
+    if (engineId) {
+      this.cliAccountSnapshots.delete(engineId);
+      const entry = this.extensibleEngines.get(engineId);
+      entry?.engine?.invalidateModelsCache?.();
+      if (entry?.engine?.listModels) this.#startCliModelProbe(engineId, entry.engine);
+      return;
+    }
+    this.cliAccountSnapshots.clear();
+    for (const entry of this.extensibleEngines.values()) {
+      entry?.engine?.invalidateModelsCache?.();
+    }
+  }
+
   #cliAccountDef(engineId, info = {}) {
     if (info.command) return info;
     if (engineId === "codex") return { command: "codex" };
+    if (engineId === "deepseek-harness") return { command: "dsh" };
     if (engineId === "doubao") return { command: "doubao" };
+    if (engineId === "qoder-cn") return { command: "qoderclicn" };
     if (engineId === "qoder") return { command: "qodercli" };
     if (engineId === "minimax") return { command: "mcode" };
     return info;
@@ -702,7 +724,7 @@ export class RelayOrchestrator {
   // Cold dashboard reads never spawn a CLI: cache hits are sync, misses probe in the background.
   #getCliAccountsSnapshot(engines) {
     const out = {};
-    for (const engineId of ["codex", "doubao", "qoder", "minimax", "opencode"]) {
+    for (const engineId of ["codex", "deepseek-harness", "doubao", "minimax", "qoder-cn", "qoder", "opencode"]) {
       const info = engines?.[engineId];
       if (!info) continue;
       if (!info.installed && !info.loggedIn) {
@@ -3472,9 +3494,11 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
 
   async getDashboardState(forceDetect = false, fetchRateLimits = false) {
     const customCliEngines = this.store.settings.customCliEngines || [];
+    if (forceDetect) this.invalidateCliCaches();
     const engines = detectEngines(forceDetect, this.store.dataDir, customCliEngines);
     const dshEngine = this.engines["deepseek-harness"];
-    const dshSyncEnabled = engines["deepseek-harness"]?.status === "ready" && (forceDetect || fetchRateLimits);
+    const dshReady = engines["deepseek-harness"]?.status === "ready";
+    const dshSyncEnabled = dshReady && (forceDetect || fetchRateLimits);
     let codexRateLimits = this.engines.codex.latestRateLimits;
     if (engines.codex?.status === "ready" && fetchRateLimits) {
       await Promise.allSettled([
@@ -3485,6 +3509,13 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       codexRateLimits = this.engines.codex.latestRateLimits;
     } else if (dshSyncEnabled) {
       await Promise.allSettled([dshEngine.listAccountModels(forceDetect)]);
+    } else if (dshReady && dshEngine.modelsFetchedAt === 0 && !this.cliModelProbes.has("deepseek-harness")) {
+      const p = Promise.resolve()
+        .then(() => (this.shuttingDown ? null : dshEngine.listAccountModels(false)))
+        .then(() => this.#emitStateChange("cli_models_ready", { engineId: "deepseek-harness" }))
+        .catch(() => {})
+        .finally(() => this.cliModelProbes.delete("deepseek-harness"));
+      this.cliModelProbes.set("deepseek-harness", p);
     }
 
     const codexModels =
@@ -3553,10 +3584,40 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
     for (const [id] of installedAcp) {
       const engine = this.#getEngine(id);
       if (!engine?.listModels) continue;
+      const hasConcrete = Array.isArray(engine.latestModels) && engine.latestModels.some((m) => m && !m.isDefault);
       if (Array.isArray(engine.latestModels) && engine.latestModels.length > 0) {
         cliSubModels[id] = engine.latestModels;
-      } else {
+      }
+      if (!hasConcrete || forceDetect) {
         this.#startCliModelProbe(id, engine);
+      }
+    }
+    const cliAccounts = this.#getCliAccountsSnapshot(engines);
+    // Sync honest login state from live account probes onto installed extensible CLIs.
+    for (const [id, acc] of Object.entries(cliAccounts)) {
+      const info = engines[id];
+      if (!info || !info.installed || !info.extensible) continue;
+      const discoveredConcrete = (cliSubModels[id] || []).some((m) => m && !m.isDefault);
+      if (acc.status === "ready" || discoveredConcrete) {
+        info.loggedIn = true;
+        info.status = "ready";
+        if (discoveredConcrete && acc.status !== "ready") {
+          const cleanPrev =
+            acc.accountLabel && acc.accountLabel !== "未登录" && acc.accountLabel !== "正在读取账号…"
+              ? acc.accountLabel
+              : "";
+          cliAccounts[id] = {
+            ...acc,
+            status: "ready",
+            loggedIn: true,
+            accountLabel:
+              cleanPrev ||
+              (id === "opencode" ? "本机桌面配置" : id === "minimax" ? "MiniMax OAuth" : "已登录"),
+          };
+        }
+      } else if (acc.status === "logged_out") {
+        info.loggedIn = false;
+        info.status = "not_logged_in";
       }
     }
     const cliEnginesMeta = {};
@@ -3564,7 +3625,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       cliEnginesMeta[id] = { ...info };
     }
     const cliAccountProfiles = {};
-    for (const engineId of ["codex", "qoder", "opencode"]) {
+    for (const engineId of ["codex", "qoder-cn", "qoder", "opencode"]) {
       if (supportsMultiAccountIsolation(engineId)) cliAccountProfiles[engineId] = this.store.getCliAccountProfiles(engineId);
     }
 
@@ -3583,7 +3644,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       cliSubModels,
       cliModelWhitelist: this.store.getCliModelWhitelist(),
       cliAccountProfiles,
-      cliAccounts: this.#getCliAccountsSnapshot(engines),
+      cliAccounts,
       cliInstalls: getAllCliInstalls(),
       cooldowns: this.store.getAllActiveCooldowns(),
       sessions: this.store.listSessions(),

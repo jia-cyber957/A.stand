@@ -825,6 +825,21 @@ function clientTokenPreview(client) {
 /* ==========================================================================
    Model catalog
    ========================================================================== */
+function shortEngineLabel(eid) {
+  const map = {
+    codex: "Codex",
+    "deepseek-harness": "DeepSeek (dsh)",
+    "claude-code": "Claude Code",
+    antigravity: "Antigravity CLI",
+    opencode: "OpenCode",
+    doubao: isEn() ? "Doubao CLI" : "豆包 CLI",
+    minimax: "MiniMax",
+    "qoder-cn": isEn() ? "Qoder CN" : "Qoder 中国版",
+    qoder: isEn() ? "Qoder Global" : "Qoder 国际版",
+  };
+  return map[eid] || engineLabel(eid);
+}
+
 function engineLabel(eid) {
   const meta = state?.cliEnginesMeta?.[eid];
   if (meta) return isEn() ? meta.labelEn || meta.labelZh || eid : meta.labelZh || meta.labelEn || eid;
@@ -922,16 +937,19 @@ function modelCatalog() {
     });
   }
 
-  for (const m of settings.models || []) {
-    if (m.mode === "cli") continue;
+  for (const m of state?.dshModels || []) {
+    const isAcct = m.authType === "account" || m.providerId === "deepseek-account";
     add({
       id: m.id,
-      name: m.name || m.modelName || m.id,
-      engine: m.engine || "deepseek-harness",
+      name: m.displayName || m.name || m.modelName || m.id,
+      engine: "deepseek-harness",
       mode: "api",
       modelName: m.modelName || "",
-      providerId: m.providerId || "",
-      source: m.source || "custom",
+      providerId: m.providerId || "dsh",
+      channelId: m.channelId || "",
+      channelName: isAcct ? (isEn() ? "DeepSeek Account" : "DeepSeek 官方账号") : m.channelName || "",
+      authType: m.authType || "",
+      source: "dsh",
     });
   }
 
@@ -951,17 +969,16 @@ function modelCatalog() {
     }
   }
 
-  for (const m of state?.dshModels || []) {
+  for (const m of settings.models || []) {
+    if (m.mode === "cli") continue;
     add({
       id: m.id,
-      name: m.displayName || m.name || m.modelName || m.id,
-      engine: "deepseek-harness",
+      name: m.name || m.modelName || m.id,
+      engine: m.engine || "deepseek-harness",
       mode: "api",
       modelName: m.modelName || "",
-      providerId: m.providerId || "dsh",
-      channelId: m.channelId || "",
-      channelName: m.channelName || "",
-      source: "dsh",
+      providerId: m.providerId || "",
+      source: m.source || "custom",
     });
   }
 
@@ -1812,7 +1829,7 @@ function renderModelPicker(role, index, currentId) {
                 const active = eid === activeEngine;
                 return `<button class="cascade-engine-btn ${active ? "active" : ""}" data-action="picker-select-engine" data-engine="${esc(eid)}">
                   <span class="cascade-engine-ico">${engineIconSvg(eid, 16)}</span>
-                  <span class="truncate" style="flex:1;text-align:left">${esc(engineLabel(eid))}</span>
+                  <span class="truncate" style="flex:1;text-align:left">${esc(shortEngineLabel(eid))}</span>
                   <span class="tag plain nums" style="height:17px;font-size:10px">${count}</span>
                   ${iconSvg("chevronRight", 12)}
                 </button>`;
@@ -1824,7 +1841,7 @@ function renderModelPicker(role, index, currentId) {
                   .map(
                     (eid) => `<button class="cascade-engine-btn disabled" data-action="goto-engine-setup" data-engine="${esc(eid)}">
                       <span class="cascade-engine-ico" style="opacity:0.55">${engineIconSvg(eid, 16)}</span>
-                      <span class="truncate" style="flex:1;text-align:left">${esc(engineLabel(eid))}</span>
+                      <span class="truncate" style="flex:1;text-align:left">${esc(shortEngineLabel(eid))}</span>
                       <span class="cascade-setup-link">${esc(isEn() ? "Install →" : "未安装·去配置 →")}</span>
                     </button>`
                   )
@@ -2054,81 +2071,193 @@ function engineCooldownModels(eid) {
   const cd = cooldowns();
   return Object.keys(cd)
     .map((id) => ({ model: modelById(id), cd: cd[id] }))
-    .filter((x) => x.model && x.model.engine === eid);
+    .filter((x) => {
+      if (!x.model || x.model.engine !== eid) return false;
+      // Keep custom API channel cooldowns on their own API channel cards rather than polluting dsh account status.
+      if (eid === "deepseek-harness" && x.model.mode === "api" && x.model.source !== "dsh") return false;
+      return true;
+    });
 }
 
-function renderEngineRow(eid) {
+function channelCooldownModels(channel) {
+  const cd = cooldowns();
+  const ids = new Set((channel?.models || []).map((m) => m.id));
+  return Object.keys(cd)
+    .filter((id) => ids.has(id))
+    .map((id) => ({ model: modelById(id) || (channel.models || []).find((m) => m.id === id), cd: cd[id] }))
+    .filter((x) => x.model && x.cd);
+}
+
+function engineModelCount(eid) {
+  if (eid === "codex") {
+    const cm = Array.isArray(state?.codexModels) ? state.codexModels : [];
+    return cm.length || 0;
+  }
+  if (eid === "deepseek-harness") {
+    const acctModels = (state?.dshModels || []).filter(
+      (m) => m && (m.authType === "account" || m.providerId === "deepseek-account")
+    );
+    if (acctModels.length) return acctModels.length;
+    const acctCh = (state?.dshChannels || []).find((c) => c.authType === "account" || c.providerId === "deepseek-account");
+    return acctCh?.models?.length || 0;
+  }
+  return (state?.cliSubModels?.[eid] || []).filter((m) => m && !m.isDefault).length;
+}
+
+function engineLoginSummary(eid) {
+  const eng = state?.engines?.[eid] || {};
+  const acc = state?.cliAccounts?.[eid] || null;
+  const subCount = engineModelCount(eid);
+  const probing = acc?.status === "probing";
+  const loggedIn =
+    acc?.status === "ready"
+      ? true
+      : acc?.status === "logged_out"
+      ? eid === "opencode" && subCount > 0
+      : Boolean(eng.loggedIn || (eid === "deepseek-harness" && eng.status === "ready"));
+  let rawIdentity = "";
+  if (acc?.username && acc?.email && acc.username !== acc.email) {
+    rawIdentity = `${acc.username} · ${acc.email}`;
+  } else if (acc?.email) {
+    rawIdentity = acc.email;
+  } else if (acc?.username) {
+    rawIdentity = acc.username;
+  } else if (acc?.userId) {
+    rawIdentity = `${isEn() ? "ID" : "用户 ID"} ${acc.userId}`;
+  } else if (loggedIn) {
+    if (eid === "codex") rawIdentity = isEn() ? "ChatGPT session" : "ChatGPT 本地登录态";
+    else if (eid === "deepseek-harness") rawIdentity = isEn() ? "DeepSeek Official Account" : "DeepSeek 官方账号";
+    else if (eid === "minimax") rawIdentity = "MiniMax OAuth";
+    else if (eid === "opencode") rawIdentity = isEn() ? "Local desktop config" : "本机桌面配置";
+    else rawIdentity = isEn() ? "Signed in" : "已登录";
+  }
+  const masked = rawIdentity ? (ui.privacyMask ? maskPrivacyText(rawIdentity) : rawIdentity) : "";
+  return { loggedIn, probing, identity: masked, subCount, acc };
+}
+
+/** Top full-width section tile: pure CLI runtime/container status (no duplicate login buttons). */
+function renderEngineTile(eid) {
   const eng = state?.engines?.[eid] || {};
   const meta = state?.cliEnginesMeta?.[eid] || {};
   const label = engineLabel(eid);
-  const version = eng.version ? `${t("detectedVersion")} ${eng.version}` : "";
-  const cooled = engineCooldownModels(eid);
-  const test = ui.channelTest && ui.channelTest.key === `cli:${eid}` ? ui.channelTest : null;
-  const rl = state?.codexRateLimits;
-  const showQuota = eid === "codex" && rl;
   const isCustom = Boolean(eng.custom || meta.custom);
-  const proto = eng.protocol || meta.protocol || "";
+  const proto = eng.protocol || meta.protocol || (eid === "codex" ? "native" : eid === "deepseek-harness" ? "acp" : "");
   const protoPill =
     proto === "acp"
       ? `<span class="tag blue">ACP</span>`
       : proto === "headless"
       ? `<span class="tag plain">Headless</span>`
+      : proto === "native"
+      ? `<span class="tag plain">Native</span>`
       : "";
-  const subCount = (state?.cliSubModels?.[eid] || []).filter((m) => !m.isDefault).length;
-  const canInAppLogin = Boolean(eng.installed && (eng.extensible || eid === "doubao" || eid === "qoder" || eid === "qoder-cn" || eid === "minimax" || eid === "opencode"));
-  const loginBarHtml = canInAppLogin ? getCliCatalogModal().renderLoginBar(eid) : "";
+  const subCount = engineModelCount(eid);
+  const test = ui.channelTest && ui.channelTest.key === `cli:${eid}` ? ui.channelTest : null;
   const installBarHtml = getCliCatalogModal().renderInstallBar(eid);
   const cliUpd = (ui.updates?.clis || []).find((c) => c.id === eid && c.hasUpdate);
-  const accSummary = state?.cliAccounts?.[eid];
-  const accDisplay = accSummary?.email || accSummary?.username || accSummary?.userId || "";
-  const maskedAcc = accDisplay ? (ui.privacyMask ? maskPrivacyText(accDisplay) : accDisplay) : "";
 
-  return `<div class="engine-row ${showQuota || loginBarHtml || installBarHtml ? "has-quota" : ""}">
-    <div class="engine-avatar brand" data-action="cd-open" data-engine="${esc(eid)}" style="cursor:pointer">${engineIconSvg(eid, 26)}</div>
-    <div class="engine-main">
-      <div class="engine-name" data-action="cd-open" data-engine="${esc(eid)}" style="cursor:pointer">
-        <span class="truncate">${esc(label)}</span>
-        ${engineStatusPill(eng)}
-        ${protoPill}
-        ${isCustom ? `<span class="tag violet">${esc(isEn() ? "Custom" : "自定义")}</span>` : ""}
-        ${subCount > 0 ? `<span class="tag plain nums">${esc(isEn() ? `${subCount} models` : `${subCount} 模型`)}</span>` : ""}
-        ${cliUpd ? `<span class="tag blue">↑ v${esc(cliUpd.latestVersion)}</span>` : ""}
-        ${eid === "codex" && eng.detectedModel ? `<span class="tag plain mono">${esc(eng.detectedModel)}</span>` : ""}
-        ${eid === "codex" && rl?.planType ? `<span class="tag plain mono">${esc(String(rl.planType).toUpperCase())}</span>` : ""}
+  return `<div class="cli-engine-tile">
+    <div class="cli-engine-tile-top" data-action="cd-open" data-engine="${esc(eid)}" style="cursor:pointer">
+      <div class="engine-avatar brand sm">${engineIconSvg(eid, 22)}</div>
+      <div class="min-w-0" style="flex:1">
+        <div class="cli-engine-tile-name">
+          <span class="truncate">${esc(label)}</span>
+          ${protoPill}
+          ${isCustom ? `<span class="tag violet">${esc(isEn() ? "Custom" : "自定义")}</span>` : ""}
+        </div>
+        <div class="cli-engine-tile-meta">
+          <span class="dot-inline ${eng.installed ? "ok" : "off"}"></span>
+          <span class="mono truncate">${esc(eng.version || (eng.installed ? (isEn() ? "Installed" : "已安装") : t("statusMissing")))}</span>
+          ${subCount > 0 ? `<span>· ${esc(isEn() ? `${subCount} models` : `${subCount} 模型`)}</span>` : ""}
+          ${cliUpd ? `<span class="tag blue" style="height:16px;font-size:9.5px;padding:0 5px">↑ v${esc(cliUpd.latestVersion)}</span>` : ""}
+        </div>
       </div>
-      <div class="engine-meta">
-        ${version ? `<span class="mono">${esc(version)}</span>` : ""}
-        ${maskedAcc ? `<span>· ${esc(maskedAcc)}</span>` : ""}
-        ${eng.installed ? "" : meta.installCmd ? `<span class="mono truncate" style="max-width:320px">${esc(meta.installCmd)}</span>` : ""}
-        ${test ? `<span style="color:${test.ok ? "var(--green)" : "var(--red)"}">${esc(test.ok ? `${t("connOk")}${test.latencyMs ? ` (${test.latencyMs}ms)` : ""}` : `${t("connFail")}${test.error ? `: ${test.error}` : ""}`)}</span>` : ""}
-      </div>
-      ${showQuota ? `<div class="engine-quota">${renderQuotaBars()}</div>` : ""}
-      ${installBarHtml}
-      ${loginBarHtml}
-      ${cooled.length
-        ? `<div class="row wrap" style="gap:6px">${cooled
-            .map(
-              (x) => `<span class="tag amber">⏳ ${esc(x.model.name)} · ${esc(x.cd.manualOnly ? t("balanceDepleted") : fmtCountdown(x.cd.untilMs))}
-                <button class="chip-btn" data-action="clear-cooldown" data-model="${esc(x.model.id)}" title="${esc(t("restore"))}">${esc(t("restore"))}</button>
-              </span>`
-            )
-            .join("")}</div>`
-        : ""}
     </div>
-    <div class="engine-actions">
-      ${eid === "codex" ? `<button class="btn xs" data-action="refresh-quota" title="${esc(t("refreshQuota"))}">${iconSvg("refresh")}</button>` : ""}
-      ${canInAppLogin
-        ? `<button class="btn xs primary" data-action="cli-login-start" data-engine="${esc(eid)}">${iconSvg("key")} ${esc(isEn() ? "Sign in" : "登录")}</button>`
-        : ""}
-      <button class="btn xs" data-action="cd-open" data-engine="${esc(eid)}">${iconSvg("settings", 13)} ${esc(isEn() ? "Details" : "详情")}</button>
-      <button class="btn xs" data-action="test-cli" data-engine="${esc(eid)}" ${test && test.loading ? "disabled" : ""}>
-        ${iconSvg("zap")} ${esc(test && test.loading ? t("testing") : t("testConnection"))}
-      </button>
+    ${test
+      ? `<div class="cli-engine-tile-test" style="color:${test.ok ? "var(--green)" : "var(--red)"}">${esc(test.ok ? `${t("connOk")}${test.latencyMs ? ` (${test.latencyMs}ms)` : ""}` : `${t("connFail")}${test.error ? `: ${test.error}` : ""}`)}</div>`
+      : ""}
+    ${installBarHtml}
+    <div class="cli-engine-tile-actions">
+      <button class="btn xs" data-action="test-cli" data-engine="${esc(eid)}" ${test && test.loading ? "disabled" : ""}>${iconSvg("zap")} ${esc(test && test.loading ? t("testing") : isEn() ? "Test" : "测试")}</button>
+      <button class="btn xs" data-action="cd-open" data-engine="${esc(eid)}">${iconSvg("settings", 12)} ${esc(isEn() ? "Details" : "详情")}</button>
       ${isCustom
         ? `<button class="btn xs" data-action="cli-open-custom" data-engine="${esc(eid)}" title="${esc(t("edit"))}">${iconSvg("edit")}</button>
            <button class="btn xs danger" data-action="cli-delete-custom" data-engine="${esc(eid)}" title="${esc(t("delete"))}">${iconSvg("trash")}</button>`
         : ""}
     </div>
+  </div>`;
+}
+
+/** Bottom-left column card: Magpie-style CLI account, subscription & quota status. */
+function renderCliAccountRow(eid) {
+  const eng = state?.engines?.[eid] || {};
+  const rl = state?.codexRateLimits;
+  const showQuota = eid === "codex" && Boolean(rl);
+  const { loggedIn, probing, identity, subCount, acc } = engineLoginSummary(eid);
+  const canInAppLogin = Boolean(
+    eng.installed && (eng.extensible || ["doubao", "qoder", "qoder-cn", "minimax", "opencode"].includes(eid))
+  );
+  const loginBarHtml = canInAppLogin ? getCliCatalogModal().renderLoginBar(eid) : "";
+  const cooled = engineCooldownModels(eid);
+  const displayTitle = eid === "deepseek-harness" ? (isEn() ? "DeepSeek Official Account" : "DeepSeek 官方账号") : engineLabel(eid);
+  const dshAccountModels =
+    eid === "deepseek-harness"
+      ? (state?.dshModels || []).filter((m) => m && (m.authType === "account" || m.providerId === "deepseek-account"))
+      : [];
+  const planBadge =
+    eid === "codex" && rl?.planType
+      ? String(rl.planType).toUpperCase()
+      : eid === "deepseek-harness" && loggedIn
+      ? isEn() ? "Official" : "官方账号"
+      : acc?.loginMethod === "minimax_oauth" && loggedIn
+      ? "OAuth"
+      : "";
+  const profilesCount = (state?.cliAccountProfiles?.[eid] || []).filter((p) => p.enabled).length;
+
+  return `<div class="cli-account-card ${loggedIn ? "signed-in" : ""}">
+    <div class="cli-account-top">
+      <div class="engine-avatar brand sm" data-action="cd-open" data-engine="${esc(eid)}" style="cursor:pointer">${engineIconSvg(eid, 22)}</div>
+      <div class="cli-account-main" data-action="cd-open" data-engine="${esc(eid)}" style="cursor:pointer">
+        <div class="cli-account-title">
+          <span class="truncate">${esc(displayTitle)}</span>
+          ${planBadge ? `<span class="tag plain" style="height:17px;font-size:10px">${esc(planBadge)}</span>` : ""}
+          ${profilesCount > 1 ? `<span class="tag blue" style="height:17px;font-size:10px">${esc(isEn() ? `${profilesCount} accts` : `${profilesCount} 账号轮换`)}</span>` : ""}
+        </div>
+        <div class="cli-account-sub">
+          <span class="dot-inline ${loggedIn ? "ok" : probing ? "off" : "warn"}"></span>
+          <span class="truncate">${esc(
+            probing
+              ? isEn() ? "Checking sign-in…" : "正在读取登录态…"
+              : loggedIn
+              ? `${isEn() ? "Signed in" : "已登录"}${identity && identity !== "已登录" && identity !== "Signed in" ? ` · ${identity}` : ""}${subCount > 0 ? ` · ${isEn() ? `${subCount} models` : `${subCount} 个模型`}` : ""}`
+              : isEn() ? "Not signed in — click Sign in" : "未登录 · 点击右侧登录"
+          )}</span>
+        </div>
+      </div>
+      <div class="cli-account-right">
+        ${eid === "codex"
+          ? `<button class="icon-btn sm" data-action="refresh-quota" title="${esc(t("refreshQuota"))}">${iconSvg("refresh", 13)}</button>`
+          : ""}
+        ${!loggedIn && canInAppLogin
+          ? `<button class="btn xs primary" data-action="cli-login-start" data-engine="${esc(eid)}">${iconSvg("key")} ${esc(isEn() ? "Sign in" : "登录")}</button>`
+          : `<button class="btn xs ghost" data-action="cd-open" data-engine="${esc(eid)}" title="${esc(isEn() ? "Account & models" : "管理账号与模型")}">${esc(loggedIn ? (isEn() ? "Manage" : "管理") : (isEn() ? "Details" : "详情"))} ${iconSvg("chevronRight", 12)}</button>`}
+      </div>
+    </div>
+    ${showQuota ? `<div class="cli-account-extra">${renderQuotaBars()}</div>` : ""}
+    ${dshAccountModels.length
+      ? `<div class="chip-row" style="padding:0 12px 10px 48px">${dshAccountModels
+          .map((m) => `<span class="model-chip">${esc(m.displayName || m.name || m.modelName || m.id)}</span>`)
+          .join("")}</div>`
+      : ""}
+    ${cooled.length
+      ? `<div class="row wrap" style="gap:6px;padding:0 12px 10px 48px">${cooled
+          .map(
+            (x) => `<span class="tag amber">⏳ ${esc(x.model.name)} · ${esc(x.cd.manualOnly ? t("balanceDepleted") : fmtCountdown(x.cd.untilMs))}
+              <button class="chip-btn" data-action="clear-cooldown" data-model="${esc(x.model.id)}" title="${esc(t("restore"))}">${esc(t("restore"))}</button>
+            </span>`
+          )
+          .join("")}</div>`
+      : ""}
+    ${loginBarHtml ? `<div class="cli-account-login-slot">${loginBarHtml}</div>` : ""}
   </div>`;
 }
 
@@ -2148,22 +2277,28 @@ function renderChannelCard(channel) {
   const models = channel.models || [];
   const rawKey = channel.maskedApiKey || (channel.hasApiKey ? t("keyMasked") : "");
   const key = ui.privacyMask && rawKey ? "••••••••" : rawKey;
+  const cooled = channelCooldownModels(channel);
+  const urlDisplay = channel.baseUrl
+    ? ui.privacyMask
+      ? maskPrivacyText(channel.baseUrl)
+      : channel.baseUrl
+    : "";
   return `<div class="channel-card">
     <div class="channel-head">
-      <div class="provider-badge brand">${engineIconSvg(channel.providerId === "deepseek" || readOnly ? "deepseek-harness" : "api", 24)}</div>
+      <div class="provider-badge brand">${engineIconSvg(channel.providerId === "deepseek" ? "deepseek-harness" : "api", 22)}</div>
       <div class="channel-main">
         <div class="channel-title">
-          <span class="truncate">${esc(channel.name || providerName(channel.providerId))}</span>
+          <span class="truncate">${esc(ui.privacyMask ? maskPrivacyText(channel.name || providerName(channel.providerId)) : channel.name || providerName(channel.providerId))}</span>
           ${readOnly ? `<span class="tag plain">${esc(t("readOnly"))}</span>` : ""}
           ${key ? `<span class="tag plain mono">${esc(key)}</span>` : ""}
         </div>
-        <div class="channel-url" title="${esc(channel.baseUrl || "")}">${esc(channel.baseUrl || (channel.authType === "account" ? t("accountChannel") : ""))}</div>
+        <div class="channel-url" title="${esc(channel.baseUrl || "")}">${esc(urlDisplay)}</div>
       </div>
       ${readOnly
         ? ""
-        : `<div class="row" style="gap:6px">
-            <button class="btn xs" data-action="test-channel" data-channel="${esc(channel.id)}">${iconSvg("zap")} ${esc(t("testConnection"))}</button>
-            <button class="btn xs" data-action="edit-channel" data-channel="${esc(channel.id)}">${iconSvg("edit")} ${esc(t("edit"))}</button>
+        : `<div class="row" style="gap:4px">
+            <button class="btn xs" data-action="test-channel" data-channel="${esc(channel.id)}">${iconSvg("zap")} ${esc(isEn() ? "Test" : "测试")}</button>
+            <button class="btn xs" data-action="edit-channel" data-channel="${esc(channel.id)}">${iconSvg("edit")}</button>
             <button class="btn xs danger" data-action="delete-channel" data-channel="${esc(channel.id)}">${iconSvg("trash")}</button>
           </div>`}
     </div>
@@ -2179,8 +2314,17 @@ function renderChannelCard(channel) {
               .join("")
           : `<span class="field-hint">${esc(t("noModelsFetched"))}</span>`}
       </div>
+      ${cooled.length
+        ? `<div class="row wrap" style="gap:6px;margin-top:8px">${cooled
+            .map(
+              (x) => `<span class="tag amber">⏳ ${esc(x.model.name || x.model.modelName || x.model.id)} · ${esc(x.cd.manualOnly ? t("balanceDepleted") : fmtCountdown(x.cd.untilMs))}
+                <button class="chip-btn" data-action="clear-cooldown" data-model="${esc(x.model.id)}" title="${esc(t("restore"))}">${esc(t("restore"))}</button>
+              </span>`
+            )
+            .join("")}</div>`
+        : ""}
       ${ui.channelTest && ui.channelTest.key === `channel:${channel.id}`
-        ? `<div class="field-hint" style="color:${ui.channelTest.ok ? "var(--green)" : "var(--red)"}">${esc(ui.channelTest.loading ? t("testing") : ui.channelTest.ok ? t("connOk") : `${t("connFail")}${ui.channelTest.error ? `: ${ui.channelTest.error}` : ""}`)}</div>`
+        ? `<div class="field-hint" style="margin-top:6px;color:${ui.channelTest.ok ? "var(--green)" : "var(--red)"}">${esc(ui.channelTest.loading ? t("testing") : ui.channelTest.ok ? t("connOk") : `${t("connFail")}${ui.channelTest.error ? `: ${ui.channelTest.error}` : ""}`)}</div>`
         : ""}
     </div>
   </div>`;
@@ -2193,7 +2337,6 @@ function renderProvidersPage() {
     ...ENGINE_ORDER.filter((id) => id in engines),
     ...allIds.filter((id) => !ENGINE_ORDER.includes(id)),
   ];
-  // Show installed + custom CLIs by default so the page stays crisp; tuck uninstalled presets into "+ 添加 CLI 引擎".
   const visibleEngineIds = orderedIds.filter((id) => {
     const e = engines[id];
     return Boolean(e && (e.installed || e.custom));
@@ -2201,41 +2344,64 @@ function renderProvidersPage() {
   const displayedIds = visibleEngineIds.length ? visibleEngineIds : ENGINE_ORDER.filter((id) => id in engines);
   const hiddenCount = Math.max(0, orderedIds.length - displayedIds.length);
 
+  // Bottom-right API Channels: strictly user-added / third-party API channels (DeepSeek official account lives on the left!).
   const customChannels = state?.settings?.channels || [];
-  const extraChannels = (state?.dshChannels || []).filter((c) => !customChannels.some((x) => x.id === c.id));
-  const channels = [...customChannels.map((c) => ({ ...c, source: c.source || "custom" })), ...extraChannels];
+  const extraApiChannels = (state?.dshChannels || []).filter(
+    (c) =>
+      c.authType !== "account" &&
+      c.providerId !== "deepseek-account" &&
+      !customChannels.some((x) => x.id === c.id)
+  );
+  const channels = [...customChannels.map((c) => ({ ...c, source: c.source || "custom" })), ...extraApiChannels];
 
   return `<div class="content-inner">
     <div class="section-head">
       <span class="section-title">${esc(t("cliEngines"))}</span>
       <span class="section-sub nums">${displayedIds.length}</span>
+      <span class="field-hint" style="margin-left:6px">${esc(isEn() ? "Installed local CLI runtimes" : "本机已装 CLI 执行容器")}</span>
       <div class="spacer"></div>
       <button class="btn xs" data-action="refresh-detect" ${ui.detecting ? "disabled" : ""}>${iconSvg("refresh")} ${esc(ui.detecting ? t("loading") : t("refreshDetect"))}</button>
       <button class="btn xs primary" data-action="cli-open-catalog">${iconSvg("plus")} ${esc(isEn() ? "Add CLI engine" : "添加 CLI 引擎")}</button>
     </div>
-    <div class="card-list">
-      ${displayedIds.map(renderEngineRow).join("")}
+    <div class="cli-engine-grid">
+      ${displayedIds.map(renderEngineTile).join("")}
     </div>
     ${hiddenCount > 0
-      ? `<div class="field-hint" style="margin-top:-6px">${esc(
+      ? `<div class="field-hint" style="margin-top:-4px">${esc(
           isEn()
-            ? `${hiddenCount} more official CLI presets available (Doubao, Qoder, MiniMax, Kimi, CodeBuddy, Qwen, Gemini, Cursor…) — click “Add CLI engine” to install or add a custom ACP CLI.`
-            : `另有 ${hiddenCount} 个官方 CLI 预设可按需接入（豆包 CLI、Qoder、MiniMax、Kimi、CodeBuddy、Qwen、Gemini、Cursor 等），点击右上角「添加 CLI 引擎」查看或自定义 ACP 容器。`
+            ? `${hiddenCount} more official CLI presets available (Kimi, CodeBuddy, Qwen, Gemini, Cursor…) — click “Add CLI engine” to install or add a custom ACP CLI.`
+            : `另有 ${hiddenCount} 个官方 CLI 预设可按需接入（Kimi、CodeBuddy、Qwen、Gemini、Cursor 等），点击右上角「添加 CLI 引擎」一键安装或自定义。`
         )}</div>`
       : ""}
-    <div class="section-head" style="margin-top:6px">
-      <span class="section-title">${esc(t("apiChannels"))}</span>
-      <div class="spacer"></div>
-      <button class="btn xs primary" data-action="open-channel">${iconSvg("plus")} ${esc(t("addChannel"))}</button>
+
+    <div class="providers-split-grid">
+      <div class="providers-col">
+        <div class="section-head">
+          <span class="section-title">${esc(isEn() ? "CLI Accounts & Plans" : "CLI 账号与套餐")}</span>
+          <span class="section-sub nums">${displayedIds.length}</span>
+        </div>
+        <div class="card-list">
+          ${displayedIds.map(renderCliAccountRow).join("")}
+        </div>
+      </div>
+
+      <div class="providers-col">
+        <div class="section-head">
+          <span class="section-title">${esc(t("apiChannels"))}</span>
+          <span class="section-sub nums">${channels.length}</span>
+          <div class="spacer"></div>
+          <button class="btn xs primary" data-action="open-channel">${iconSvg("plus")} ${esc(t("addChannel"))}</button>
+        </div>
+        ${channels.length
+          ? `<div class="card-list">${channels.map(renderChannelCard).join("")}</div>`
+          : `<div class="card"><div class="empty-state">
+              <div class="empty-icon">${iconSvg("database", 18)}</div>
+              <div style="font-weight:600;color:var(--ink);margin-bottom:4px">${esc(t("noChannels"))}</div>
+              <div style="max-width:340px;margin:0 auto 14px">${esc(t("noChannelsDesc"))}</div>
+              <button class="btn primary" data-action="open-channel">${iconSvg("plus")} ${esc(t("addChannel"))}</button>
+            </div></div>`}
+      </div>
     </div>
-    ${channels.length
-      ? `<div class="card-list">${channels.map(renderChannelCard).join("")}</div>`
-      : `<div class="card"><div class="empty-state">
-          <div class="empty-icon">${iconSvg("database", 18)}</div>
-          <div style="font-weight:600;color:var(--ink);margin-bottom:4px">${esc(t("noChannels"))}</div>
-          <div style="max-width:420px;margin:0 auto 14px">${esc(t("noChannelsDesc"))}</div>
-          <button class="btn primary" data-action="open-channel">${iconSvg("plus")} ${esc(t("addChannel"))}</button>
-        </div></div>`}
   </div>`;
 }
 

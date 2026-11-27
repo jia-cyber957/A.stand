@@ -53,12 +53,40 @@ export function createCliDetailModal(host) {
 
   function allDiscoveredModels(eid) {
     const st = getState() || {};
+    if (eid === "deepseek-harness") {
+      const fromDsh = (st.dshModels || []).filter(
+        (m) => m && (m.authType === "account" || m.providerId === "deepseek-account")
+      );
+      if (fromDsh.length) {
+        return fromDsh.map((x) => ({
+          id: x.id,
+          modelName: x.modelName || x.name,
+          displayName: x.displayName || x.name || x.modelName || x.id,
+          displayNameZh: x.displayName || x.name || x.modelName || x.id,
+        }));
+      }
+      const acctCh = (st.dshChannels || []).find((c) => c.authType === "account" || c.providerId === "deepseek-account");
+      if (acctCh?.models?.length) {
+        return acctCh.models.map((x) => ({
+          id: x.id,
+          modelName: x.modelName || x.name,
+          displayName: x.name || x.modelName || x.id,
+          displayNameZh: x.name || x.modelName || x.id,
+        }));
+      }
+      return [];
+    }
     const sub = Array.isArray(st.cliSubModels?.[eid]) ? st.cliSubModels[eid] : [];
     const concrete = sub.filter((m) => m && !m.isDefault);
     if (concrete.length) return concrete;
     if (eid === "codex") {
-      const m = (st.models || []).filter((x) => x.engine === "codex");
-      return m.map((x) => ({ id: x.id, modelName: x.modelName || x.name, displayName: x.name, displayNameZh: x.name }));
+      const cm = Array.isArray(st.codexModels) && st.codexModels.length ? st.codexModels : (st.models || []).filter((x) => x.engine === "codex");
+      return cm.map((x) => ({
+        id: x.id,
+        modelName: x.modelName || x.name,
+        displayName: x.displayName || x.name || x.modelName || x.id,
+        displayNameZh: x.displayName || x.name || x.modelName || x.id,
+      }));
     }
     return sub;
   }
@@ -74,11 +102,12 @@ export function createCliDetailModal(host) {
     }
   }
 
-  async function fetchAccounts(eid) {
+  async function fetchAccounts(eid, force = false) {
     view.loadingAccounts = true;
     scheduleRender();
     try {
-      const res = await api(`/api/cli-engines/${encodeURIComponent(eid)}/accounts`);
+      const qs = force ? "?force=1" : "";
+      const res = await api(`/api/cli-engines/${encodeURIComponent(eid)}/accounts${qs}`);
       if (view.engineId === eid && res?.ok) {
         view.accountsData = res;
       }
@@ -106,9 +135,26 @@ export function createCliDetailModal(host) {
     void fetchAccounts(eid);
   }
 
-  function formatAccountDisplay(acc) {
+  function formatAccountDisplay(eid, acc) {
     if (!acc) return "";
-    const raw = acc.email || acc.username || acc.userId || acc.accountLabel || "";
+    const parts = [];
+    if (acc.username && acc.email && acc.username !== acc.email) {
+      parts.push(`${acc.username} (${acc.email})`);
+    } else if (acc.email) {
+      parts.push(acc.email);
+    } else if (acc.username) {
+      parts.push(acc.username);
+    } else if (acc.userId) {
+      parts.push(eid === "doubao" ? `${L("豆包 ID", "Doubao ID")} ${acc.userId}` : acc.userId);
+    } else if (acc.loggedIn) {
+      if (eid === "minimax") parts.push(L("MiniMax OAuth 账号", "MiniMax OAuth account"));
+      else if (eid === "deepseek-harness") parts.push(L("DeepSeek 官方账号", "DeepSeek Official Account"));
+      else if (eid === "opencode") parts.push(L("本机桌面版配置", "Local Desktop Config"));
+      else if (acc.accountLabel) parts.push(acc.accountLabel);
+    } else if (acc.accountLabel && !(acc.loggedIn && acc.accountLabel === "未登录")) {
+      parts.push(acc.accountLabel);
+    }
+    const raw = parts[0] || "";
     if (!raw) return "";
     return isMasked() ? maskText(raw) : raw;
   }
@@ -135,12 +181,19 @@ export function createCliDetailModal(host) {
   function renderAccountsSection(eid, eng) {
     const st = getState() || {};
     const liveAcc = view.accountsData?.account || st.cliAccounts?.[eid] || null;
-    const profiles = view.accountsData?.profiles || st.cliAccountProfiles?.[eid] || [
-      { id: "default", label: L("默认账号", "Default account"), enabled: true, isDefault: true },
-    ];
+    const rawProfiles =
+      Array.isArray(view.accountsData?.profiles) && view.accountsData.profiles.length > 0
+        ? view.accountsData.profiles
+        : Array.isArray(st.cliAccountProfiles?.[eid]) && st.cliAccountProfiles[eid].length > 0
+        ? st.cliAccountProfiles[eid]
+        : [{ id: "default", label: L("默认账号", "Default account"), enabled: true, isDefault: true }];
+    const profiles = rawProfiles;
     const supportsMulti =
       view.accountsData?.supportsMultiAccountIsolation ??
       ["codex", "qoder", "qoder-cn", "opencode"].includes(eid);
+    const canInAppLogin = Boolean(
+      eng.extensible || ["doubao", "qoder", "qoder-cn", "minimax", "opencode"].includes(eid)
+    );
     const cooled = engineCooldownModels(eid);
     const showCodexQuota = eid === "codex" && Boolean(st.codexRateLimits);
     const enabledMultiCount = profiles.filter((p) => p.enabled).length;
@@ -148,10 +201,18 @@ export function createCliDetailModal(host) {
     const rowsHtml = profiles
       .map((prof) => {
         const isDef = prof.id === "default" || prof.isDefault;
+        const discoveredCount = allDiscoveredModels(eid).filter((m) => m && !m.isDefault).length;
         const accLabel = isDef
-          ? formatAccountDisplay(liveAcc) || prof.label || L("本机默认登录态", "Local default session")
+          ? formatAccountDisplay(eid, liveAcc) || prof.label || L("本机默认登录态", "Local default session")
           : prof.label || prof.id;
-        const loggedIn = isDef ? Boolean(liveAcc?.loggedIn ?? eng.status === "ready") : true;
+        const loggedIn = isDef
+          ? liveAcc?.status === "ready"
+            ? true
+            : liveAcc?.status === "logged_out"
+            ? discoveredCount > 0 && eid === "opencode"
+            : Boolean(liveAcc?.loggedIn ?? (eng.loggedIn || eng.status === "ready"))
+          : true;
+        const showLoginBtn = canInAppLogin || (eid === "codex" && !isDef);
         return `<div class="cli-detail-acc-row">
           <div class="cli-detail-acc-top">
             <button class="cli-acc-check ${prof.enabled ? "on" : ""}" data-action="cd-toggle-profile" data-profile="${esc(prof.id)}" ${isDef && enabledMultiCount <= 1 ? "disabled" : ""} title="${esc(L("启用/停用该账号参与轮换", "Toggle account in rotation"))}">
@@ -159,10 +220,13 @@ export function createCliDetailModal(host) {
             </button>
             <span class="cli-detail-acc-name truncate">${esc(accLabel)}</span>
             ${isDef && liveAcc?.loginMethod ? `<span class="tag plain">${esc(liveAcc.loginMethod)}</span>` : ""}
+            ${isDef && eid === "codex" && st.codexRateLimits?.planType ? `<span class="tag plain mono">${esc(String(st.codexRateLimits.planType).toUpperCase())}</span>` : ""}
             ${!isDef ? `<span class="tag plain">${esc(L("隔离目录", "Isolated"))}</span>` : ""}
             <span class="spacer"></span>
             <span class="status-pill ${loggedIn ? "on" : "warn"}"><span class="dot"></span>${esc(loggedIn ? L("已登录", "Signed in") : L("待登录", "Sign in needed"))}</span>
-            <button class="btn xs" data-action="cli-login-start" data-engine="${esc(eid)}" data-profile="${esc(prof.id)}">${iconSvg("key")} ${esc(isDef ? L("登录/切换", "Sign in") : L("登录", "Sign in"))}</button>
+            ${showLoginBtn
+              ? `<button class="btn xs ${loggedIn ? "" : "primary"}" data-action="cli-login-start" data-engine="${esc(eid)}" data-profile="${esc(prof.id)}">${iconSvg("key")} ${esc(loggedIn ? L("切换/重登", "Re-sign in") : L("登录", "Sign in"))}</button>`
+              : ""}
             ${!isDef
               ? `<button class="btn xs danger" data-action="cd-del-profile" data-profile="${esc(prof.id)}" title="${esc(L("删除该隔离账号", "Delete isolated account"))}">${iconSvg("trash")}</button>`
               : ""}
@@ -269,7 +333,11 @@ export function createCliDetailModal(host) {
     const preset = (st.cliEnginePresets || []).find((p) => p.id === eid) || {};
     const meta = st.cliEnginesMeta?.[eid] || {};
     const label = engineLabel(eid);
-    const proto = eng.protocol || preset.protocol || meta.protocol || "";
+    const proto =
+      eng.protocol ||
+      preset.protocol ||
+      meta.protocol ||
+      (eid === "deepseek-harness" ? "acp" : eid === "codex" ? "native" : "");
     const downloadUrl = preset.downloadUrl || meta.downloadUrl || "";
     const updates = getUpdates?.();
     const cliUpd = (updates?.clis || []).find((c) => c.id === eid && c.hasUpdate);
@@ -300,7 +368,7 @@ export function createCliDetailModal(host) {
 
       <div class="modal-body" style="gap:16px">
         <div class="cli-detail-sec">
-          <div class="cli-detail-label">${esc(L("账号与额度", "Account"))}</div>
+          <div class="cli-detail-label">${esc(eid === "codex" ? L("账号与额度", "Account & quota") : L("账号与状态", "Account"))}</div>
           <div class="cli-detail-content">${renderAccountsSection(eid, eng)}</div>
         </div>
 
@@ -394,7 +462,7 @@ export function createCliDetailModal(host) {
       try {
         await refreshState({ forceDetect: true, fetchRateLimits: view.engineId === "codex", silent: true });
         initWhitelistSet(view.engineId);
-        void fetchAccounts(view.engineId);
+        await fetchAccounts(view.engineId, true);
         showToast(L("已重新拉取模型与账号状态", "Refreshed models & account status"));
       } catch (err) {
         showError("", err);

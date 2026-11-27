@@ -60,6 +60,7 @@ export class UniversalHeadlessEngine {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
+      ...(launched.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
       env: utf8Env(),
     });
     this.proc = proc;
@@ -164,6 +165,7 @@ export class UniversalHeadlessEngine {
       proc = spawn(launched.command, launched.args, {
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
+        ...(launched.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
         env: utf8Env(),
       });
       const result = await new Promise((resolve, reject) => {

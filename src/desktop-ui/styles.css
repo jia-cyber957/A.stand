@@ -4477,7 +4477,7 @@ svg {
 
 .cascade-body {
   display: grid;
-  grid-template-columns: minmax(150px, 42%) minmax(0, 1fr);
+  grid-template-columns: minmax(168px, 46%) minmax(0, 1fr);
   gap: 8px;
   margin-top: 8px;
   max-height: 290px;
@@ -4856,4 +4856,179 @@ svg {
 
 .act-steer-bar .input {
   flex: 1;
+}
+
+/* ==========================================================================
+   Providers Page — 3-Zone Layout (Top CLI Grid · Bottom-Left Accounts · Bottom-Right APIs)
+   ========================================================================== */
+.cli-engine-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(235px, 1fr));
+  gap: 10px;
+}
+
+.cli-engine-tile {
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-elevated);
+  padding: 11px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-shadow: var(--shadow-xs);
+  transition: border-color 120ms ease;
+}
+
+.cli-engine-tile:hover {
+  border-color: var(--border-strong);
+}
+
+.cli-engine-tile-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.engine-avatar.sm {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  border-radius: 8px;
+}
+
+.cli-engine-tile-name {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12.5px;
+  font-weight: 630;
+  color: var(--ink);
+  min-width: 0;
+}
+
+.cli-engine-tile-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--ink-3);
+  margin-top: 2px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.cli-engine-tile-test {
+  font-size: 11px;
+  padding-top: 2px;
+}
+
+.cli-engine-tile-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+}
+
+.dot-inline {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 7px;
+  display: inline-block;
+}
+
+.dot-inline.ok {
+  background: var(--green);
+}
+
+.dot-inline.warn {
+  background: var(--amber);
+}
+
+.dot-inline.off {
+  background: var(--ink-3);
+}
+
+.providers-split-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+  gap: 18px;
+  margin-top: 10px;
+  align-items: start;
+}
+
+.providers-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+@media (max-width: 960px) {
+  .providers-split-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.cli-account-card {
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-xs);
+  transition: border-color 120ms ease;
+}
+
+.cli-account-card:hover {
+  border-color: var(--border-strong);
+}
+
+.cli-account-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 12px;
+}
+
+.cli-account-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cli-account-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 630;
+  color: var(--ink);
+  min-width: 0;
+}
+
+.cli-account-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--ink-2);
+  min-width: 0;
+}
+
+.cli-account-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.cli-account-extra {
+  padding: 0 12px 11px 54px;
+}
+
+.cli-account-login-slot {
+  padding: 0 12px 12px;
 }

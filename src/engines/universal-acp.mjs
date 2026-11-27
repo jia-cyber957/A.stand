@@ -5,7 +5,7 @@ import { resolveCliPresetBinary } from "../core/paths.mjs";
 import { normalizeUsage } from "../core/telemetry.mjs";
 import { safeKill, utf8Env } from "./base.mjs";
 
-const MODELS_TTL_MS = 300_000, MODELS_TIMEOUT_MS = 10_000, HEALTH_TIMEOUT_MS = 10_000;
+const MODELS_TTL_MS = 300_000, MODELS_EMPTY_RETRY_MS = 15_000, MODELS_TIMEOUT_MS = 25_000, HEALTH_TIMEOUT_MS = 15_000;
 const DEFAULT_IDLE_TIMEOUT_MS = 1_800_000, DEFAULT_ABSOLUTE_TIMEOUT_MS = 7_200_000;
 const READ_ONLY_TOOL_RE = /^(read|view|open|search|grep|glob|find|list|ls|stat|inspect|cat|head|tail|describe)\b/i;
 const WRITE_TOOL_RE = /\b(write|edit|delete|remove|create|move|rename|patch|apply|shell|command|exec|execute|run|terminal|spawn|bash|sh|powershell|cmd|mkdir|rm|cp|mv|chmod)\b/i;
@@ -17,11 +17,13 @@ function oneLine(text, max = 140) {
   return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
 export function launchForShell(command, args, useShell) {
-  if (!useShell || process.platform !== "win32") return { command, args };
-  const quote = (value) => `"${String(value).replace(/"/g, '\\"')}"`;
+  if (!useShell || process.platform !== "win32") return { command, args, windowsVerbatimArguments: false };
+  const quote = (value) => `"${String(value).replace(/"/g, '""')}"`;
+  const inner = [quote(command), ...args.map(quote)].join(" ");
   return {
     command: process.env.ComSpec || "cmd.exe",
-    args: ["/d", "/s", "/c", [quote(command), ...args.map(quote)].join(" ")],
+    args: ["/d", "/s", "/c", `"${inner}"`],
+    windowsVerbatimArguments: true,
   };
 }
 export function markRateLimitError(err, extra = "") {
@@ -47,23 +49,47 @@ function pickOption(options, kinds) {
   }
   return null;
 }
-/** Flatten flat `{value,name}` and grouped `{group,options}` model catalogs. */
-export function collectAcpModelOptions(configOptions) {
+/**
+ * Flatten ACP model catalogs from either:
+ *  - `configOptions` array (`{ id/category: "model", options: [...] }`, used by OpenCode / Doubao / MiniMax Code)
+ *  - `session/new` result object (`{ configOptions, models: { availableModels: [...] } }`, used by Qoder CN / Global)
+ */
+export function collectAcpModelOptions(source) {
+  const configOptions = Array.isArray(source) ? source : source?.configOptions;
   const catalog = (Array.isArray(configOptions) ? configOptions : []).find(
     (option) => option?.id === "model" || option?.category === "model"
   );
   const out = [], seen = new Set();
+  const push = (value, name = "", description = "") => {
+    const clean = typeof value === "string" ? value.trim() : "";
+    if (!clean || seen.has(clean)) return;
+    seen.add(clean);
+    out.push({
+      value: clean,
+      name: typeof name === "string" ? name.trim() : "",
+      ...(description ? { description: String(description).trim() } : {}),
+    });
+  };
   const walk = (items) => {
     for (const item of Array.isArray(items) ? items : []) {
       if (!item || typeof item !== "object") continue;
       if (Array.isArray(item.options)) { walk(item.options); continue; }
-      const value = typeof item.value === "string" ? item.value : typeof item.id === "string" ? item.id : "";
-      if (!value || seen.has(value)) continue;
-      seen.add(value);
-      out.push({ value, name: typeof item.name === "string" ? item.name : "" });
+      const value =
+        typeof item.value === "string"
+          ? item.value
+          : typeof item.modelId === "string"
+          ? item.modelId
+          : typeof item.id === "string"
+          ? item.id
+          : "";
+      push(value, item.name || item.displayName || "", item.description || "");
     }
   };
   walk(catalog?.options);
+  if (!Array.isArray(source)) {
+    const avail = source?.models?.availableModels || source?.availableModels || [];
+    walk(avail);
+  }
   return out;
 }
 /**
@@ -117,7 +143,12 @@ export class UniversalAcpEngine {
   async #connect() {
     const bin = this.#resolveBinary();
     const launched = launchForShell(bin.command, this.descriptor.args || [], bin.useShell);
-    const proc = spawn(launched.command, launched.args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, env: utf8Env() });
+    const proc = spawn(launched.command, launched.args, {
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+      ...(launched.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+      env: utf8Env(),
+    });
     const state = { proc, initialized: false, agentInfo: null, nextId: 1, pending: new Map(), listeners: new Map(), sessionRoles: new Map(), stderrRing: [] };
     const sendRaw = (obj) => {
       if (!proc.stdin?.writable) throw new Error("ACP stdin closed");
@@ -339,8 +370,13 @@ export class UniversalAcpEngine {
       this.busy.delete(sessionId);
     }
   }
+  invalidateModelsCache() {
+    this.modelsFetchedAt = 0;
+  }
   async listModels(force = false) {
-    if (!force && this.modelsFetchedAt > 0 && Date.now() - this.modelsFetchedAt < MODELS_TTL_MS) return this.latestModels;
+    const hasConcrete = this.latestModels.some((m) => m && !m.isDefault);
+    const ttl = hasConcrete ? MODELS_TTL_MS : MODELS_EMPTY_RETRY_MS;
+    if (!force && this.modelsFetchedAt > 0 && Date.now() - this.modelsFetchedAt < ttl) return this.latestModels;
     if (this.modelsPromise) return this.modelsPromise;
     this.modelsPromise = (async () => {
       const label = this.descriptor.labelEn || this.descriptor.labelZh || this.id;
@@ -355,9 +391,10 @@ export class UniversalAcpEngine {
         ]);
         if (!state) throw new Error(`[${this.id}] model discovery timed out`);
         const created = await state.request("session/new", { cwd: process.cwd(), mcpServers: [] }, MODELS_TIMEOUT_MS);
-        const discovered = collectAcpModelOptions(created?.configOptions).map((model) => ({
+        const discovered = collectAcpModelOptions(created).map((model) => ({
           id: `cli:${this.id}:${model.value}`, modelName: model.value,
           displayName: model.name || model.value, displayNameZh: model.name || model.value,
+          ...(model.description ? { description: model.description } : {}),
           isDefault: false, engine: this.id,
         }));
         this.latestModels = [fallback, ...discovered];
@@ -386,7 +423,12 @@ export class UniversalAcpEngine {
     try {
       const bin = this.#resolveBinary();
       const launched = launchForShell(bin.command, this.descriptor.args || [], bin.useShell);
-      proc = spawn(launched.command, launched.args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, env: utf8Env() });
+      proc = spawn(launched.command, launched.args, {
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+        ...(launched.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+        env: utf8Env(),
+      });
       const agentInfo = await new Promise((resolve, reject) => {
         timer = setTimeout(() => reject(new Error(`[${this.id}] ACP initialize timeout`)), HEALTH_TIMEOUT_MS);
         timer.unref?.();

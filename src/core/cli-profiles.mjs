@@ -5,7 +5,7 @@ import path from "node:path";
 import { readCodexConfigSummary, resolveCliPresetBinary } from "./paths.mjs";
 
 const ACCOUNT_CACHE_TTL_MS = 60_000;
-const ACCOUNT_PROBE_TIMEOUT_MS = 4_000;
+const ACCOUNT_PROBE_TIMEOUT_MS = 8_000;
 const PROFILE_ID_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 const ENGINE_ID_RE = /^[a-z0-9][a-z0-9_-]{1,31}$/;
 const ISOLATED_ENGINES = Object.freeze(["codex", "qoder", "qoder-cn", "opencode"]);
@@ -51,11 +51,11 @@ function runCli(bin, args, timeoutMs = ACCOUNT_PROBE_TIMEOUT_MS) {
       resolve({ ok: false, stdout: "", stderr: "" });
       return;
     }
-    const quote = (value) => `"${String(value).replace(/"/g, '\\"')}"`;
+    const quote = (value) => `"${String(value).replace(/"/g, '""')}"`;
     const useShell = Boolean(bin.useShell) && process.platform === "win32";
     const command = useShell ? process.env.ComSpec || "cmd.exe" : bin.command;
     const execArgs = useShell
-      ? ["/d", "/s", "/c", [quote(bin.command), ...args.map(quote)].join(" ")]
+      ? ["/d", "/s", "/c", `"${[quote(bin.command), ...args.map(quote)].join(" ")}"`]
       : args;
     execFile(
       command,
@@ -64,6 +64,7 @@ function runCli(bin, args, timeoutMs = ACCOUNT_PROBE_TIMEOUT_MS) {
         encoding: "utf8",
         timeout: timeoutMs,
         windowsHide: true,
+        ...(useShell ? { windowsVerbatimArguments: true } : {}),
         maxBuffer: 256 * 1024,
         shell: false,
       },
@@ -200,16 +201,42 @@ function probeOpencodeConfig(profileDir) {
       const entries = fs.readdirSync(root);
       const hasAuth = entries.some((name) => /^(?:auth\.json|credentials\.json)$/i.test(name));
       const hasConfig = entries.some((name) => /^(?:opencode\.json|config\.json)$/i.test(name));
-      return {
-        username: "",
-        email: "",
-        loginMethod: "opencode",
-        loggedIn: hasAuth,
-        detail: hasConfig ? "local config found" : "",
-      };
+      if (hasAuth || hasConfig) {
+        return {
+          username: hasAuth ? "" : "本机桌面配置",
+          email: "",
+          loginMethod: hasAuth ? "opencode" : "local config",
+          loggedIn: true,
+          detail: hasConfig ? "local config found" : "",
+        };
+      }
     } catch {}
   }
   return { username: "", email: "", loginMethod: "opencode", loggedIn: false, detail: "" };
+}
+
+function probeDshAccount() {
+  const home = os.homedir();
+  const credCandidates = [
+    path.join(home, ".dsh", ".credentials.yaml"),
+    path.join(home, ".dsh", "credentials.yaml"),
+  ];
+  let hasCred = false;
+  for (const file of credCandidates) {
+    try {
+      if (fs.existsSync(file) && fs.statSync(file).size > 10) {
+        hasCred = true;
+        break;
+      }
+    } catch {}
+  }
+  return {
+    username: hasCred ? "DeepSeek 官方账号" : "",
+    email: "",
+    loginMethod: "DeepSeek Account",
+    loggedIn: hasCred,
+    detail: hasCred ? "~/.dsh/.credentials.yaml" : "",
+  };
 }
 
 async function probeAccount(engineId, def, profileDir) {
@@ -224,6 +251,7 @@ async function probeAccount(engineId, def, profileDir) {
   };
   const overlay = buildProfileLaunchOverlay(engineId, profileDir);
   if (engineId === "codex") return { ...base, ...probeCodexConfig(profileDir) };
+  if (engineId === "deepseek-harness") return { ...base, ...probeDshAccount() };
   if (engineId === "opencode") return { ...base, ...probeOpencodeConfig(profileDir) };
 
   if (engineId === "doubao" || engineId === "qoder" || engineId === "qoder-cn" || engineId === "minimax") {
@@ -255,8 +283,15 @@ export function getCachedCliAccountInfo(engineId, profileDir = "") {
   return { ...hit.value, cached: true };
 }
 
-export function clearCliAccountCache() {
-  accountCache.clear();
+export function clearCliAccountCache(engineId = "") {
+  if (!engineId) {
+    accountCache.clear();
+    return;
+  }
+  const prefix = `${engineId}::`;
+  for (const key of accountCache.keys()) {
+    if (key.startsWith(prefix)) accountCache.delete(key);
+  }
 }
 
 /**

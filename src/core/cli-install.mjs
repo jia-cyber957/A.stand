@@ -111,9 +111,10 @@ function spawnNpm(args) {
   }
   const npmBin = resolveGenericBinary("npm")?.command || "npm.cmd";
   const commandLine = [quoteCmdArg(npmBin), ...args.map(quoteCmdArg)].join(" ");
-  return spawn(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", commandLine], {
+  return spawn(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", `"${commandLine}"`], {
     shell: false,
     windowsHide: true,
+    windowsVerbatimArguments: true,
     stdio: ["ignore", "pipe", "pipe"],
   });
 }

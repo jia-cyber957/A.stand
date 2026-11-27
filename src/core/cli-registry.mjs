@@ -19,15 +19,15 @@ export const EXTENSIBLE_CLI_PRESETS = Object.freeze([
   },
   {
     id: "qoder-cn", labelZh: "Qoder 中国版", labelEn: "Qoder CN", shortTag: "QC",
-    protocol: "headless", command: "qoderclicn", args: ["-p", "{prompt}"], windowsPaths: [],
+    protocol: "acp", command: "qoderclicn", args: ["--acp"], windowsPaths: [],
     installCmd: "npm install -g @qodercn-ai/qoderclicn --allow-scripts=@qodercn-ai/qoderclicn,sharp", loginCmd: "qoderclicn login", downloadUrl: "https://qoder.cn",
-    readOnlyMode: "", writeMode: "", capabilities: HEADLESS_CAPS,
+    readOnlyMode: "default", writeMode: "acceptEdits", capabilities: ACP_CAPS,
   },
   {
     id: "qoder", labelZh: "Qoder 国际版", labelEn: "Qoder Global", shortTag: "QD",
-    protocol: "headless", command: "qodercli", args: ["-p", "{prompt}"], windowsPaths: [],
+    protocol: "acp", command: "qodercli", args: ["--acp"], windowsPaths: [],
     installCmd: "npm install -g @qoder-ai/qodercli --allow-scripts=@qoder-ai/qodercli,sharp", loginCmd: "qodercli login", downloadUrl: "https://qoder.com",
-    readOnlyMode: "", writeMode: "", capabilities: HEADLESS_CAPS,
+    readOnlyMode: "default", writeMode: "acceptEdits", capabilities: ACP_CAPS,
   },
   {
     id: "minimax", labelZh: "MiniMax Code", labelEn: "MiniMax Code", shortTag: "MM",
