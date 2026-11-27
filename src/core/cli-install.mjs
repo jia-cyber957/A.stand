@@ -12,6 +12,7 @@ const NPM_PRESETS = Object.freeze({
   doubao: { pkg: "@bytedance/doubao-cli", scripts: ["@bytedance/doubao-cli", "sharp"] },
   minimax: { pkg: "@minimax-ai/code", scripts: ["@minimax-ai/code", "better-sqlite3"] },
   qoder: { pkg: "@qoder-ai/qodercli", scripts: ["@qoder-ai/qodercli", "sharp"] },
+  "qoder-cn": { pkg: "@qodercn-ai/qoderclicn", scripts: ["@qodercn-ai/qoderclicn", "sharp"] },
   opencode: { pkg: "opencode-ai", scripts: ["opencode-ai"] },
   codebuddy: { pkg: "@tencent-ai/codebuddy-code", scripts: ["@tencent-ai/codebuddy-code"] },
   qwen: { pkg: "@qwen-code/qwen-code", scripts: ["@qwen-code/qwen-code"] },
@@ -23,7 +24,8 @@ const NPM_PRESETS = Object.freeze({
 const UPDATE_NPM_PRESETS = Object.freeze([
   { id: "doubao", label: "Doubao CLI", pkg: "@bytedance/doubao-cli" },
   { id: "minimax", label: "MiniMax Code", pkg: "@minimax-ai/code" },
-  { id: "qoder", label: "Qoder CLI", pkg: "@qoder-ai/qodercli" },
+  { id: "qoder-cn", label: "Qoder CN", pkg: "@qodercn-ai/qoderclicn" },
+  { id: "qoder", label: "Qoder Global", pkg: "@qoder-ai/qodercli" },
 ]);
 
 /** @type {Map<string, any>} */

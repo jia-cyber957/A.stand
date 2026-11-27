@@ -13,10 +13,11 @@
  * escaped through `esc()` before it reaches innerHTML.
  */
 
-import { iconSvg, clientIconSvg, CLIENT_ICON_KEYS, normalizeClientIconKey } from "./icons.js";
+import { iconSvg, clientIconSvg, engineIconSvg, CLIENT_ICON_KEYS, normalizeClientIconKey } from "./icons.js";
 import { createExtensionsView } from "./extensions-view.js";
 import { createActivityView } from "./activity-view.js";
 import { createCliCatalogModal } from "./cli-catalog-modal.js";
+import { createCliDetailModal } from "./cli-detail-modal.js";
 
 /* ==========================================================================
    Constants
@@ -52,7 +53,7 @@ const API_BASE = (() => {
 
 const PAGES = ["clients", "activity", "roles", "extensions", "providers", "observability", "settings"];
 
-const ENGINE_ORDER = ["codex", "deepseek-harness", "claude-code", "antigravity"];
+const ENGINE_ORDER = ["codex", "deepseek-harness", "opencode", "doubao", "minimax", "qoder-cn", "qoder", "claude-code", "antigravity"];
 
 const ENGINE_FALLBACK_LABELS = {
   codex: { zh: "OpenAI · Codex CLI", en: "OpenAI · Codex CLI", tag: "Codex" },
@@ -525,7 +526,22 @@ const ui = {
   diagExportResult: null,
   diagExportError: "",
   resetScroll: false,
+  privacyMask: false,
+  updates: null,
+  checkingUpdates: false,
 };
+
+function maskPrivacyText(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  if (s.includes("@")) {
+    const [u, d] = s.split("@");
+    return `${u.slice(0, 2)}***@${d}`;
+  }
+  if (/^\d{7,}$/.test(s)) return `${s.slice(0, 3)}****${s.slice(-4)}`;
+  if (s.length <= 4) return "••••";
+  return `${s.slice(0, 2)}••••${s.slice(-2)}`;
+}
 
 /* ==========================================================================
    Utilities
@@ -1211,6 +1227,9 @@ function connectEvents() {
   source.addEventListener("state_changed", onEvent);
   source.addEventListener("state", onEvent);
   source.addEventListener("clients_changed", onEvent);
+  source.addEventListener("cli_install", onEvent);
+  source.addEventListener("settings_changed", onEvent);
+  source.addEventListener("orchestrator_state", onEvent);
   source.addEventListener("message", onEvent);
   source.addEventListener("ping", () => {
     lastEventAt = Date.now();
@@ -1244,6 +1263,7 @@ function watchSseStaleness() {
 let extensionsView = null;
 let activityView = null;
 let cliCatalogModal = null;
+let cliDetailModal = null;
 
 function getCliCatalogModal() {
   if (!cliCatalogModal) {
@@ -1251,6 +1271,7 @@ function getCliCatalogModal() {
       esc,
       api,
       iconSvg,
+      engineIconSvg,
       scheduleRender,
       openModal,
       closeModal,
@@ -1266,6 +1287,69 @@ function getCliCatalogModal() {
     });
   }
   return cliCatalogModal;
+}
+
+function getCliDetailModal() {
+  if (!cliDetailModal) {
+    cliDetailModal = createCliDetailModal({
+      esc,
+      api,
+      iconSvg,
+      engineIconSvg,
+      scheduleRender,
+      openModal,
+      closeModal,
+      showToast,
+      showError,
+      isEn,
+      isMasked: () => Boolean(ui.privacyMask),
+      maskText: maskPrivacyText,
+      getState: () => state,
+      applyPayload,
+      refreshState,
+      engineLabel,
+      renderQuotaBars,
+      renderLoginBar: (eid) => getCliCatalogModal().renderLoginBar(eid),
+      renderInstallBar: (eid) => getCliCatalogModal().renderInstallBar(eid),
+      roleQueue,
+      engineCooldownModels,
+      fmtCountdown,
+      goToRoles: () => {
+        ui.page = "roles";
+        ui.resetScroll = true;
+        scheduleRender();
+      },
+      getUpdates: () => ui.updates,
+    });
+  }
+  return cliDetailModal;
+}
+
+async function checkAppUpdates(force = false, silent = false) {
+  if (ui.checkingUpdates) return;
+  ui.checkingUpdates = true;
+  if (!silent) scheduleRender();
+  try {
+    const res = await api(`/api/updates/check${force ? "?force=1" : ""}`);
+    if (res?.ok) {
+      ui.updates = res;
+      if (!silent) {
+        const cliUpds = (res.clis || []).filter((c) => c.hasUpdate);
+        if (res.app?.hasUpdate) {
+          showToast(isEn() ? `New A.stand v${res.app.latestVersion} available` : `发现新版 A.stand v${res.app.latestVersion}`);
+        } else if (cliUpds.length) {
+          showToast(isEn() ? `${cliUpds.length} CLI update(s) available` : `发现 ${cliUpds.length} 个 CLI 引擎可更新`);
+        } else {
+          showToast(isEn() ? "Everything is up to date" : "当前已是最新版本");
+        }
+      }
+    }
+  } catch (err) {
+    if (!silent) showError("", err);
+  } finally {
+    ui.checkingUpdates = false;
+    scheduleRender();
+  }
 }
 
 // The extensions page owns its own rendering; app.js only supplies the host bridge.
@@ -1388,6 +1472,17 @@ function renderTopbar() {
     settings: [t("titleSettings"), t("subSettings")],
   };
   const [title, sub] = titles[ui.page] || titles.clients;
+  const updApp = ui.updates?.app?.hasUpdate ? ui.updates.app : null;
+  const updCliCount = (ui.updates?.clis || []).filter((c) => c.hasUpdate).length;
+  const hasAnyUpd = Boolean(updApp || updCliCount > 0);
+  const updLabel = ui.checkingUpdates
+    ? isEn() ? "Checking…" : "检查中…"
+    : updApp
+    ? isEn() ? `Update v${updApp.latestVersion}` : `立即更新 v${updApp.latestVersion}`
+    : updCliCount > 0
+    ? isEn() ? `${updCliCount} CLI updates` : `${updCliCount} 个 CLI 可更新`
+    : isEn() ? "Check updates" : "检查更新";
+
   return `<header class="topbar">
     <div class="page-title-wrap">
       <h1 class="page-title">${esc(title)}</h1>
@@ -1395,6 +1490,12 @@ function renderTopbar() {
     </div>
     <div class="topbar-spacer"></div>
     <div class="topbar-actions">
+      <button class="btn xs ${hasAnyUpd ? "primary" : ""}" data-action="check-updates" ${ui.checkingUpdates ? "disabled" : ""} title="${esc(isEn() ? "Check A.stand and CLI updates" : "检查 A.stand 本体与各 CLI 更新")}">
+        ${iconSvg("upload", 13)} ${esc(updLabel)}
+      </button>
+      <button class="btn xs ${ui.privacyMask ? "primary" : ""}" data-action="toggle-privacy-mask" title="${esc(isEn() ? "Mask accounts and API keys for screenshots" : "隐藏账号邮箱、手机号与密钥，方便截图分享")}">
+        ${iconSvg(ui.privacyMask ? "eyeOff" : "eye", 13)} ${esc(isEn() ? (ui.privacyMask ? "Masked" : "Mask") : ui.privacyMask ? "已打码" : "账号打码")}
+      </button>
       <div class="seg" role="group" aria-label="${esc(t("language"))}">
         <button class="seg-btn ${!isEn() ? "active" : ""}" data-action="set-lang" data-lang="zh">中文</button>
         <button class="seg-btn ${isEn() ? "active" : ""}" data-action="set-lang" data-lang="en">EN</button>
@@ -1607,49 +1708,131 @@ function renderMasterCard() {
 
 function renderModelPicker(role, index, currentId) {
   const query = (ui.picker?.search || "").trim().toLowerCase();
-  const catalog = modelCatalog().filter((m) => {
+  const whitelistMap = state?.cliModelWhitelist || {};
+  const engines = state?.engines || {};
+
+  // Respect per-CLI enabled model whitelist (empty array = all enabled).
+  const rawCatalog = modelCatalog().filter((m) => {
+    const wl = whitelistMap[m.engine];
+    if (Array.isArray(wl) && wl.length > 0 && !m.isDefault && m.id !== currentId) {
+      return wl.includes(m.id);
+    }
+    return true;
+  });
+
+  const filtered = rawCatalog.filter((m) => {
     if (!query) return true;
     return [m.name, m.modelName, m.id, m.channelName, engineLabel(m.engine)]
       .filter(Boolean)
       .some((v) => String(v).toLowerCase().includes(query));
   });
+
   const groups = new Map();
-  for (const model of catalog) {
-    const key = model.engine || "api";
+  for (const model of filtered) {
+    const key = model.engine || "deepseek-harness";
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(model);
   }
-  const ordered = ENGINE_ORDER.filter((e) => groups.has(e)).concat(
-    [...groups.keys()].filter((e) => !ENGINE_ORDER.includes(e))
-  );
 
-  const body = ordered.length
-    ? ordered
-        .map((eid) => {
-          const items = groups.get(eid);
-          return `<div class="picker-group">
-            <div class="picker-group-label">${esc(engineLabel(eid))}<span class="tag plain">${items.length}</span></div>
-            ${items
-              .map(
-                (m) => `<button class="picker-item ${m.id === currentId ? "selected" : ""}" data-action="pick-model" data-role="${esc(role)}" data-index="${index}" data-model="${esc(m.id)}">
-                  <span class="dot ${modelReady(m) ? "ok" : "warn"}"></span>
-                  <span class="truncate">${esc(m.name)}</span>
-                  ${m.channelName ? `<span class="picker-channel truncate">${esc(m.channelName)}</span>` : ""}
-                  ${m.id === currentId ? iconSvg("check") : ""}
-                </button>`
-              )
-              .join("")}
-          </div>`;
-        })
-        .join("")
-    : `<div class="empty-state" style="padding:18px">${esc(t("noSearchResult"))}</div>`;
+  const allEngineIds = [
+    ...ENGINE_ORDER.filter((id) => id in engines || groups.has(id)),
+    ...Object.keys(engines).filter((id) => !ENGINE_ORDER.includes(id)),
+    ...[...groups.keys()].filter((id) => !ENGINE_ORDER.includes(id) && !(id in engines)),
+  ];
+  const readyEngines = allEngineIds.filter((eid) => {
+    const eng = engines[eid];
+    return (groups.get(eid)?.length || 0) > 0 && (!eng || eng.installed !== false);
+  });
+  const uninstalledEngines = query
+    ? []
+    : allEngineIds.filter((eid) => engines[eid] && !engines[eid].installed).slice(0, 5);
 
-  return `<div class="model-picker">
+  const currentModel = modelById(currentId);
+  let activeEngine = ui.picker?.engine || currentModel?.engine || readyEngines[0] || "";
+  if (!readyEngines.includes(activeEngine)) activeEngine = readyEngines[0] || "";
+
+  const renderItemBtn = (m) => {
+    const fromDsh = m.source === "dsh" || (m.engine === "deepseek-harness" && m.authType === "account");
+    return `<button class="picker-item ${m.id === currentId ? "selected" : ""}" data-action="pick-model" data-role="${esc(role)}" data-index="${index}" data-model="${esc(m.id)}">
+      <span class="dot ${modelReady(m) ? "ok" : "warn"}"></span>
+      <span class="truncate">${esc(m.name)}</span>
+      ${fromDsh ? `<span class="tag blue" style="height:17px;font-size:9.5px;padding:0 5px">${esc(isEn() ? "DSH" : "来自 DSH")}</span>` : ""}
+      ${m.id === currentId ? iconSvg("check") : ""}
+    </button>`;
+  };
+
+  // Level 2 right pane: for DeepSeek Harness group cleanly by API Channel (v1 feel!).
+  const activeItems = activeEngine ? groups.get(activeEngine) || [] : [];
+  let rightHtml = "";
+  if (query) {
+    rightHtml = readyEngines.length
+      ? readyEngines
+          .map((eid) => `<div class="picker-group">
+            <div class="picker-group-label">${engineIconSvg(eid, 14)}<span>${esc(engineLabel(eid))}</span><span class="tag plain">${(groups.get(eid) || []).length}</span></div>
+            ${(groups.get(eid) || []).map(renderItemBtn).join("")}
+          </div>`)
+          .join("")
+      : `<div class="empty-state" style="padding:18px">${esc(t("noSearchResult"))}</div>`;
+  } else if (activeEngine === "deepseek-harness") {
+    const byChannel = new Map();
+    for (const m of activeItems) {
+      const chName = m.channelName || (isEn() ? "DeepSeek Account" : "DeepSeek 账号");
+      if (!byChannel.has(chName)) byChannel.set(chName, []);
+      byChannel.get(chName).push(m);
+    }
+    rightHtml = [...byChannel.entries()]
+      .map(
+        ([chName, items]) => `<div class="picker-group">
+          <div class="picker-group-label"><span>${esc(chName)}</span><span class="tag plain">${items.length}</span></div>
+          ${items.map(renderItemBtn).join("")}
+        </div>`
+      )
+      .join("");
+  } else {
+    rightHtml = activeItems.length
+      ? `<div class="picker-group">
+          <div class="picker-group-label">${engineIconSvg(activeEngine, 14)}<span>${esc(engineLabel(activeEngine))}</span><span class="tag plain">${activeItems.length}</span></div>
+          ${activeItems.map(renderItemBtn).join("")}
+        </div>`
+      : `<div class="empty-state" style="padding:18px">${esc(t("noSearchResult"))}</div>`;
+  }
+
+  return `<div class="model-picker cascade-picker">
     <div class="search-field" style="max-width:none">
       ${iconSvg("search")}
       <input class="input" type="search" data-ui="picker-search" data-focus-key="picker-search" placeholder="${esc(t("pickModelSearch"))}" value="${esc(ui.picker?.search || "")}" aria-label="${esc(t("pickModelSearch"))}" />
     </div>
-    <div class="picker-list">${body}</div>
+    ${query
+      ? `<div class="picker-list">${rightHtml}</div>`
+      : `<div class="cascade-body">
+          <div class="cascade-left">
+            ${readyEngines
+              .map((eid) => {
+                const count = (groups.get(eid) || []).length;
+                const active = eid === activeEngine;
+                return `<button class="cascade-engine-btn ${active ? "active" : ""}" data-action="picker-select-engine" data-engine="${esc(eid)}">
+                  <span class="cascade-engine-ico">${engineIconSvg(eid, 16)}</span>
+                  <span class="truncate" style="flex:1;text-align:left">${esc(engineLabel(eid))}</span>
+                  <span class="tag plain nums" style="height:17px;font-size:10px">${count}</span>
+                  ${iconSvg("chevronRight", 12)}
+                </button>`;
+              })
+              .join("")}
+            ${uninstalledEngines.length
+              ? `<div class="cascade-divider"></div>
+                ${uninstalledEngines
+                  .map(
+                    (eid) => `<button class="cascade-engine-btn disabled" data-action="goto-engine-setup" data-engine="${esc(eid)}">
+                      <span class="cascade-engine-ico" style="opacity:0.55">${engineIconSvg(eid, 16)}</span>
+                      <span class="truncate" style="flex:1;text-align:left">${esc(engineLabel(eid))}</span>
+                      <span class="cascade-setup-link">${esc(isEn() ? "Install →" : "未安装·去配置 →")}</span>
+                    </button>`
+                  )
+                  .join("")}`
+              : ""}
+          </div>
+          <div class="cascade-right">${rightHtml}</div>
+        </div>`}
   </div>`;
 }
 
@@ -1662,15 +1845,20 @@ function renderQueueItem(role, modelId, index, total) {
   return `<div class="queue-item-wrap">
     <div class="queue-item ${index === 0 ? "primary" : ""}">
       <span class="queue-rank">${rank}</span>
+      <span class="queue-engine-ico">${engineIconSvg(model?.engine || "api", 18)}</span>
       <button class="queue-model" data-action="open-picker" data-role="${esc(role)}" data-index="${index}" aria-expanded="${pickerOpen}" title="${esc(t("pickModel"))}">
         <span class="queue-model-name">${esc(model?.name || t("noModel"))}</span>
         <span class="queue-model-meta">
           ${esc(engineLabel(model?.engine || ""))}
+          ${model?.channelName ? ` · ${esc(model.channelName)}` : ""}
           ${!ready ? ` · <span style="color:var(--amber)">${esc(t("unready"))}</span>` : ""}
           ${cooldown ? ` · <span style="color:var(--amber)">${esc(t("cooldown"))}</span>` : ""}
         </span>
       </button>
       <span class="queue-actions">
+        ${cooldown
+          ? `<button class="chip-btn" data-action="clear-cooldown" data-model="${esc(modelId)}" title="${esc(t("restore"))}">${esc(isEn() ? "Retry" : "重试")}</button>`
+          : ""}
         ${index > 0
           ? `<button class="chip-btn" data-action="promote-model" data-role="${esc(role)}" data-model="${esc(modelId)}" title="${esc(t("promote"))}" aria-label="${esc(t("promote"))}">↑</button>
              <button class="chip-btn danger" data-action="remove-model" data-role="${esc(role)}" data-model="${esc(modelId)}" title="${esc(t("remove"))}" aria-label="${esc(t("remove"))}">×</button>`
@@ -1749,6 +1937,7 @@ function renderRoleCard(role) {
           <button class="add-slot-btn" data-action="open-picker" data-role="${esc(role)}" data-index="${queue.length}">
             ${iconSvg("plus")} ${esc(t("addFallback"))}
           </button>
+          ${ui.picker && ui.picker.role === role && ui.picker.index === queue.length ? renderModelPicker(role, queue.length, "") : ""}
         </div>
       </div>
 
@@ -1886,27 +2075,35 @@ function renderEngineRow(eid) {
       ? `<span class="tag plain">Headless</span>`
       : "";
   const subCount = (state?.cliSubModels?.[eid] || []).filter((m) => !m.isDefault).length;
-  const canInAppLogin = Boolean(eng.installed && (eng.extensible || eid === "doubao" || eid === "qoder" || eid === "minimax" || eid === "opencode"));
+  const canInAppLogin = Boolean(eng.installed && (eng.extensible || eid === "doubao" || eid === "qoder" || eid === "qoder-cn" || eid === "minimax" || eid === "opencode"));
   const loginBarHtml = canInAppLogin ? getCliCatalogModal().renderLoginBar(eid) : "";
+  const installBarHtml = getCliCatalogModal().renderInstallBar(eid);
+  const cliUpd = (ui.updates?.clis || []).find((c) => c.id === eid && c.hasUpdate);
+  const accSummary = state?.cliAccounts?.[eid];
+  const accDisplay = accSummary?.email || accSummary?.username || accSummary?.userId || "";
+  const maskedAcc = accDisplay ? (ui.privacyMask ? maskPrivacyText(accDisplay) : accDisplay) : "";
 
-  return `<div class="engine-row ${showQuota || loginBarHtml ? "has-quota" : ""}">
-    <div class="engine-avatar">${esc(engineTag(eid))}</div>
+  return `<div class="engine-row ${showQuota || loginBarHtml || installBarHtml ? "has-quota" : ""}">
+    <div class="engine-avatar brand" data-action="cd-open" data-engine="${esc(eid)}" style="cursor:pointer">${engineIconSvg(eid, 26)}</div>
     <div class="engine-main">
-      <div class="engine-name">
+      <div class="engine-name" data-action="cd-open" data-engine="${esc(eid)}" style="cursor:pointer">
         <span class="truncate">${esc(label)}</span>
         ${engineStatusPill(eng)}
         ${protoPill}
         ${isCustom ? `<span class="tag violet">${esc(isEn() ? "Custom" : "自定义")}</span>` : ""}
         ${subCount > 0 ? `<span class="tag plain nums">${esc(isEn() ? `${subCount} models` : `${subCount} 模型`)}</span>` : ""}
+        ${cliUpd ? `<span class="tag blue">↑ v${esc(cliUpd.latestVersion)}</span>` : ""}
         ${eid === "codex" && eng.detectedModel ? `<span class="tag plain mono">${esc(eng.detectedModel)}</span>` : ""}
         ${eid === "codex" && rl?.planType ? `<span class="tag plain mono">${esc(String(rl.planType).toUpperCase())}</span>` : ""}
       </div>
       <div class="engine-meta">
         ${version ? `<span class="mono">${esc(version)}</span>` : ""}
+        ${maskedAcc ? `<span>· ${esc(maskedAcc)}</span>` : ""}
         ${eng.installed ? "" : meta.installCmd ? `<span class="mono truncate" style="max-width:320px">${esc(meta.installCmd)}</span>` : ""}
         ${test ? `<span style="color:${test.ok ? "var(--green)" : "var(--red)"}">${esc(test.ok ? `${t("connOk")}${test.latencyMs ? ` (${test.latencyMs}ms)` : ""}` : `${t("connFail")}${test.error ? `: ${test.error}` : ""}`)}</span>` : ""}
       </div>
       ${showQuota ? `<div class="engine-quota">${renderQuotaBars()}</div>` : ""}
+      ${installBarHtml}
       ${loginBarHtml}
       ${cooled.length
         ? `<div class="row wrap" style="gap:6px">${cooled
@@ -1923,6 +2120,7 @@ function renderEngineRow(eid) {
       ${canInAppLogin
         ? `<button class="btn xs primary" data-action="cli-login-start" data-engine="${esc(eid)}">${iconSvg("key")} ${esc(isEn() ? "Sign in" : "登录")}</button>`
         : ""}
+      <button class="btn xs" data-action="cd-open" data-engine="${esc(eid)}">${iconSvg("settings", 13)} ${esc(isEn() ? "Details" : "详情")}</button>
       <button class="btn xs" data-action="test-cli" data-engine="${esc(eid)}" ${test && test.loading ? "disabled" : ""}>
         ${iconSvg("zap")} ${esc(test && test.loading ? t("testing") : t("testConnection"))}
       </button>
@@ -1948,10 +2146,11 @@ function providerName(providerId) {
 function renderChannelCard(channel) {
   const readOnly = channel.source === "dsh" || channel.readOnly;
   const models = channel.models || [];
-  const key = channel.maskedApiKey || (channel.hasApiKey ? t("keyMasked") : "");
+  const rawKey = channel.maskedApiKey || (channel.hasApiKey ? t("keyMasked") : "");
+  const key = ui.privacyMask && rawKey ? "••••••••" : rawKey;
   return `<div class="channel-card">
     <div class="channel-head">
-      <div class="provider-badge">${esc(providerBadge(channel.providerId))}</div>
+      <div class="provider-badge brand">${engineIconSvg(channel.providerId === "deepseek" || readOnly ? "deepseek-harness" : "api", 24)}</div>
       <div class="channel-main">
         <div class="channel-title">
           <span class="truncate">${esc(channel.name || providerName(channel.providerId))}</span>
@@ -2485,6 +2684,7 @@ function renderOverlay() {
   if (modal.type === "setup") return renderSetupModal();
   if (modal.type === "channel") return renderChannelModal();
   if (modal.type === "cli-catalog") return getCliCatalogModal().renderModal(overlayShell, modalHeader);
+  if (modal.type === "cli-detail") return getCliDetailModal().renderModal(overlayShell);
   if (modal.type === "extension") return getExtensionsView().renderModal(modal);
   if (modal.type === "confirm") return renderConfirmModal();
   return "";
@@ -2885,8 +3085,31 @@ async function onActionClick(event) {
   if (action.startsWith("cli-")) {
     if (await getCliCatalogModal().handleAction(action, target)) return;
   }
+  if (action.startsWith("cd-")) {
+    if (await getCliDetailModal().handleAction(action, target)) return;
+  }
 
   switch (action) {
+    case "check-updates":
+      void checkAppUpdates(true, false);
+      return;
+    case "toggle-privacy-mask":
+      ui.privacyMask = !ui.privacyMask;
+      scheduleRender();
+      return;
+    case "picker-select-engine":
+      if (ui.picker) {
+        ui.picker.engine = target.dataset.engine || "";
+        scheduleRender();
+      }
+      return;
+    case "goto-engine-setup": {
+      ui.picker = null;
+      ui.page = "providers";
+      ui.resetScroll = true;
+      getCliCatalogModal().openCatalog("presets");
+      return;
+    }
     case "overlay-bg":
       if (event.target === target) closeModal();
       return;
@@ -3638,6 +3861,14 @@ function onInput(event) {
     getCliCatalogModal().handleInput(el);
     return;
   }
+  if (el.dataset.cdField) {
+    getCliDetailModal().handleInput(el);
+    return;
+  }
+  if (el.dataset.actField) {
+    getActivityView().handleInput(el);
+    return;
+  }
   if (el.dataset.ui === "client-search") {
     ui.clientSearch = el.value;
     scheduleRender();
@@ -3702,6 +3933,7 @@ function onChange(event) {
 }
 
 function onKeydown(event) {
+  if (getActivityView().handleKeydown(event)) return;
   if (event.key === "Escape") {
     if (ui.modal) {
       closeModal();

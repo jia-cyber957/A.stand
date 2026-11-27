@@ -40,6 +40,7 @@ export function createCliCatalogModal(host) {
     esc,
     api,
     iconSvg,
+    engineIconSvg,
     scheduleRender,
     openModal,
     closeModal,
@@ -63,8 +64,80 @@ export function createCliCatalogModal(host) {
     error: "",
     form: null,
     loginBusyId: "",
+    installBusyId: "",
     dismissedLogins: {}, // engineId -> finishedAt
+    dismissedInstalls: {}, // engineId -> finishedAt
   };
+
+  const IN_APP_INSTALLABLE = new Set([
+    "codex",
+    "doubao",
+    "minimax",
+    "qoder",
+    "qoder-cn",
+    "opencode",
+    "codebuddy",
+    "qwen",
+    "gemini",
+    "claude-code",
+    "deepseek-harness",
+  ]);
+
+  function getInstallSession(eid) {
+    const map = getState()?.cliInstalls || {};
+    const s = map[eid] || null;
+    if (!s || s.status === "cancelled") return null;
+    if ((s.status === "succeeded" || s.status === "failed") && s.finishedAt && view.dismissedInstalls[eid] === s.finishedAt) {
+      return null;
+    }
+    return s;
+  }
+
+  function renderInstallBar(eid) {
+    const busy = view.installBusyId === eid;
+    const s = getInstallSession(eid);
+    if (!busy && !s) return "";
+    const status = busy && !s ? "running" : s?.status || "running";
+    const pct = Math.max(0, Math.min(100, Number(s?.percent ?? (busy ? 10 : 0))));
+    const label = engineLabel(eid);
+    const verb = s?.mode === "update" ? L("升级", "Updating") : L("安装", "Installing");
+
+    if (status === "running" || status === "starting") {
+      return `<div class="cli-login-bar">
+        <div class="cli-login-head">
+          <span class="cli-spinner" aria-hidden="true"></span>
+          <span class="cli-login-title">${esc(L(`正在软件内${verb} ${label}…`, `${verb} ${label}…`))}</span>
+          <span class="mono nums" style="font-size:11.5px;font-weight:600;color:var(--brand)">${pct}%</span>
+          <button class="btn xs ghost" data-action="cli-install-cancel" data-engine="${esc(eid)}">${esc(L("取消", "Cancel"))}</button>
+        </div>
+        <div class="progress"><span style="width:${pct}%"></span></div>
+        <div class="cli-login-hint">${esc(s?.message || L("正在校验环境与下载官方组件…", "Checking environment and downloading package…"))}</div>
+      </div>`;
+    }
+
+    if (status === "succeeded") {
+      return `<div class="cli-login-bar ok">
+        <div class="cli-login-head">
+          <span class="cli-login-ok-icon">${iconSvg("checkCircle", 16)}</span>
+          <span class="cli-login-title">${esc(L(`${label} ${s?.mode === "update" ? "升级" : "安装"}完成！`, `${label} ready!`))}</span>
+          <div class="cli-login-actions">
+            <button class="btn xs primary" data-action="cli-login-start" data-engine="${esc(eid)}">${iconSvg("key")} ${esc(L("立即登录", "Sign in now"))}</button>
+            <button class="btn xs ghost" data-action="cli-install-dismiss" data-engine="${esc(eid)}">${esc(L("收起", "Dismiss"))}</button>
+          </div>
+        </div>
+      </div>`;
+    }
+
+    return `<div class="cli-login-bar err">
+      <div class="cli-login-head">
+        <span class="cli-login-title" style="color:var(--red)">${esc(s?.error || L("安装失败，请重试", "Install failed, please retry"))}</span>
+        <div class="cli-login-actions">
+          <button class="btn xs" data-action="cli-install-start" data-engine="${esc(eid)}" data-mode="${esc(s?.mode || "install")}">${esc(L("重试", "Retry"))}</button>
+          <button class="btn xs ghost" data-action="cli-install-dismiss" data-engine="${esc(eid)}">${esc(L("关闭", "Close"))}</button>
+        </div>
+      </div>
+    </div>`;
+  }
 
   function getLoginSession(eid) {
     const map = getState()?.cliLogins || {};
@@ -253,7 +326,7 @@ export function createCliCatalogModal(host) {
                 const label = isEn() ? p.labelEn || p.labelZh || p.id : p.labelZh || p.labelEn || p.id;
                 const modelCount = (getState()?.cliSubModels?.[p.id] || []).filter((m) => !m.isDefault).length;
                 return `<div class="cli-preset-row ${installed ? "installed" : ""}">
-                  <div class="engine-avatar">${esc(p.shortTag || engineTag(p.id))}</div>
+                  <div class="engine-avatar brand">${engineIconSvg(p.id, 24)}</div>
                   <div class="cli-preset-main">
                     <div class="cli-preset-title">
                       <span class="truncate">${esc(label)}</span>
@@ -270,16 +343,17 @@ export function createCliCatalogModal(host) {
                     </div>
                   </div>
                   <div class="cli-preset-actions">
-                    ${!installed && p.installCmd
+                    ${!installed && IN_APP_INSTALLABLE.has(p.id)
+                      ? `<button class="btn xs primary" data-action="cli-install-start" data-engine="${esc(p.id)}" data-mode="install" ${view.installBusyId === p.id ? "disabled" : ""}>${iconSvg("download")} ${esc(L("一键安装", "Install"))}</button>`
+                      : !installed && p.installCmd
                       ? `<button class="btn xs" data-action="cli-copy" data-text="${esc(p.installCmd)}" title="${esc(p.installCmd)}">${iconSvg("copy")} ${esc(L("安装命令", "Install"))}</button>`
                       : ""}
                     ${installed
                       ? `<button class="btn xs primary" data-action="cli-login-start" data-engine="${esc(p.id)}" ${view.loginBusyId === p.id ? "disabled" : ""}>${iconSvg("key")} ${esc(L("登录", "Sign in"))}</button>`
-                      : p.loginCmd
-                      ? `<button class="btn xs" data-action="cli-copy" data-text="${esc(p.loginCmd)}" title="${esc(p.loginCmd)}">${iconSvg("key")} ${esc(L("登录命令", "Login"))}</button>`
                       : ""}
                   </div>
                 </div>
+                ${renderInstallBar(p.id)}
                 ${renderLoginBar(p.id)}`;
               })
               .join("")
@@ -416,9 +490,56 @@ export function createCliCatalogModal(host) {
       if (text) void copyText(text, L("已复制到剪贴板", "Copied to clipboard"));
       return true;
     }
+    if (action === "cli-install-start") {
+      const eid = target.dataset.engine || "";
+      const mode = target.dataset.mode === "update" ? "update" : "install";
+      if (!eid) return true;
+      delete view.dismissedInstalls[eid];
+      view.installBusyId = eid;
+      scheduleRender();
+      try {
+        const res = await api(`/api/cli-engines/${encodeURIComponent(eid)}/install`, {
+          method: "POST",
+          body: { mode },
+        });
+        view.installBusyId = "";
+        applyPayload(res);
+        await refreshState({ forceDetect: true, silent: true });
+        if (res?.ok) {
+          showToast(L("CLI 安装任务已启动，进度将实时更新", "CLI install started — live progress below"));
+        }
+      } catch (err) {
+        view.installBusyId = "";
+        await refreshState({ silent: true });
+        showError("", err);
+      }
+      scheduleRender();
+      return true;
+    }
+    if (action === "cli-install-cancel") {
+      const eid = target.dataset.engine || "";
+      if (!eid) return true;
+      view.installBusyId = "";
+      try {
+        await api(`/api/cli-engines/${encodeURIComponent(eid)}/install/cancel`, { method: "POST", body: {} });
+        await refreshState({ silent: true });
+      } catch (err) {
+        showError("", err);
+      }
+      scheduleRender();
+      return true;
+    }
+    if (action === "cli-install-dismiss") {
+      const eid = target.dataset.engine || "";
+      const s = getState()?.cliInstalls?.[eid];
+      if (eid && s?.finishedAt) view.dismissedInstalls[eid] = s.finishedAt;
+      scheduleRender();
+      return true;
+    }
     if (action === "cli-login-start") {
       const eid = target.dataset.engine || "";
       const region = target.dataset.region === "global" ? "global" : "cn";
+      const profileId = target.dataset.profile || "";
       if (!eid) return true;
       delete view.dismissedLogins[eid];
       view.loginBusyId = eid;
@@ -426,13 +547,13 @@ export function createCliCatalogModal(host) {
       try {
         const res = await api(`/api/cli-engines/${encodeURIComponent(eid)}/login`, {
           method: "POST",
-          body: { region, autoOpen: true },
+          body: { region, profileId: profileId || undefined, autoOpen: true },
         });
         view.loginBusyId = "";
         applyPayload(res);
         if (!res?.state) await refreshState({ silent: true });
         if (res?.login?.mode === "browser" && res?.login?.authUrl) {
-          showToast(L("已打开浏览器，请在浏览器中完成授权", "Browser opened — finish sign-in there"));
+          showToast(L("请在浏览器中完成授权", "Finish sign-in in your browser"));
         } else if (res?.login?.mode === "qr" && res?.login?.qrDataUrl) {
           showToast(L("二维码已生成，请使用豆包 App 扫码确认", "QR code ready — scan with Doubao app"));
         }
@@ -552,6 +673,7 @@ export function createCliCatalogModal(host) {
     openCatalog,
     renderModal,
     renderLoginBar,
+    renderInstallBar,
     handleInput,
     handleAction,
     reset: () => {

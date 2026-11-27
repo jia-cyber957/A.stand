@@ -137,10 +137,11 @@ fs.writeFileSync(mockHeadlessPath, MOCK_HEADLESS, "utf8");
 
 async function main() {
   await test("registry sanitizes ids, rejects builtins, lists presets + customs", async () => {
-    assert.equal(EXTENSIBLE_CLI_PRESETS.length, 9);
+    assert.equal(EXTENSIBLE_CLI_PRESETS.length, 10);
     assert.equal(EXTENSIBLE_CLI_PRESETS.find((p) => p.id === "opencode")?.protocol, "acp");
     assert.equal(EXTENSIBLE_CLI_PRESETS.find((p) => p.id === "doubao")?.protocol, "acp");
     assert.equal(EXTENSIBLE_CLI_PRESETS.find((p) => p.id === "qoder")?.protocol, "headless");
+    assert.equal(EXTENSIBLE_CLI_PRESETS.find((p) => p.id === "qoder-cn")?.protocol, "headless");
     const bad = sanitizeCustomCliEngine({ id: "codex", name: "x", command: "x", protocol: "acp" });
     assert.equal(bad.ok, false);
     const injected = sanitizeCustomCliEngine({ id: "my-cli", name: "Mine", command: "node; rm -rf /", protocol: "acp" });

@@ -8,7 +8,7 @@ const ACCOUNT_CACHE_TTL_MS = 60_000;
 const ACCOUNT_PROBE_TIMEOUT_MS = 4_000;
 const PROFILE_ID_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 const ENGINE_ID_RE = /^[a-z0-9][a-z0-9_-]{1,31}$/;
-const ISOLATED_ENGINES = Object.freeze(["codex", "qoder", "opencode"]);
+const ISOLATED_ENGINES = Object.freeze(["codex", "qoder", "qoder-cn", "opencode"]);
 
 /** @type {Map<string, { ts: number, value: object }>} */
 const accountCache = new Map();
@@ -40,7 +40,7 @@ export function buildProfileLaunchOverlay(engineId, profileDir = "") {
   const dir = String(profileDir || "").trim();
   if (!dir) return { env: {}, extraArgs: [] };
   if (engineId === "codex") return { env: { CODEX_HOME: dir }, extraArgs: [] };
-  if (engineId === "qoder") return { env: {}, extraArgs: ["--config-dir", dir] };
+  if (engineId === "qoder" || engineId === "qoder-cn") return { env: {}, extraArgs: ["--config-dir", dir] };
   if (engineId === "opencode") return { env: { XDG_CONFIG_HOME: dir }, extraArgs: [] };
   return { env: {}, extraArgs: [] };
 }
@@ -226,17 +226,19 @@ async function probeAccount(engineId, def, profileDir) {
   if (engineId === "codex") return { ...base, ...probeCodexConfig(profileDir) };
   if (engineId === "opencode") return { ...base, ...probeOpencodeConfig(profileDir) };
 
-  if (engineId === "doubao" || engineId === "qoder" || engineId === "minimax") {
-    const bin = resolveCliPresetBinary(def || { command: engineId === "doubao" ? "doubao" : engineId === "qoder" ? "qodercli" : "mcode" });
+  if (engineId === "doubao" || engineId === "qoder" || engineId === "qoder-cn" || engineId === "minimax") {
+    const fallbackCmd =
+      engineId === "doubao" ? "doubao" : engineId === "qoder-cn" ? "qoderclicn" : engineId === "qoder" ? "qodercli" : "mcode";
+    const bin = resolveCliPresetBinary(def || { command: fallbackCmd });
     if (!bin) return { ...base, loginMethod: engineId, detail: "CLI not installed" };
     let args;
     if (engineId === "doubao") args = ["auth", "status"];
-    else if (engineId === "qoder") args = [...overlay.extraArgs, "status"];
+    else if (engineId === "qoder" || engineId === "qoder-cn") args = [...overlay.extraArgs, "status"];
     else args = ["provider", "list"];
     const result = await runCli(bin, args);
     const text = `${result.stdout}\n${result.stderr}`;
     if (engineId === "doubao") return { ...base, ...parseDoubaoAuthStatus(text) };
-    if (engineId === "qoder") return { ...base, ...parseQoderStatus(text) };
+    if (engineId === "qoder" || engineId === "qoder-cn") return { ...base, ...parseQoderStatus(text) };
     return { ...base, ...parseMiniMaxProviderList(text) };
   }
 

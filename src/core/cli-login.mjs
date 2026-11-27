@@ -71,7 +71,7 @@ function resolveLoginDef(engineId, customEngines) {
  * never open the same auth URL a second time. Other CLIs still auto-open once.
  */
 export function resolveLoginAutoOpen(engineId, requested = true) {
-  if (engineId === "qoder") return false;
+  if (engineId === "qoder" || engineId === "qoder-cn") return false;
   return requested !== false;
 }
 
@@ -119,7 +119,7 @@ export function buildLoginLaunchSpec(engineId, def, region = "cn", profileDir = 
     };
   }
 
-  if (engineId === "qoder") {
+  if (engineId === "qoder" || engineId === "qoder-cn") {
     return {
       ok: true,
       mode: "browser",

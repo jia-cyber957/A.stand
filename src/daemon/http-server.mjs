@@ -1006,7 +1006,7 @@ export async function createDaemonHttpServer({
     if (req.method === "POST" && resource === "session-action") {
       const body = await readJsonBody(req);
       if (!body.ok) return sendJson(res, body.status, { ok: false, error: body.error });
-      const { action: sessionAction, sessionId, jobId, modelId } = body.value || {};
+      const { action: sessionAction, sessionId, jobId, modelId, message } = body.value || {};
       let result;
       if (sessionAction === "clear_cooldown" && modelId) {
         store.clearCooldown(modelId);
@@ -1014,7 +1014,7 @@ export async function createDaemonHttpServer({
       } else if (sessionAction === "interrupt" && jobId) {
         result = await orchestrator.stopJob(jobId);
       } else {
-        result = await orchestrator.sessionAction({ action: sessionAction, sessionId });
+        result = await orchestrator.sessionAction({ action: sessionAction, sessionId, jobId, message });
       }
       broadcast("orchestrator_state");
       sendJson(res, 200, {

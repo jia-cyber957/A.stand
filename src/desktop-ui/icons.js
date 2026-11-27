@@ -331,6 +331,123 @@ export const CLIENT_ICON_KEYS = [
   "generic",
 ];
 
+const ENGINE_ICONS = {
+  codex: `
+    <svg viewBox="0 0 28 28" width="24" height="24" aria-hidden="true" focusable="false">
+      <defs>
+        <linearGradient id="astand-eng-codex" x1="4" y1="2" x2="24" y2="26" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stop-color="#6366F1" />
+          <stop offset="100%" stop-color="#4F46E5" />
+        </linearGradient>
+      </defs>
+      <path d="M14 2.2 24 8v12l-10 5.8L4 20V8l10-5.8Z" fill="url(#astand-eng-codex)" />
+      <path d="m9.5 11.2 3.2 2.8-3.2 2.8" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+      <path d="M14.5 17h4.2" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" />
+    </svg>`,
+  "deepseek-harness": `
+    <svg viewBox="0 0 28 28" width="24" height="24" aria-hidden="true" focusable="false">
+      <rect x="1.5" y="1.5" width="25" height="25" rx="6.5" fill="#EEF4FF" stroke="#D5E3FF" />
+      <path d="M6.2 15.8c0-4.6 3.7-7.8 8.4-7.8 3.1 0 5.4 1.3 6.9 3.6.7-1 1.5-1.7 2.4-2-.2 1.6-.6 3-1.4 4.1 1 .5 1.7 1.3 2 2.3-1.2.4-2.5.3-3.6-.1-1.3 2.5-3.8 4.1-7.2 4.1-4.3 0-7.5-1.7-7.5-4.2Z" fill="#4D6BFE" />
+      <circle cx="11.5" cy="13.4" r="1.25" fill="#FFFFFF" />
+      <path d="M9.6 17.3c1.8 1.2 4.4 1.3 6.4.2" fill="none" stroke="#FFFFFF" stroke-width="1.3" stroke-linecap="round" />
+    </svg>`,
+  opencode: `
+    <svg viewBox="0 0 28 28" width="24" height="24" aria-hidden="true" focusable="false">
+      <rect x="1.5" y="1.5" width="25" height="25" rx="6" fill="#18181B" />
+      <rect x="7" y="6.2" width="14" height="15.6" rx="2.2" fill="none" stroke="#FAFAFA" stroke-width="2.5" />
+      <rect x="11" y="10.2" width="6" height="7.6" rx="1" fill="#71717A" />
+    </svg>`,
+  doubao: `
+    <svg viewBox="0 0 28 28" width="24" height="24" aria-hidden="true" focusable="false">
+      <defs>
+        <linearGradient id="astand-eng-doubao" x1="3" y1="3" x2="25" y2="25" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stop-color="#38BDF8" />
+          <stop offset="52%" stop-color="#2563EB" />
+          <stop offset="100%" stop-color="#4F46E5" />
+        </linearGradient>
+      </defs>
+      <rect x="1.5" y="1.5" width="25" height="25" rx="7" fill="url(#astand-eng-doubao)" />
+      <circle cx="14" cy="13.8" r="6.6" fill="#FFFFFF" />
+      <circle cx="11.6" cy="13.3" r="1.25" fill="#1E3A8A" />
+      <circle cx="16.4" cy="13.3" r="1.25" fill="#1E3A8A" />
+      <path d="M11.6 16.4c1.3 1.2 3.5 1.2 4.8 0" fill="none" stroke="#2563EB" stroke-width="1.5" stroke-linecap="round" />
+    </svg>`,
+  "qoder-cn": `
+    <svg viewBox="0 0 28 28" width="24" height="24" aria-hidden="true" focusable="false">
+      <rect x="1.5" y="1.5" width="25" height="25" rx="6.5" fill="#0F766E" />
+      <path d="M12.2 6.8c-3.5 0-6.2 2.8-6.2 6.5 0 3.7 2.6 6.4 6 6.4 1.6 0 3-.6 4-1.6l1.7 1.7c.7.7 1.8.7 2.5 0 .7-.7.7-1.8 0-2.5l-1.2-1.2c1.5-1.1 2.4-2.8 2.4-4.8 0-2.8-2-4.8-4.7-4.8-1.4 0-2.6.6-3.4 1.5-.3-.7-.7-1.2-1.1-1.2Z" fill="#FFFFFF" />
+      <circle cx="12.2" cy="13.3" r="3" fill="#0F766E" />
+      <circle cx="16.8" cy="12" r="2.1" fill="#0F766E" />
+    </svg>`,
+  qoder: `
+    <svg viewBox="0 0 28 28" width="24" height="24" aria-hidden="true" focusable="false">
+      <rect x="1.5" y="1.5" width="25" height="25" rx="6.5" fill="#FFFFFF" stroke="#D4D4D8" />
+      <path d="M12.2 6.8c-3.5 0-6.2 2.8-6.2 6.5 0 3.7 2.6 6.4 6 6.4 1.6 0 3-.6 4-1.6l1.7 1.7c.7.7 1.8.7 2.5 0 .7-.7.7-1.8 0-2.5l-1.2-1.2c1.5-1.1 2.4-2.8 2.4-4.8 0-2.8-2-4.8-4.7-4.8-1.4 0-2.6.6-3.4 1.5-.3-.7-.7-1.2-1.1-1.2Z" fill="#18181B" />
+      <circle cx="12.2" cy="13.3" r="3" fill="#FFFFFF" />
+      <circle cx="16.8" cy="12" r="2.1" fill="#FFFFFF" />
+    </svg>`,
+  minimax: `
+    <svg viewBox="0 0 28 28" width="24" height="24" aria-hidden="true" focusable="false">
+      <defs>
+        <radialGradient id="astand-eng-minimax" cx="38%" cy="32%" r="68%">
+          <stop offset="0%" stop-color="#67E8F9" />
+          <stop offset="48%" stop-color="#3B82F6" />
+          <stop offset="100%" stop-color="#6D28D9" />
+        </radialGradient>
+      </defs>
+      <rect x="1.5" y="1.5" width="25" height="25" rx="7" fill="#0B1224" />
+      <circle cx="14" cy="14" r="9" fill="url(#astand-eng-minimax)" />
+      <path d="M8.5 16.5V11.5l3 3.4 2.5-3.4 2.5 3.4 3-3.4v5" fill="none" stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+    </svg>`,
+  kimi: `
+    <svg viewBox="0 0 28 28" width="24" height="24" aria-hidden="true" focusable="false">
+      <rect x="1.5" y="1.5" width="25" height="25" rx="6.5" fill="#111111" />
+      <path d="M9.5 8v12M9.5 14.3 16.8 8M12.7 11.8 17.6 20" fill="none" stroke="#FFFFFF" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" />
+      <circle cx="20.4" cy="8.4" r="2" fill="#3B82F6" />
+    </svg>`,
+  codebuddy: `
+    <svg viewBox="0 0 28 28" width="24" height="24" aria-hidden="true" focusable="false">
+      <defs>
+        <linearGradient id="astand-eng-cb" x1="2" y1="2" x2="26" y2="26" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stop-color="#06C896" />
+          <stop offset="100%" stop-color="#10B981" />
+        </linearGradient>
+      </defs>
+      <rect x="1.5" y="1.5" width="25" height="25" rx="6.5" fill="url(#astand-eng-cb)" />
+      <path d="M6.2 14.2 5.4 11.4c-.2-.7.4-1.3 1.1-1.1l3.5.9c1.3-.8 2.8-1.5 4.4-1.8l2-3.9c.3-.7 1.3-.7 1.7-.1l3.1 3.7c1.2.4 2.4 1 3.3 1.8v8.4c0 2.9-2.3 5.2-5.2 5.2H9.4c-1.8 0-3.2-2.4-3.2-5.1v-5.2Z" fill="#FFFFFF" opacity="0.95" />
+      <rect x="8.8" y="12.2" width="14.2" height="10.4" rx="4.8" transform="rotate(-24 15.9 17.4)" fill="#05B384" />
+      <rect x="12" y="15.5" width="2.1" height="4.5" rx="1" transform="rotate(-24 13 17.7)" fill="#FFFFFF" />
+      <rect x="17.2" y="13.2" width="2.1" height="4.5" rx="1" transform="rotate(-24 18.2 15.4)" fill="#FFFFFF" />
+    </svg>`,
+  qwen: `
+    <svg viewBox="0 0 28 28" width="24" height="24" aria-hidden="true" focusable="false">
+      <rect x="1.5" y="1.5" width="25" height="25" rx="6.5" fill="#6D28D9" />
+      <path d="M14 5.5 21 9.5v9L14 22.5 7 18.5v-9L14 5.5Z" fill="none" stroke="#EDE9FE" stroke-width="2" />
+      <circle cx="14" cy="14" r="3.2" fill="#A78BFA" />
+      <path d="M16.4 16.4 20.5 20.5" stroke="#FFFFFF" stroke-width="2.1" stroke-linecap="round" />
+    </svg>`,
+  gemini: `
+    <svg viewBox="0 0 28 28" width="24" height="24" aria-hidden="true" focusable="false">
+      <defs>
+        <linearGradient id="astand-eng-gm" x1="4" y1="4" x2="24" y2="24" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stop-color="#3B82F6" />
+          <stop offset="55%" stop-color="#8B5CF6" />
+          <stop offset="100%" stop-color="#EC4899" />
+        </linearGradient>
+      </defs>
+      <rect x="1.5" y="1.5" width="25" height="25" rx="6.5" fill="#0F172A" />
+      <path d="M14 5.2c1.2 4.8 4 7.6 8.8 8.8-4.8 1.2-7.6 4-8.8 8.8-1.2-4.8-4-7.6-8.8-8.8 4.8-1.2 7.6-4 8.8-8.8Z" fill="url(#astand-eng-gm)" />
+    </svg>`,
+  "cursor-cli": BRAND_ICONS.cursor,
+  "claude-code": BRAND_ICONS["claude-code"],
+  antigravity: BRAND_ICONS.antigravity,
+  api: `
+    <svg viewBox="0 0 28 28" width="24" height="24" aria-hidden="true" focusable="false">
+      <rect x="1.5" y="1.5" width="25" height="25" rx="6.5" fill="#F3F4F6" stroke="#D1D5DB" />
+      <path d="M9.5 10.5 6.5 14l3 3.5M18.5 10.5l3 3.5-3 3.5M15.2 9.5l-2.4 9" fill="none" stroke="#374151" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" />
+    </svg>`,
+};
+
 const UI_NAMESPACE = "astand-ui";
 
 function withNamespace(inner) {
@@ -350,6 +467,13 @@ export function clientIconSvg(key, size = 22) {
   const brand = BRAND_ICONS[key] || BRAND_ICONS.generic;
   if (size === 22) return brand;
   return brand.replace('width="22" height="22"', `width="${size}" height="${size}"`);
+}
+
+/** Returns a full-colour brand mark for a known CLI engine or API provider. */
+export function engineIconSvg(engineId, size = 24) {
+  const key = String(engineId || "").trim().toLowerCase();
+  const raw = ENGINE_ICONS[key] || ENGINE_ICONS[normalizeClientIconKey(key)] || ENGINE_ICONS.api;
+  return raw.replace(/width="\d+"\s+height="\d+"/, `width="${size}" height="${size}"`);
 }
 
 /** Maps an arbitrary client name/icon hint onto one of the supported brand keys. */

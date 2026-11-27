@@ -52,7 +52,10 @@ function classifyStep(a) {
   if (["read", "search", "grep", "list", "glob", "tool"].includes(kind)) return "read";
   if (["thought", "reasoning"].includes(kind)) return "thought";
   if (["output", "message", "assistant"].includes(kind)) return "prose";
-  if (["fallback", "triage", "triage_alert", "steer", "interrupt"].includes(kind)) return "notice";
+  if (kind === "steer") return "steer";
+  if (kind === "triage" || kind === "triage_alert") return "inspector";
+  if (kind === "fallback") return "fallback";
+  if (kind === "interrupt") return "notice";
   if (kind === "error") return "error";
   if (["start", "touch", "log"].includes(kind)) return "ignore";
   return "read";
@@ -97,6 +100,26 @@ function buildStreamBlocks(activities) {
     } else if (cls === "prose") {
       const text = normText(raw.detail || raw.title || raw.summary || "").trim();
       if (text) blocks.push({ type: "prose", key: `pr_${raw.id || seq++}`, text });
+    } else if (cls === "steer") {
+      const text = normText(raw.detail || raw.summary || raw.title || "").trim();
+      if (text) blocks.push({ type: "steer", key: `st_${raw.id || seq++}`, text });
+    } else if (cls === "inspector") {
+      const kind = String(raw.kind || raw.type || "triage").toLowerCase();
+      const summary = normText(raw.summary || raw.title || "").trim();
+      const detail = normText(raw.detail || "").trim();
+      if (summary || detail) {
+        blocks.push({
+          type: "inspector",
+          key: `ins_${raw.id || seq++}`,
+          alert: kind === "triage_alert",
+          summary: summary || detail,
+          detail: detail && detail !== summary ? detail : "",
+        });
+      }
+    } else if (cls === "fallback") {
+      const text = normText(raw.summary || raw.title || raw.detail || "").trim();
+      const detail = normText(raw.detail || "").trim();
+      if (text) blocks.push({ type: "fallback", key: `fb_${raw.id || seq++}`, text, detail: detail && detail !== text ? detail : "" });
     } else if (cls === "notice") {
       const text = String(raw.summary || raw.title || raw.detail || "").trim();
       if (text) blocks.push({ type: "notice", key: `nt_${raw.id || seq++}`, text, kind: raw.type || raw.kind || "notice" });
@@ -241,6 +264,8 @@ export function createActivityView(host) {
     streamScrollTop: 0,
     autoFollow: true,
     forceScrollBottom: false,
+    steerDraft: "",
+    steering: false,
   };
 
   function allJobsList() {
@@ -662,6 +687,29 @@ export function createActivityView(host) {
         } else if (blk.type === "prose") {
           lastProseText = blk.text;
           feedParts.push(`<div class="act-prose">${renderMarkdown(esc, blk.text)}</div>`);
+        } else if (blk.type === "steer") {
+          feedParts.push(`<div class="act-steer-msg">
+            <div class="act-steer-head">${iconSvg("user", 12)}<span>${esc(L("你 · 运行中纠偏", "You · Mid-run steer"))}</span></div>
+            <div class="act-steer-body">${esc(blk.text)}</div>
+          </div>`);
+        } else if (blk.type === "inspector") {
+          feedParts.push(`<div class="act-inspector ${blk.alert ? "alert" : ""}">
+            <div class="act-inspector-head">
+              ${iconSvg("shield", 13)}
+              <span>${esc(L("卡顿守门员 AI", "Stall Inspector AI"))}</span>
+              <span class="tag ${blk.alert ? "amber" : "plain"}" style="height:18px;font-size:10px">${esc(blk.alert ? L("疑似卡顿 / 介入提醒", "Stall alert") : L("巡检结论", "Check-in"))}</span>
+            </div>
+            <div class="act-inspector-body">${esc(blk.summary)}</div>
+            ${blk.detail ? `<div class="act-inspector-detail">${esc(blk.detail)}</div>` : ""}
+          </div>`);
+        } else if (blk.type === "fallback") {
+          feedParts.push(`<div class="act-fallback">
+            ${iconSvg("refresh", 13)}
+            <div class="act-fallback-main">
+              <div>${esc(blk.text)}</div>
+              ${blk.detail ? `<div class="act-fallback-detail">${esc(blk.detail)}</div>` : ""}
+            </div>
+          </div>`);
         } else if (blk.type === "notice") {
           feedParts.push(`<div class="act-notice">${iconSvg("zap", 12)}<span>${esc(blk.text)}</span></div>`);
         } else if (blk.type === "error") {
@@ -709,9 +757,24 @@ export function createActivityView(host) {
       </div>`;
     }
 
+    const canSteer = Boolean(running && (job?.engine === "codex" || job?.supportsSteer));
+    const steerBar = running
+      ? `<div class="act-steer-bar">
+          <input class="input" data-act-field="steer" data-focus-key="act-steer-input" placeholder="${esc(
+            canSteer
+              ? L("发现跑偏？直接发一句中途纠偏给正在运行的子 Agent（回车发送）…", "Send a quick mid-run steer to the running subagent (Enter to send)…")
+              : L("当前引擎暂不支持运行中即时纠偏（Codex 支持即时插话）", "Live mid-run steering is currently supported on Codex")
+          )}" value="${esc(view.steerDraft)}" ${canSteer && !view.steering ? "" : "disabled"} />
+          <button class="btn primary xs" data-action="act-send-steer" data-job="${esc(view.selectedJobId)}" ${canSteer && !view.steering && view.steerDraft.trim() ? "" : "disabled"}>
+            ${esc(view.steering ? L("发送中…", "Sending…") : L("发送纠偏", "Steer"))}
+          </button>
+        </div>`
+      : "";
+
     return `<section class="act-pane">
       ${head}
       <div class="act-stream" data-act-stream="1">${streamBody}</div>
+      ${steerBar}
       <button class="act-jump-btn" data-act-jump="1" data-action="act-jump-bottom" title="${esc(L("回到最新", "Jump to latest"))}" aria-label="${esc(L("回到最新", "Jump to latest"))}">
         ${iconSvg("arrowDown", 16)}
       </button>
@@ -784,12 +847,59 @@ export function createActivityView(host) {
       if (text) void copyText(text, L("已复制回复", "Reply copied"));
       return true;
     }
+    if (action === "act-send-steer") {
+      const msg = view.steerDraft.trim();
+      const jobId = target.dataset.job || view.selectedJobId;
+      if (!msg || !jobId || view.steering) return true;
+      view.steering = true;
+      scheduleRender();
+      try {
+        const res = await api("/api/session-action", {
+          method: "POST",
+          body: { action: "steer", jobId, sessionId: view.detail?.sessionId || "", message: msg },
+        });
+        view.steerDraft = "";
+        if (res?.actionResult?.ok === false) {
+          showToast(res.actionResult.error || L("当前引擎不支持运行中纠偏", "Engine does not support live steer"), "error");
+        } else {
+          showToast(L("已发送中途纠偏给子 Agent", "Steer sent to running subagent"));
+        }
+        await fetchDetail(jobId, { silent: true });
+      } catch (err) {
+        showError("", err);
+      } finally {
+        view.steering = false;
+        scheduleRender();
+      }
+      return true;
+    }
+    return false;
+  }
+
+  function handleInput(el) {
+    if (el.dataset.actField === "steer") {
+      view.steerDraft = el.value;
+      scheduleRender();
+      return true;
+    }
+    return false;
+  }
+
+  function handleKeydown(ev) {
+    if (ev.key === "Enter" && !ev.shiftKey && ev.target?.dataset?.actField === "steer") {
+      ev.preventDefault();
+      const btn = document.querySelector('[data-action="act-send-steer"]');
+      if (btn && !btn.disabled) btn.click();
+      return true;
+    }
     return false;
   }
 
   return {
     renderPage,
     handleAction,
+    handleInput,
+    handleKeydown,
     onStateUpdated,
     captureScroll,
     restoreScroll,
