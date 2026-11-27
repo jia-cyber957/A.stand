@@ -31,6 +31,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "build:desktop-ui": "node scripts/build-desktop-ui.mjs",
+    "package:desktop": "node scripts/package-desktop.mjs",
     "daemon": "node dist/daemon.mjs",
     "install:antigravity": "node scripts/install-antigravity.mjs",
     "uninstall:antigravity": "node scripts/uninstall-antigravity.mjs",

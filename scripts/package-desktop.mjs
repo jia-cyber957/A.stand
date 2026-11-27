@@ -87,9 +87,14 @@ function cargoCandidates() {
   const pathKey = Object.keys(process.env).find((key) => key.toUpperCase() === "PATH") || "PATH";
   const currentPath = process.env[pathKey] || "";
   const prefixedPath = `${cargoBin}${path.delimiter}${currentPath}`;
-  const envWithCargo = { ...process.env, [pathKey]: prefixedPath };
+  const rustcBin = path.join(cargoBin, IS_WINDOWS ? "rustc.exe" : "rustc");
+  const envWithCargo = {
+    ...process.env,
+    [pathKey]: prefixedPath,
+    ...(fs.existsSync(rustcBin) && !process.env.RUSTC ? { RUSTC: rustcBin } : {}),
+  };
   for (const name of names) candidates.push({ command: name, env: envWithCargo });
-  for (const name of names) candidates.push({ command: path.join(cargoBin, name), env: process.env });
+  for (const name of names) candidates.push({ command: path.join(cargoBin, name), env: envWithCargo });
   return candidates;
 }
 
@@ -136,17 +141,23 @@ function main() {
   assertFiles([RULES_FILE], "rules file");
 
   // 2. Tauri release binary ---------------------------------------------------
-  log("building Tauri release binary (cargo build --release)");
+  // On Windows, compiling build scripts inside Desktop/Documents can be blocked by
+  // Controlled Folder Access; default CARGO_TARGET_DIR to %TEMP%\astand-tauri-target.
+  const targetDir =
+    (process.env.CARGO_TARGET_DIR || "").trim() ||
+    (IS_WINDOWS ? path.join(os.tmpdir(), "astand-tauri-target") : path.join(TAURI_DIR, "target"));
+  const cargoEnv = { ...cargo.env, CARGO_TARGET_DIR: targetDir };
+  log(`building Tauri release binary (cargo build --release, target=${targetDir})`);
   const cargoBuild = run(
     cargo.command,
     ["build", "--release", "--manifest-path", path.join("desktop", "src-tauri", "Cargo.toml")],
-    { env: cargo.env }
+    { env: cargoEnv }
   );
   if (cargoBuild.code !== 0) {
     fail(`cargo build --release failed (exit ${cargoBuild.code}${cargoBuild.error ? `: ${cargoBuild.error}` : ""})`);
   }
   const exeName = IS_WINDOWS ? "a-stand.exe" : "a-stand";
-  const builtExe = path.join(TAURI_DIR, "target", "release", exeName);
+  const builtExe = path.join(targetDir, "release", exeName);
   assertFiles([builtExe], "Tauri binary");
 
   // 3. Portable folder --------------------------------------------------------

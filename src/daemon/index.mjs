@@ -178,7 +178,9 @@ async function main() {
         ? path.resolve(cli.desktopHtml)
         : path.join(DIST_DIR, "desktop.html"),
       bridgeScript: path.join(DIST_DIR, "stdio-bridge.mjs"),
-      rulesFile: path.resolve(DIST_DIR, "..", "plugin", "rules", "AGENTS.md"),
+      rulesFile: fs.existsSync(path.join(DIST_DIR, "plugin", "rules", "AGENTS.md"))
+        ? path.join(DIST_DIR, "plugin", "rules", "AGENTS.md")
+        : path.resolve(DIST_DIR, "..", "plugin", "rules", "AGENTS.md"),
       version: PLUGIN_VERSION,
     });
 
