@@ -133,8 +133,14 @@ export function buildLoginLaunchSpec(engineId, def, region = "cn", profileDir = 
 
   if (engineId === "codebuddy") {
     return {
-      ok: false,
-      error: "CodeBuddy CLI 需在交互终端中登录：请打开终端运行 codebuddy，输入 /login 完成登录（支持微信 / Google / GitHub），然后回来点「刷新检测」。",
+      ok: true,
+      mode: "acp_auth",
+      command: bin.command,
+      args: ["--acp"],
+      useShell: bin.useShell,
+      env: { ...baseEnv, ...overlay.env, NO_BROWSER: "1" },
+      autoOpen: resolveLoginAutoOpen(engineId, true),
+      authMethodId: region === "global" ? "external" : "internal",
     };
   }
 
@@ -284,7 +290,8 @@ export async function startCliLogin({
   const initialReady = new Promise((resolve) => {
     resolveInitial = resolve;
   });
-  const initialTimer = setTimeout(() => resolveInitial(), INITIAL_CAPTURE_WAIT_MS);
+  const initialWaitMs = spec.mode === "acp_auth" ? 7500 : INITIAL_CAPTURE_WAIT_MS;
+  const initialTimer = setTimeout(() => resolveInitial(), initialWaitMs);
 
   const emit = () => {
     if (typeof onUpdate === "function") {
@@ -295,13 +302,26 @@ export async function startCliLogin({
   };
 
   let proc;
+  const isAcpAuth = spec.mode === "acp_auth";
   try {
-    proc = spawn(spec.command, spec.args, {
-      shell: Boolean(spec.useShell),
-      windowsHide: true,
-      env: spec.env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    if (isAcpAuth && spec.useShell && isWin) {
+      const quote = (v) => `"${String(v).replace(/"/g, '""')}"`;
+      const inner = [quote(spec.command), ...spec.args.map(quote)].join(" ");
+      proc = spawn(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", `"${inner}"`], {
+        shell: false,
+        windowsHide: true,
+        windowsVerbatimArguments: true,
+        env: spec.env,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    } else {
+      proc = spawn(spec.command, spec.args, {
+        shell: Boolean(spec.useShell),
+        windowsHide: true,
+        env: spec.env,
+        stdio: [isAcpAuth ? "pipe" : "ignore", "pipe", "pipe"],
+      });
+    }
   } catch (err) {
     clearTimeout(initialTimer);
     session.status = "failed";
@@ -322,11 +342,76 @@ export async function startCliLogin({
     }
   }, LOGIN_TIMEOUT_MS);
 
+  let acpLineBuf = "";
+  let acpAuthSent = false;
+  if (isAcpAuth && proc.stdin?.writable) {
+    try {
+      proc.stdin.write(
+        `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: 1, clientCapabilities: {} } })}\n`
+      );
+    } catch {}
+  }
+
   const handleChunk = (chunk) => {
     if (session.cancelled) return;
-    const text = stripAnsi(chunk.toString("utf8"));
+    const rawStr = chunk.toString("utf8");
+    const text = stripAnsi(rawStr);
     session.rawTail = (session.rawTail + text).slice(-2000);
     let changed = false;
+
+    if (isAcpAuth) {
+      acpLineBuf += rawStr;
+      const lines = acpLineBuf.split(/\r?\n/);
+      acpLineBuf = lines.pop() || "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("{")) continue;
+        let msg;
+        try {
+          msg = JSON.parse(trimmed);
+        } catch {
+          continue;
+        }
+        if (msg.id === 1 && msg.result && !acpAuthSent && proc.stdin?.writable) {
+          acpAuthSent = true;
+          try {
+            proc.stdin.write(
+              `${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "authenticate", params: { methodId: spec.authMethodId || "internal" } })}\n`
+            );
+          } catch {}
+        } else if (msg.params?.authUrl && !session.authUrl) {
+          const cleaned = String(msg.params.authUrl).trim();
+          session.authUrl = cleaned;
+          session.status = "waiting_browser";
+          session.message = "请在浏览器中完成官方登录授权";
+          changed = true;
+          if (spec.autoOpen && autoOpen && !session.browserOpened) {
+            session.browserOpened = true;
+            openExternalUrl(cleaned);
+          }
+          clearTimeout(initialTimer);
+          resolveInitial();
+        } else if (msg.id === 2) {
+          clearTimeout(initialTimer);
+          if (session.timer) clearTimeout(session.timer);
+          session.finishedAt = Date.now();
+          if (msg.error) {
+            session.status = "failed";
+            session.error = msg.error?.message || JSON.stringify(msg.error);
+          } else {
+            session.status = "succeeded";
+            session.message = "登录成功！";
+            session.error = "";
+          }
+          killProcessTree(proc);
+          emit();
+          resolveInitial();
+          return;
+        }
+      }
+      if (changed) emit();
+      return;
+    }
 
     const qrMatch = text.match(QR_IMAGE_RE) || session.rawTail.match(QR_IMAGE_RE);
     if (qrMatch && !session.qrDataUrl) {
@@ -387,7 +472,7 @@ export async function startCliLogin({
   proc.on("exit", (code) => {
     clearTimeout(initialTimer);
     if (session.timer) clearTimeout(session.timer);
-    if (session.cancelled) {
+    if (session.cancelled || session.status === "succeeded" || session.status === "failed") {
       resolveInitial();
       return;
     }

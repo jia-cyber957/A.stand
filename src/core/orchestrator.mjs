@@ -3504,7 +3504,12 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
   async getDashboardState(forceDetect = false, fetchRateLimits = false) {
     const customCliEngines = this.store.settings.customCliEngines || [];
     if (forceDetect) this.invalidateCliCaches();
-    const engines = detectEngines(forceDetect, this.store.dataDir, customCliEngines);
+    const engines = detectEngines(forceDetect, this.store.dataDir, customCliEngines, {
+      nonBlocking: true,
+      onVersionsReady: () => {
+        if (!this.shuttingDown) this.#emitStateChange("cli_versions_ready", {});
+      },
+    });
     const dshEngine = this.engines["deepseek-harness"];
     const dshReady = engines["deepseek-harness"]?.status === "ready";
     const dshSyncEnabled = dshReady && (forceDetect || fetchRateLimits);

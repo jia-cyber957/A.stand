@@ -484,7 +484,7 @@ let booted = false;
 let renderQueued = false;
 
 const ui = {
-  page: "clients",
+  page: "roles",
   sidebarCollapsed: false,
   theme: "light",
   maskTokens: true,
@@ -753,7 +753,7 @@ function applyState(next) {
   ui.offline = false;
   ui.authError = false;
   ui.fatal = null;
-  if (!PAGES.includes(ui.page)) ui.page = "clients";
+  if (!PAGES.includes(ui.page)) ui.page = "roles";
   if (ui.page === "activity") getActivityView().onStateUpdated();
   scheduleRender();
 }
@@ -1459,13 +1459,15 @@ function renderSidebar() {
       </button>
     </div>
     <nav class="nav">
-      ${navGroup(t("groupConnect"), "CONNECT", [navItem("clients", "clients", t("navClients"), clientBadge)])}
       ${navGroup(t("groupDispatch"), "DISPATCH", [
         navItem("activity", "activity", t("navActivity"), activityBadge),
         navItem("roles", "roles", t("navRoles")),
         navItem("extensions", "extensions", t("navExtensions"), extensionsBadge),
       ])}
-      ${navGroup(t("groupModels"), "MODELS", [navItem("providers", "providers", t("navProviders"))])}
+      ${navGroup(t("groupConnect"), "CONNECT", [
+        navItem("clients", "clients", t("navClients"), clientBadge),
+        navItem("providers", "providers", t("navProviders")),
+      ])}
       ${navGroup(t("groupObserve"), "OBSERVE", [navItem("observability", "observability", t("navObservability"))])}
       ${navGroup(t("groupSystem"), "SYSTEM", [navItem("settings", "settings", t("navSettings"))])}
     </nav>
@@ -1529,6 +1531,13 @@ function renderMain() {
   let flush = false;
   if (ui.authError) {
     body = renderBlockedState("lock", t("authTitle"), t("authDesc"), false);
+  } else if (!state && !ui.offline) {
+    body = `<div class="content-inner">
+      <div class="card pad" style="text-align:center;padding:56px 24px">
+        <div class="cli-spinner" style="margin:0 auto 14px;width:22px;height:22px"></div>
+        <div style="font-size:13px;font-weight:600;color:var(--ink)">${esc(isEn() ? "Loading A.stand console…" : "正在加载控制台…")}</div>
+      </div>
+    </div>`;
   } else if (!state) {
     body = renderBlockedState("wave", t("offlineTitle"), t("offlineDesc"), true);
   } else if (ui.page === "clients") {
@@ -2245,9 +2254,7 @@ function renderCliAccountCards(eid) {
     loginSess && (loginSess.status === "starting" || loginSess.status === "waiting_browser" || loginSess.status === "waiting_qr")
   );
   const canInAppLogin = Boolean(
-    eng.installed &&
-      eid !== "codebuddy" &&
-      (eng.extensible || ["doubao", "qoder", "qoder-cn", "minimax", "opencode"].includes(eid))
+    eng.installed && (eng.extensible || ["doubao", "qoder", "qoder-cn", "minimax", "opencode", "codebuddy"].includes(eid))
   );
   const loginBarHtml = eng.installed ? getCliCatalogModal().renderLoginBar(eid) : "";
   const cooled = engineCooldownModels(eid);
@@ -2294,8 +2301,6 @@ function renderCliAccountCards(eid) {
           ? isEn() ? "Checking sign-in…" : "正在检测账号状态…"
           : cardLoggedIn
           ? `${isEn() ? "Ready" : "正常可用"}${subCount > 0 ? ` · ${isEn() ? `${subCount} models` : `${subCount} 个模型`}` : ""}`
-          : eid === "codebuddy"
-          ? isEn() ? "Run codebuddy -> /login in terminal" : "待登录 · 终端运行 codebuddy 后输入 /login"
           : isEn() ? "Not signed in — click Sign in" : "待登录 · 点击右侧登录"
         : `${prof.enabled ? (isEn() ? "Active in rotation" : "已启用 · 参与轮换") : isEn() ? "Paused" : "已暂停"}`;
 

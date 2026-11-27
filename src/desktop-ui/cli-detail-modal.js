@@ -196,7 +196,7 @@ export function createCliDetailModal(host) {
       view.accountsData?.supportsMultiAccountIsolation ??
       ["codex", "qoder", "qoder-cn", "opencode"].includes(eid);
     const canInAppLogin = Boolean(
-      eid !== "codebuddy" && (eng.extensible || ["doubao", "qoder", "qoder-cn", "minimax", "opencode"].includes(eid))
+      eng.extensible || ["doubao", "qoder", "qoder-cn", "minimax", "opencode", "codebuddy"].includes(eid)
     );
     const cooled = engineCooldownModels(eid);
     const showCodexQuota = eid === "codex" && Boolean(st.codexRateLimits);
@@ -241,9 +241,6 @@ export function createCliDetailModal(host) {
               ? `<button class="btn xs danger" data-action="cd-del-profile" data-profile="${esc(prof.id)}" title="${esc(L("删除该隔离账号", "Delete isolated account"))}">${iconSvg("trash")}</button>`
               : ""}
           </div>
-          ${isDef && eid === "codebuddy" && !loggedIn
-            ? `<div class="field-hint">${esc(L("CodeBuddy CLI 需在终端运行 codebuddy 后输入 /login 完成登录，完成后点下方「重新获取模型」。", "Sign in by running codebuddy then /login in your terminal, then click Refresh models."))}</div>`
-            : ""}
           ${isDef && showCodexQuota ? `<div class="cli-detail-quota">${renderQuotaBars()}</div>` : ""}
         </div>`;
       })

@@ -121,9 +121,7 @@ export function createCliCatalogModal(host) {
           <span class="cli-login-ok-icon">${iconSvg("checkCircle", 16)}</span>
           <span class="cli-login-title">${esc(L(`${label} ${s?.mode === "update" ? "升级" : "安装"}完成！`, `${label} ready!`))}</span>
           <div class="cli-login-actions">
-            ${eid === "codebuddy"
-              ? `<button class="btn xs primary" data-action="cd-open" data-engine="${esc(eid)}">${esc(L("查看登录指引", "Sign-in guide"))}</button>`
-              : `<button class="btn xs primary" data-action="cli-login-start" data-engine="${esc(eid)}">${iconSvg("key")} ${esc(L("立即登录", "Sign in now"))}</button>`}
+            <button class="btn xs primary" data-action="cli-login-start" data-engine="${esc(eid)}">${iconSvg("key")} ${esc(L("立即登录", "Sign in now"))}</button>
             <button class="btn xs ghost" data-action="cli-install-dismiss" data-engine="${esc(eid)}">${esc(L("收起", "Dismiss"))}</button>
           </div>
         </div>

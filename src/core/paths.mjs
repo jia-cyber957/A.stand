@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -9,7 +9,10 @@ const isWin = process.platform === "win32";
 
 let detectionCache = { ts: 0, data: null };
 const DETECTION_TTL_MS = 60_000;
+const VERSION_TTL_MS = 10 * 60_000;
 let extensibleDetectionCache = { key: "", ts: 0, data: {} };
+const versionCache = new Map(); // binKey -> { ts, version }
+const pendingVersionProbes = new Set();
 
 function runQuick(cmd, args, timeoutMs = 4000) {
   try {
@@ -67,8 +70,61 @@ export function resolveCodexBinary() {
 }
 
 export function resolveGenericBinary(name) {
+  const clean = String(name || "").trim();
+  if (!clean) return null;
+  const rawPath = process.env.PATH || process.env.Path || "";
+  if (rawPath) {
+    const dirs = rawPath
+      .split(path.delimiter)
+      .map((d) => d.trim().replace(/^"(.*)"$/, "$1"))
+      .filter(Boolean);
+    if (isWin) {
+      const hasExt = /\.(?:exe|cmd|bat|com)$/i.test(clean);
+      let firstCmd = null;
+      for (const dir of dirs) {
+        if (hasExt) {
+          const full = path.join(dir, clean);
+          try {
+            if (fs.existsSync(full) && fs.statSync(full).isFile()) {
+              return { command: full, useShell: /\.(cmd|bat)$/i.test(full) };
+            }
+          } catch {}
+          continue;
+        }
+        const exePath = path.join(dir, `${clean}.exe`);
+        try {
+          if (fs.existsSync(exePath) && fs.statSync(exePath).isFile()) {
+            return { command: exePath, useShell: false };
+          }
+        } catch {}
+        if (!firstCmd) {
+          for (const ext of [".cmd", ".bat"]) {
+            const cmdPath = path.join(dir, `${clean}${ext}`);
+            try {
+              if (fs.existsSync(cmdPath) && fs.statSync(cmdPath).isFile()) {
+                firstCmd = { command: cmdPath, useShell: true };
+                break;
+              }
+            } catch {}
+          }
+        }
+      }
+      if (firstCmd) return firstCmd;
+      return null;
+    }
+    for (const dir of dirs) {
+      const full = path.join(dir, clean);
+      try {
+        if (fs.existsSync(full) && fs.statSync(full).isFile()) {
+          return { command: full, useShell: false };
+        }
+      } catch {}
+    }
+    return null;
+  }
+
   const finder = isWin ? "where.exe" : "which";
-  const res = runQuick(finder, [name], 3000);
+  const res = runQuick(finder, [clean], 3000);
   if (!res.ok || !res.stdout) return null;
   const lines = res.stdout
     .split(/\r?\n/)
@@ -251,8 +307,23 @@ export function resolveDshBinary(dataDir = "") {
   };
 }
 
+function versionCacheKey(binInfo) {
+  if (!binInfo?.command) return "";
+  return `${binInfo.command}::${(binInfo.prefixArgs || []).join(" ")}`;
+}
+
+function getCachedVersion(binInfo) {
+  const key = versionCacheKey(binInfo);
+  if (!key) return null;
+  const hit = versionCache.get(key);
+  if (hit && Date.now() - hit.ts < VERSION_TTL_MS) return hit.version;
+  return null;
+}
+
 function probeVersion(binInfo) {
   if (!binInfo) return "";
+  const cached = getCachedVersion(binInfo);
+  if (cached !== null) return cached;
   try {
     const out = execFileSync(binInfo.command, [...(binInfo.prefixArgs || []), "--version"], {
       encoding: "utf8",
@@ -262,13 +333,74 @@ function probeVersion(binInfo) {
       stdio: ["ignore", "pipe", "pipe"],
     });
     const firstLine = (out || "").trim().split(/\r?\n/)[0] || "";
-    return firstLine.slice(0, 80);
+    const version = firstLine.slice(0, 80);
+    versionCache.set(versionCacheKey(binInfo), { ts: Date.now(), version });
+    return version;
   } catch {
     return "";
   }
 }
 
-function detectExtensibleCliEngines(defs, force) {
+function probeVersionAsync(binInfo) {
+  return new Promise((resolve) => {
+    if (!binInfo?.command) return resolve("");
+    const key = versionCacheKey(binInfo);
+    const args = [...(binInfo.prefixArgs || []), "--version"];
+    const useShell = Boolean(binInfo.useShell) && isWin;
+    const quote = (v) => `"${String(v).replace(/"/g, '""')}"`;
+    const command = useShell ? process.env.ComSpec || "cmd.exe" : binInfo.command;
+    const execArgs = useShell ? ["/d", "/s", "/c", `"${[quote(binInfo.command), ...args.map(quote)].join(" ")}"`] : args;
+    execFile(
+      command,
+      execArgs,
+      {
+        encoding: "utf8",
+        timeout: 6000,
+        windowsHide: true,
+        ...(useShell ? { windowsVerbatimArguments: true } : {}),
+        shell: false,
+      },
+      (err, stdout) => {
+        const version = err ? "" : (String(stdout || "").trim().split(/\r?\n/)[0] || "").slice(0, 80);
+        if (key) versionCache.set(key, { ts: Date.now(), version });
+        resolve(version);
+      }
+    );
+  });
+}
+
+function queueAsyncVersionProbes(items, onVersionsReady) {
+  const toRun = items.filter((item) => {
+    const key = versionCacheKey(item?.bin);
+    return key && !pendingVersionProbes.has(key);
+  });
+  if (!toRun.length) return;
+  for (const item of toRun) pendingVersionProbes.add(versionCacheKey(item.bin));
+  Promise.allSettled(
+    toRun.map(async (item) => {
+      const key = versionCacheKey(item.bin);
+      try {
+        const ver = await probeVersionAsync(item.bin);
+        if (ver) {
+          item.target.version = ver;
+          return true;
+        }
+        return false;
+      } finally {
+        pendingVersionProbes.delete(key);
+      }
+    })
+  ).then((results) => {
+    const anyChanged = results.some((r) => r.status === "fulfilled" && r.value);
+    if (anyChanged && typeof onVersionsReady === "function") {
+      try {
+        onVersionsReady();
+      } catch {}
+    }
+  });
+}
+
+function detectExtensibleCliEngines(defs, force, { nonBlocking = false, asyncQueue = null } = {}) {
   const key = JSON.stringify(defs.map((d) => [d.id, d.command, d.args, d.windowsPaths]));
   const now = Date.now();
   if (!force && extensibleDetectionCache.key === key && now - extensibleDetectionCache.ts < DETECTION_TTL_MS) {
@@ -277,9 +409,17 @@ function detectExtensibleCliEngines(defs, force) {
   const data = {};
   for (const def of defs) {
     const bin = resolveCliPresetBinary(def);
-    const version = bin ? probeVersion(bin) : "";
-    const installed = Boolean(bin && version);
-    data[def.id] = {
+    let version = "";
+    if (bin) {
+      if (nonBlocking) {
+        const cached = getCachedVersion(bin);
+        if (cached !== null) version = cached;
+      } else {
+        version = probeVersion(bin);
+      }
+    }
+    const installed = nonBlocking ? Boolean(bin) : Boolean(bin && version);
+    const entry = {
       ...def,
       installed,
       loggedIn: installed,
@@ -291,26 +431,39 @@ function detectExtensibleCliEngines(defs, force) {
       extensible: true,
       custom: Boolean(def.custom),
     };
+    data[def.id] = entry;
+    if (nonBlocking && bin && !version && asyncQueue) {
+      asyncQueue.push({ bin, target: entry });
+    }
   }
   extensibleDetectionCache = { key, ts: now, data };
   return data;
 }
 
-export function detectEngines(force = false, dataDir = "", customCliEngines = []) {
+export function detectEngines(force = false, dataDir = "", customCliEngines = [], options = {}) {
+  const nonBlocking = Boolean(options?.nonBlocking);
+  const asyncQueue = nonBlocking ? [] : null;
+  if (force) versionCache.clear();
   const now = Date.now();
   let base = null;
   if (!force && detectionCache.data && now - detectionCache.ts < DETECTION_TTL_MS) {
     base = detectionCache.data;
   }
   if (!base) {
-
     const codexBin = resolveCodexBinary();
     const codexMeta = readCodexConfigSummary();
     const claudeBin = resolveGenericBinary("claude");
     const agyBin = resolveGenericBinary("agy");
     const dshBin = resolveDshBinary(dataDir);
-    const dshVersion = dshBin && !dshBin.nodeTooOld ? probeVersion(dshBin) : "";
-    const dshReady = Boolean(dshBin && !dshBin.nodeTooOld && dshVersion);
+    const readVer = (bin) => {
+      if (!bin) return "";
+      if (!nonBlocking) return probeVersion(bin);
+      return getCachedVersion(bin) ?? "";
+    };
+    const dshVersion = dshBin && !dshBin.nodeTooOld ? readVer(dshBin) : "";
+    const dshReady = nonBlocking
+      ? Boolean(dshBin && !dshBin.nodeTooOld)
+      : Boolean(dshBin && !dshBin.nodeTooOld && dshVersion);
 
     base = {
       codex: {
@@ -318,7 +471,7 @@ export function detectEngines(force = false, dataDir = "", customCliEngines = []
         installed: Boolean(codexBin),
         loggedIn: Boolean(codexBin && (codexMeta.hasAuth || process.env.OPENAI_API_KEY)),
         status: !codexBin ? "missing" : codexMeta.hasAuth || process.env.OPENAI_API_KEY ? "ready" : "unauthenticated",
-        version: probeVersion(codexBin),
+        version: readVer(codexBin),
         detectedModel: codexMeta.defaultModel || "gpt-6.2-sol",
         binaryPath: codexBin?.command || "",
         extensible: false,
@@ -329,7 +482,7 @@ export function detectEngines(force = false, dataDir = "", customCliEngines = []
         installed: Boolean(claudeBin),
         loggedIn: Boolean(claudeBin && hasClaudeAuth()),
         status: !claudeBin ? "missing" : hasClaudeAuth() ? "ready" : "unauthenticated",
-        version: probeVersion(claudeBin),
+        version: readVer(claudeBin),
         detectedModel: "",
         binaryPath: claudeBin?.command || "",
         extensible: false,
@@ -340,7 +493,7 @@ export function detectEngines(force = false, dataDir = "", customCliEngines = []
         installed: Boolean(agyBin),
         loggedIn: Boolean(agyBin && hasAgyAuth()),
         status: !agyBin ? "missing" : hasAgyAuth() ? "ready" : "unauthenticated",
-        version: probeVersion(agyBin),
+        version: readVer(agyBin),
         detectedModel: "",
         binaryPath: agyBin?.command || "",
         extensible: false,
@@ -360,11 +513,25 @@ export function detectEngines(force = false, dataDir = "", customCliEngines = []
         custom: false,
       },
     };
+    if (nonBlocking && asyncQueue) {
+      if (codexBin && !base.codex.version) asyncQueue.push({ bin: codexBin, target: base.codex });
+      if (claudeBin && !base["claude-code"].version) asyncQueue.push({ bin: claudeBin, target: base["claude-code"] });
+      if (agyBin && !base.antigravity.version) asyncQueue.push({ bin: agyBin, target: base.antigravity });
+      if (dshBin && !dshBin.nodeTooOld && !base["deepseek-harness"].version) {
+        asyncQueue.push({ bin: dshBin, target: base["deepseek-harness"] });
+      }
+    }
 
     detectionCache = { ts: now, data: base };
   }
 
-  const extensible = detectExtensibleCliEngines(listAllExtensibleCliDefs(customCliEngines), force);
+  const extensible = detectExtensibleCliEngines(listAllExtensibleCliDefs(customCliEngines), force, {
+    nonBlocking,
+    asyncQueue,
+  });
+  if (nonBlocking && asyncQueue?.length) {
+    queueAsyncVersionProbes(asyncQueue, options?.onVersionsReady);
+  }
   return { ...base, ...extensible };
 }
 
