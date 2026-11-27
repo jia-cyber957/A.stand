@@ -1,0 +1,104 @@
+#AOCI-CODE-VOLUME: 1
+
+===/<repository>/===
+.gitattributes[FV3T]: F:Git 换行与二进制属性：全仓库统一 LF，图片/可执行/压缩包按二进制处理 | R:- | A:* text=auto eol=lf,*.png binary,*.ico binary | S:全仓库强制 LF；png/ico/exe 等标记 binary 以禁用行尾转换与文本 diff
+.gitignore[FV3T]: F:Git 忽略清单：依赖、构建/桌面产物、运行数据、本地编辑器与密钥配置 | R:- | A:dist/,data/,.env | S:dist-desktop/、data/、.mcp.json、.codex/ 不入库；本地密钥也忽略
+AGENTS.md[SG7S]: F:AOCI 仓库认知接入规范：索引建立、读取、维护与收尾的模型行为边界 | R:- | A:aoci_rules,aoci_overview,aoci_maintain,aoci_update_entry | S:aoci:begin/end 区块由 AOCI 工具维护；静态文档不得覆盖 Guide/Schema/Validator 的机器事实
+AGENT_INSTALL.md[SV5S]: F:面向 AI Agent 的 A.stand 安装、外部引擎接入与模型选型可执行手册 | R:code:README.md,code:SECURITY.md,code:docs/ARCHITECTURE.md | A:Step 1-6,Model Selection & Pairing | S:先做只读环境探测；禁止静默安装全局包、升级 Node 或改外部 CLI 配置；dsh 必须 @latest 且 Node≥24.9
+LICENSE[SG4M]: F:Apache License 2.0 完整法律文本 | R:- | A:Apache-2.0 | S:LICENSE 为未填版权方的标准模板；版权声明在 README 与 package.json 中
+README.md[SG7S]: F:A.stand 英文总览：定位、7 大卖点、引擎成熟度矩阵、手动安装与验证命令 | R:code:README.zh-CN.md,code:AGENT_INSTALL.md,code:docs/ARCHITECTURE.md | A:Why A.stand,Engine Support Matrix,Manual Quick Start | S:矩阵明确仅 Codex 与 dsh 提供完整时间线和上游缓存计数，Claude/agy 能力递减
+README.zh-CN.md[SL6S]: F:A.stand 中文总览：零侵入定位、白泽/祝融双角色、引擎矩阵与安装说明 | R:code:README.md,code:AGENT_INSTALL.md | A:打开 A.stand 面板,引擎支持矩阵 | S:UI 将 Oracle/Hephaestus 显示为白泽/祝融，但工具与日志坚持英文名；需与 README.md 同步
+SECURITY.md[SS8S]: F:A.stand 安全策略：零侵入、API Key 隔离、各引擎沙箱/worktree 边界与私密披露 | R:code:docs/ARCHITECTURE.md,code:plugin/rules/AGENTS.md | A:Zero-Mutation Guarantee,API Key Isolation,Sandbox & Git Worktree Boundaries | S:报告 A.stand 直接改写任一外部 CLI 配置即视为安全漏洞；漏洞须走私密 Advisory 而非公开 Issue
+UPGRADING_ENGINES.md[SI5T]: F:上游 CLI 接口变更时的引擎适配升级指引：一引擎一适配器文件，只改受影响实现 | R:code:package.json,code:docs/ARCHITECTURE.md | A:src/engines/,npm run check:contracts | S:Codex 可用 app-server generate-json-schema 导出权威 schema；改动后需重建并跑 test:e2e
+llms.txt[SG4T]: F:面向 AI 爬虫与编程 Agent 的 A.stand 机器可读索引：能力、引擎支持与文档链接 | R:code:README.md | A:Key capabilities,Engine support | S:缓存命中率取自真实计费而非估算；仅 Codex 与 dsh 有完整时间线与缓存计数
+package.json[FV7T]: F:Node 项目清单：ESM、Apache-2.0、Node≥20、运行依赖与构建/安装/检查/E2E 脚本 | R:code:scripts/build.mjs,code:plugin/plugin.json | A:scripts,dependencies,engines | S:包声明 Node≥20，但 dsh 引擎需 ≥24.9；test:e2e/test:v2 分别指向 e2e-test.mjs 与 e2e-v2-daemon.mjs
+
+===/<repository>/.github/workflows/===
+ci.yml[OQ6T]: F:GitHub Actions CI：main 分支 push/PR 时在 Node 24 上安装、构建并运行 E2E | R:code:package.json,code:scripts/build.mjs | A:npm ci,npm run build,npm run test:e2e | S:仅 main 分支 push/PR 触发；设置 AGENT_RELAY_E2E_NO_BROWSER_SANDBOX=1 以在容器内跑无头浏览器
+
+===/<repository>/desktop/src-tauri/===
+Cargo.toml[FV6T]: F:Tauri 2 桌面壳 crate a-stand：依赖、可执行入口与体积优先的 release 配置 | R:code:desktop/src-tauri/src/main.rs,code:desktop/src-tauri/tauri.conf.json | A:[dependencies],[profile.release] | S:release 开启 lto、opt-level=s、codegen-units=1、strip 以压缩体积；rust-version 1.77.2
+build.rs[XV3T]: F:Tauri 构建脚本：调用 tauri_build::build() 生成桌面壳构建上下文 | R:code:desktop/src-tauri/Cargo.toml | A:tauri_build::build | S:-
+tauri.conf.json[FS6T]: F:Tauri 2 应用配置：窗口/标识、加载页 frontendDist、严格 CSP 与 NSIS 打包 | R:code:desktop/src-tauri/Cargo.toml,code:desktop/src-tauri/capabilities/default.json | A:app.windows,app.security.csp,bundle | S:CSP 默认 default-src 'none'，仅放行 self/data 与 127.0.0.1/localhost；打包仅 nsis
+
+===/<repository>/desktop/src-tauri/capabilities/===
+default.json[FS5T]: F:Tauri 主窗口最小能力集：仅允许显示/隐藏/聚焦/取消最小化/关闭自身 | R:code:desktop/src-tauri/tauri.conf.json | A:permissions,core:window | S:窗口仅 main 获得 core:default 与窗口控制权限，不开放文件系统、shell 或网络能力
+
+===/<repository>/desktop/src-tauri/loading/===
+index.html[EU4T]: F:桌面壳启动/失败双态加载页；守护进程就绪后由 Rust 导航至本地控制台 | R:code:desktop/src-tauri/src/daemon.rs,code:desktop/src-tauri/tauri.conf.json | A:loading-body,error-body | S:失败态仅由 ?reason= 驱动，用 textContent 写入，无外链与 eval
+
+===/<repository>/desktop/src-tauri/src/===
+daemon.rs[RR8M]: F:桌面壳守护进程监管器：定位 node 与 daemon.mjs、以 --print-ready 拉起、等待就绪握手并托管子进程 | R:code:desktop/src-tauri/src/main.rs,code:desktop/src-tauri/src/tray.rs | A:boot,wait_for_ready,kill_owned,candidate_scripts,node_candidates | S:就绪超时 15 秒；仅 kill 自己拉起的子进程；查找顺序含 ASTAND_* 环境变量、exe 同级/resources/dist 与 PATH
+main.rs[EU7S]: F:A.stand Windows 桌面壳入口：装配托盘与守护进程状态，关窗隐藏至托盘，退出时停止自有守护进程 | R:code:desktop/src-tauri/src/daemon.rs,code:desktop/src-tauri/src/tray.rs | A:main,window::navigate,window::show_error | S:仅 main 窗口关闭被拦截并隐藏；RunEvent::Exit 才 kill_owned；失败页把截断 1600 字的 reason 编码进查询参数
+tray.rs[EU6S]: F:系统托盘控制面：菜单打开/网关状态/浏览器打开/退出，左键切换窗口显隐并同步就绪状态 | R:code:desktop/src-tauri/src/daemon.rs,code:desktop/src-tauri/src/main.rs | A:build,apply_ready,apply_failed,quit_app | S:托盘退出是唯一停止受管守护进程的入口；未就绪时浏览器菜单禁用，关窗仅隐藏不杀后台
+
+===/<repository>/docs/===
+ARCHITECTURE.md[SG8L]: F:A.stand 架构权威文档：三角色、仓库布局、请求生命周期、引擎适配、会话/缓存、沙箱与构建测试 | R:code:README.md,code:SECURITY.md,code:UPGRADING_ENGINES.md | A:5. Engine Adapters,8. Data & Secrets Model,9. Sandbox & Safety Boundaries,12.2 Design invariants | S:仅 5 个 MCP 工具对宿主可见，其余为 app-only；任何改动须保持零侵入、只读 Oracle、显式 session、诚实遥测与有界 Lead 上下文
+CURRENT.md[SO5T]: F:A.stand 当前状态与验收接力棒：分支/基线、桌面包、最近回归结果与四态验收清单 | R:code:docs/DECISIONS.md,code:docs/GUARDRAILS.md | A:四态验收清单 | S:所有功能项仍为待用户验收；AI 测试全绿不得代填已验收；main 本地领先 origin/main 未推送
+DECISIONS.md[SG5T]: F:A.stand 生效架构决策 D1–D6：桌面形态、接入协议、注册体验、编译目录、门铃诊断与双提交 | R:code:docs/ARCHITECTURE.md,code:docs/GUARDRAILS.md | A:D1-D6 | S:D6 规定并行祝融不得触碰 docs/ 与 aoci*；主 Agent 先提交纯代码，再更新文档与索引
+GUARDRAILS.md[SS7T]: F:A.stand 架构红线：安全隐私、Prompt Cache/引擎契约、前端模块化与交付 Git 纪律 | R:code:SECURITY.md,code:docs/ARCHITECTURE.md | A:1. 安全与隐私底线,2. Prompt Cache 与引擎契约,3. 前端与模块化红线 | S:守护进程强制绑定 127.0.0.1 并校验 Host/Origin；新增前后端文件 ≤450 行；测试须带超时且不留进程
+PRODUCT.md[SB5T]: F:A.stand v2 产品定义：多上游常驻子 Agent 调度、8 个核心页面闭环与明确暂不做清单 | R:code:docs/ARCHITECTURE.md,code:README.md | A:1. 产品定位,2. 核心页面与功能闭环,3. v2.0 明确暂不做 | S:v2.0 不做 IDE 自动写配置、自定义角色/嵌套调用与旧插件数据自动迁移，属路线而非缺陷
+
+===/<repository>/plugin/===
+mcp_config.json[FI6T]: F:Antigravity 插件 MCP 配置：以 node 启动 dist/server.mjs 并传入插件私有数据目录 | R:code:plugin/plugin.json,code:scripts/build.mjs | A:mcpServers.agent-relay,${PLUGIN_ROOT},${PLUGIN_DATA} | S:宿主负责解析 ${PLUGIN_ROOT}/${PLUGIN_DATA}，故安装目录可移植；--data-dir 指向插件私有状态
+plugin.json[FE5T]: F:Antigravity 插件清单：name/displayName、版本、描述、logo 与建议提示词 | R:code:plugin/mcp_config.json | A:name,displayName,suggestedPrompts | S:插件 name 固定为 agent-relay、显示名为 A.stand；改 name 会改变安装目录与 MCP 标识
+
+===/<repository>/plugin/rules/===
+AGENTS.md[SW6T]: F:宿主无关的 A.stand 委托门规：抓大放小、sessionId 隔离、Skill 边界与并行/异步流程 | R:code:plugin/skills/agent-relay/SKILL.md | A:Delegation Gate,2. 隔离,6. 异步门铃,8. 安全护栏 | S:无关任务必须省略 sessionId；总开关 OFF 时立即放弃委托不得重试；hephaestus 运行时禁止写同一工作区
+
+===/<repository>/plugin/skills/agent-relay/===
+SKILL.md[SW7S]: F:A.stand 协作与安装手册：并行委托、Skills 交接、异步门铃、配额选型、会话生命周期与引擎配置 | R:code:plugin/rules/AGENTS.md,code:docs/ARCHITECTURE.md | A:1. Check Live User Settings,3. Async Doorbell Flow,6. Context Isolation First | S:stdio 宿主会串行阻塞，故并行须先 waitSec:0 再用 poll(jobIds) 收集；门铃退出码 0/1/2/3/5 含义固定
+
+===/<repository>/scripts/===
+build-desktop-ui.mjs[XV6S]: F:把 src/desktop-ui 打成单文件 dist/desktop.html：esbuild IIFE 内联 CSS/JS 并做完整性断言 | R:code:scripts/build.mjs,code:desktop/src-tauri/tauri.conf.json | A:esbuild IIFE,CSS_PLACEHOLDER,integrity assertions | S:必须用函数替换器内联以避开压缩 JS 的 $& 模式；断言唯一 doctype、无外链、无残留占位符
+build.mjs[XV7S]: F:主构建脚本：esbuild 产出 server/daemon/stdio-bridge/console/wait-job，并调用桌面 UI 构建 | R:code:package.json,code:scripts/build-desktop-ui.mjs | A:server.mjs,daemon.mjs,console.html,desktop.html | S:内联 HTML 必须用函数替换器；构建后断言 daemon 含 ASTAND_DAEMON_READY 与 StreamableHTTPServerTransport
+capture-screenshots.mjs[XQ6L]: F:合成控制台截图：构建 UI、以本地 MCP-Apps 宿主注入假状态，经 CDP 输出 4 张中英 Team/Cache PNG | R:code:scripts/build.mjs,code:README.md | A:buildDashboardState,hostHtml,captureWithCdp,assertShotContent | S:仅绑 127.0.0.1 临时端口并关闭；每图断言语言与关键文案，PNG 须 ≥100KB 否则失败
+check-contracts.mjs[XQ5T]: F:上游引擎与协议契约自检：列出本机 Codex/dsh/claude/agy 探测状态，校验 Codex app-server 方法与实时握手 | R:code:src/core/paths.mjs,code:src/engines/codex.mjs,code:package.json | A:REQUIRED_CODEX_METHODS,detectEngines,healthCheck,listModels | S:要求 Codex schema 含 initialize/thread/turn/review/model-list 共 11 个方法，且 model/list 必须返回至少 1 个模型，否则退出码 1
+e2e-test.mjs[XQ8L]: F:A.stand 主 E2E 套件（9 段）：stdio MCP 握手、总开关、渠道/密钥隔离、队列冷却、跨重启缓存、门铃、状态快照与崩溃恢复 | R:code:scripts/build.mjs,code:scripts/wait-job.mjs,code:src/core/orchestrator.mjs,code:src/core/store.mjs | A:verifyHtmlSyntax,testWaitJobScript,testDurableHandoff,testBrowserStrictCspRender,runCodexFixture | S:测试必须使用临时数据目录与临时工作区，结束后清理；长调用超时 240s；失败即 process.exit(1)
+e2e-v2-daemon.mjs[XQ7L]: F:v2 常驻守护进程 E2E（10 步）：健康检查、UI Token 鉴权、客户端 CRUD/握手、stdio 桥、SSE、扩展与脱敏诊断包 | R:code:src/daemon/http-server.mjs,code:src/core/clients.mjs,code:src/bridge/stdio-bridge.mjs,code:src/core/diagnostics.mjs | A:startDaemon,runMcpHandshake,startBridge,extractZip | S:全部服务用 port:0 临时端口；单步 15s、整体 45s 超时；finally 清理所有子进程与临时目录
+install-antigravity.mjs[XV6T]: F:构建并安装 Antigravity 插件：把 plugin/ 与 dist/ 复制到 ~/.gemini/config/plugins/agent-relay | R:code:scripts/build.mjs,code:plugin/plugin.json,code:plugin/mcp_config.json | A:TARGET_DIR,copyDir | S:只覆盖插件目录与 dist，绝不触碰 $PLUGIN_DATA 或外部 CLI 配置；目标目录固定为 agent-relay
+package-desktop.mjs[XV6M]: F:打包 Windows 便携桌面包：定位 cargo、构建 Node bundles 与 Tauri release，组装 dist-desktop/A.stand | R:code:desktop/src-tauri/Cargo.toml,code:scripts/build.mjs,code:plugin/rules/AGENTS.md | A:resolveCargo,npmInvocation,RUNTIME_FILES,OUT_DIR | S:Windows 默认 CARGO_TARGET_DIR=%TEMP%/astand-tauri-target 规避受控文件夹访问；规则文件需同时放包内与其上一级 plugin/rules
+test-v2-fixes.mjs[XQ6M]: F:v2 修复回归测试（6 项）：Turn-1 投影缓存刷新、SMB 盘符/UNC 归一、429 分类、裸 tool_calls 泄漏检测 | R:code:src/engines/acp.mjs,code:src/core/worktree.mjs,code:src/core/orchestrator.mjs | A:testTurn1DelayedProjectionFlush,testSmbCwdNormalization,testPinnedSessionRateLimitClassification | S:固定断言 6 个 bug 场景；失败汇总后以非零退出；临时目录在 finally 删除
+uninstall-antigravity.mjs[XV4T]: F:卸载 Antigravity 插件：递归删除 ~/.gemini/config/plugins/agent-relay | R:code:scripts/install-antigravity.mjs | A:TARGET_DIR | S:只删插件目录，不触碰外部 CLI 配置或用户数据目录
+wait-job.mjs[RW8L]: F:零 Token 门铃：轮询 jobs/<id>.status.json，输出精简摘要并以退出码 0/1/2/3/4/5 区分完成、失败、卡顿、宿主退出、用法错误与长任务巡检 | R:code:src/core/orchestrator.mjs,code:src/core/telemetry.mjs | A:tick,readLiveLimits,longRunAnchor,claimLongRunCheckin,rearmCommand | S:每 1.5s 轮询；--rearm 重置长任务锚点；并发门铃用 wx claim 文件去重；状态文本必须脱敏并截断
+
+===/<repository>/src/bridge/===
+stdio-bridge.mjs[IN7S]: F:stdio→Streamable HTTP 的 MCP 桥：逐行 JSON-RPC 串行转发到守护进程 /mcp，并透传 mcp-session-id 与 Bearer Token | R:code:src/daemon/http-server.mjs,code:src/daemon/mcp-factory.mjs | A:forward,parseSsePayload,enqueue,shutdown | S:stdin EOF 只退出桥自身，绝不 DELETE 会话或关闭常驻守护进程；请求严格串行以保持响应配对
+
+===/<repository>/src/core/===
+clients.mjs[DI7L]: F:上游 MCP 客户端注册表：8 种预置品牌、ast_ 令牌生成/常量时间校验、握手识别、调用计数与 AI 接入配置包 | R:code:src/core/store.mjs,code:src/daemon/http-server.mjs | A:ClientRegistry,CLIENT_PRESETS,authenticate,buildSetupBundle | S:令牌只存 secrets.json；校验用 SHA-256 + timingSafeEqual；禁用的客户端返回 403，未知令牌返回 401
+constants.mjs[CC6M]: F:共享常量：插件版本、API 供应商预置、四个 CLI 引擎元数据、默认模型与 Oracle/Hephaestus 角色规范 | R:code:src/core/store.mjs,code:src/core/orchestrator.mjs,code:src/core/paths.mjs | A:API_PROVIDERS,CLI_ENGINES_META,ROLE_SPECS,PLUGIN_VERSION | S:Oracle 固定 read-only，Hephaestus 为 workspace-write；claude/agy 的 CLI 默认模型 id 需与 constants 保持同步
+diagnostics.mjs[OS7M]: F:脱敏诊断包导出：汇总设置/客户端/扩展/遥测/最近任务与守护事件，先剥 API Key 再压缩为 zip | R:code:src/core/store.mjs,code:src/daemon/http-server.mjs | A:exportSanitizedDiagnostics,redactText,appendDaemonEvent,openInExplorer | S:secrets.json 永不打包；文本经 redactText 与实时密钥列表双重擦除；daemon-events.jsonl 超 1.5MB 自动裁剪
+extensions.mjs[DE6L]: F:技能/子 Agent MCP/模板注册表：原子持久化 extensions.json，内置两条护栏，导入本地 SKILL.md 并编译 Turn-1 注入 | R:code:src/core/orchestrator.mjs,code:src/desktop-ui/extensions-view.js | A:ExtensionRegistry,BUILTIN_SEED,compileForRole,importLocalSkill | S:注入单条≤2000、总计≤6000 字符，超出转按需路径索引；MCP 类只存元数据，密钥字段一律丢弃
+orchestrator.mjs[AB9L]: F:核心编排器：总开关/并发准入、模型队列与冷却回退、任务生命周期、门铃检查点、卡顿守门员与崩溃恢复 | R:code:src/core/store.mjs,code:src/core/telemetry.mjs,code:src/core/worktree.mjs,code:src/engines/codex.mjs | A:RelayOrchestrator,ask,poll,review,sessionAction,describeQueueExhaustion | S:阻塞等待上限 120s、正文内联上限 24000 字；同工作区写手串行或 worktree 隔离；续接钉住模型 429 报 SESSION_MODEL_RATE_LIMITED，只有全队列冷却才报 ALL_ENGINES_EXHAUSTED
+paths.mjs[IC7L]: F:引擎探测与路径解析：定位 codex/dsh/claude/agy、读取 Codex 登录与 dsh 模型、校验 Node≥24.9 并提供缓存 | R:code:src/core/constants.mjs,code:src/core/orchestrator.mjs | A:resolveCodexBinary,resolveDshBinary,detectEngines,readDshConfigModels,normalizeWorkspaceKey | S:只读 ~/.codex 与 ~/.dsh 用于探测，绝不写入；dsh 在 Node<24.9 时可回退到 portable Node24；探测结果缓存 60s
+store.mjs[PD8L]: F:状态持久化：settings/secrets/sessions/cooldowns/receipts 原子读写，API 渠道与模型 CRUD，会话与回执管理 | R:code:src/core/constants.mjs,code:src/core/paths.mjs,code:src/core/telemetry.mjs | A:RelayStore,upsertChannel,upsertModel,getRoleConfig,putReceipt,pruneExpiredSessions | S:secrets.json 以 0600 原子写入；损坏时 fail-closed；改渠道跨源必须重填 Key；模型/渠道 id 保留 cli:/dsh: 前缀
+telemetry.mjs[OO7M]: F:遥测与耗时账本：把各引擎原生 usage 归一化为统一 schema，追加 telemetry.jsonl 并汇总缓存命中率 | R:code:src/core/orchestrator.mjs,code:src/desktop-ui/app.js | A:normalizeUsage,TelemetryLogger,getSummary,recordJobPerf | S:绝不估算：上游未报缓存时字段为 null 并显示 N/A；Anthropic 输入需加 cache read/write，OpenAI 类输入已含缓存
+worktree.mjs[DR7M]: F:Git worktree 隔离：检测仓库/子目录、创建 astand/<jobId> 工作树、水合依赖与本地配置，并按改动决定保留或清理 | R:code:src/core/orchestrator.mjs,code:src/core/store.mjs | A:detectGitRepo,createJobWorktree,finalizeJobWorktree,hydrateWorktree | S:git 统一加 -c safe.directory=*；仅链接被忽略的依赖目录与受控文件；无改动且无提交才自动移除分支
+
+===/<repository>/src/daemon/===
+http-server.mjs[MN8L]: F:本地 HTTP 服务：/mcp Streamable HTTP、/api REST+SSE 与桌面静态页；逐客户端鉴权、Host/Origin 校验与会话清扫 | R:code:src/daemon/mcp-factory.mjs,code:src/core/clients.mjs,code:src/core/diagnostics.mjs,code:src/desktop-ui/app.js | A:createDaemonHttpServer,requireUiToken,extractMcpToken,broadcast,handleApi | S:强制绑定 127.0.0.1；外域 Host 返回 421；UI Token 走 X-Astand-UI-Token 或 ?uiToken；MCP 会话 30 分钟/256 上限
+index.mjs[ER8M]: F:常驻守护进程入口：解析端口/数据目录、单实例锁与复用、组装 store/telemetry/extensions/orchestrator、输出 READY 握手 | R:code:src/daemon/http-server.mjs,code:src/core/orchestrator.mjs,code:src/core/store.mjs | A:parseDaemonArgs,resolvePort,acquireStartupLock,emitReady,main | S:数据目录默认 ~/.astand 或 PLUGIN_DATA；daemon.json/lock 以 0600 写；--print-ready 输出 ASTAND_DAEMON_READY JSON 供 Rust 监管器解析
+mcp-factory.mjs[IN7M]: F:为每个已鉴权上游构建独立 McpServer：注册 4 个模型可见工具，绑定客户端归属、心跳与调用统计 | R:code:src/daemon/http-server.mjs,code:src/core/clients.mjs,code:src/core/orchestrator.mjs | A:createRelayMcpServer,MODEL_VISIBLE_TOOLS,agent_relay_ask,agent_relay_poll | S:每个 HTTP/stdio 会话独占实例，禁止跨客户端复用；工具 schema 必须与 src/server.mjs 同步；仅 4 个工具对宿主可见
+
+===/<repository>/src/desktop-ui/===
+app.js[AU8L]: F:v2 桌面控制台单页：7 个页面、中英双语、浅/深色、SSE+轮询刷新、客户端/角色/渠道/缓存/设置的全部交互 | R:code:src/desktop-ui/icons.js,code:src/desktop-ui/extensions-view.js,code:src/daemon/http-server.mjs | A:renderSidebar,renderClientsPage,renderRolesPage,renderObservabilityPage,onActionClick,boot | S:严格 CSP：无外链、无 eval、无内联事件；所有动态文本经 esc()；uiToken 存 sessionStorage 并从 URL 移除
+extensions-view.js[DU5L]: F:“技能与扩展”页面与弹窗：Skill/MCP/模板三分栏、搜索、启停、导入本地 SKILL.md 与按角色挂载 | R:code:src/desktop-ui/app.js,code:src/core/extensions.mjs | A:createExtensionsView,renderPage,renderModal,handleAction | S:视图自持 tab/搜索/草稿状态，经 host 桥接 esc/api/iconSvg；全部 data-action 驱动，无内联处理器
+icons.js[CU4M]: F:零依赖内联 SVG 图标集：UI 线性图标与 8 种上游品牌标识，支持尺寸与品牌名归一映射 | R:code:src/desktop-ui/app.js,code:src/desktop-ui/extensions-view.js | A:iconSvg,clientIconSvg,normalizeClientIconKey,CLIENT_ICON_KEYS | S:图标为纯字符串常量，无网络/外部 sprite/动态注入；UI 图标继承 currentColor
+styles.css[CU6L]: F:桌面控制台离线样式：Magpie 风格明暗令牌、侧栏/团队/模型/缓存/设置/扩展与响应式布局 | R:code:src/desktop-ui/app.js,code:src/desktop-ui/template.html | A::root,html[data-theme="dark"],.app-shell,.ext-chip,@media (max-width: 640px) | S:浅色为默认，暗色仅由 html[data-theme="dark"] 切换；全离线字体与 data: SVG，不使用 CDN；含 prefers-reduced-motion 降级。
+template.html[EU4T]: F:桌面控制台 HTML 外壳：严格 CSP、初始浅色主题、内联 CSS/JS 占位符与启动状态 | R:code:src/desktop-ui/app.js,code:src/desktop-ui/styles.css,code:scripts/build-desktop-ui.mjs | A:Content-Security-Policy,/*__INLINE_CSS__*/,/*__INLINE_JS__*/,#root .boot | S:CSP 默认 default-src 'none'，仅放行内联脚本/样式、data: 图片/字体与 localhost/127.0.0.1 连接；base-uri/form-action 均为 none。
+
+===/<repository>/src/engines/===
+acp.mjs[IA9L]: F:DeepSeek Harness（dsh）ACP stdio JSON-RPC 适配器：会话创建/恢复、模型与推理档位协商、进度时间线与按 profile 隔离的 API 模型调用 | R:code:src/core/constants.mjs,code:src/core/paths.mjs,code:src/core/telemetry.mjs,code:src/engines/base.mjs | A:AcpEngine.runTurn,PromptDeadline,acpCwdEquivalent,evaluateAcpProjectionUsage,parseToolActivity | S:同一 session 全程持有 busy guard；空闲30m/绝对4h仅由真实进度续期；投影 schema 版本不符即回退；resume 结果不确定时拒绝静默新建会话。
+antigravity.mjs[IA5T]: F:Antigravity CLI（agy）无头适配器：按角色拼首轮提示，支持 --resume/--model，收集纯文本回复并归一化无 usage 遥测 | R:code:src/core/constants.mjs,code:src/core/paths.mjs,code:src/core/telemetry.mjs,code:src/engines/base.mjs | A:AntigravityCliEngine.runTurn,interruptTurn,shutdown | S:仅新会话注入角色说明，--resume 后提示须保持前缀稳定；agy 不提供 turn id/timeline/usage，首轮 sessionId 由本地时间戳合成。
+base.mjs[IG5T]: F:引擎共享基础工具：提取散文标题、构造带引擎/方法上下文的上游协议错误、跨平台终止子进程、注入 UTF-8 环境 | R:code:src/engines/acp.mjs,code:src/engines/antigravity.mjs,code:src/engines/claude-code.mjs,code:src/engines/codex.mjs | A:proseTitle,UpstreamProtocolError,safeKill,utf8Env | S:safeKill 先温和结束，1.5 秒后升级 SIGKILL；utf8Env 在 Windows 补齐 OS/SYSTEMROOT/COMSPEC 等并强制 PYTHONIOENCODING=utf-8。
+claude-code.mjs[IA6S]: F:Claude Code CLI 适配器：stream-json 驱动、新会话角色系统提示、会话恢复、Oracle 只读工具白名单与写角色权限模式 | R:code:src/core/constants.mjs,code:src/core/paths.mjs,code:src/core/telemetry.mjs,code:src/engines/base.mjs | A:ClaudeCodeEngine.runTurn,interruptTurn,shutdown | S:角色系统提示只在新建会话追加，避免 --resume 前缀破坏缓存；Oracle 仅 Read/Glob/Grep/LS；限流错误按 5 小时窗口提示重置。
+codex.mjs[IA8L]: F:原生 Codex app-server JSON-RPC 适配器：连接初始化、线程创建/恢复、回合流式时间线、审查、压缩/分叉/steer/中断与额度/模型缓存 | R:code:src/core/constants.mjs,code:src/core/paths.mjs,code:src/core/telemetry.mjs,code:src/engines/base.mjs | A:CodexEngine.ensureConnected,runTurn,runReview,compactSession,forkSession,healthCheck | S:桌面插件只在启动参数禁用，绝不逐回合传 disabledPluginIds；只读 Oracle 强制 sandbox=read-only；额度缓存45s、模型缓存5m。
+
+===/<repository>/src/===
+server.mjs[MN8L]: F:传统 stdio MCP 服务入口：注册控制台资源与 5 个模型可见工具（ask/poll/review/session/console），以及一批仅 App 可见的 UI 工具 | R:code:src/core/constants.mjs,code:src/core/orchestrator.mjs,code:src/core/store.mjs,code:src/core/telemetry.mjs | A:agent_relay_console,agent_relay_ask,agent_relay_poll,agent_relay_review,agent_relay_session,agent_relay_ui_get_state | S:仅 Codex 插件额外暴露 configure，该宿主可见 6 个工具；UI 工具均带 visibility:["app"]；数据目录优先级 --data-dir > PLUGIN_DATA > ../data。
+
+===/<repository>/src/ui/===
+app.js[AU8L]: F:MCP-Apps 侧栏控制台：团队/模型/缓存/设置四页、双语、主题与宿主样式变量、2–4s 轮询、任务时间线与通道/模型 CRUD | R:code:src/ui/styles.css,code:src/ui/template.html,code:src/server.mjs | A:createCompatibleTransport,renderTeamTab,renderModelsTab,renderCacheTab,renderSettingsTab,boot | S:严格 CSP：无外链/eval/内联事件；动态文本经 esc；宿主上下文、工具结果与 CSS 变量均白名单净化，页面隐藏时暂停轮询。
+styles.css[CU6L]: F:MCP-Apps 控制台暗色优先样式：--ar-* 设计令牌、宿主 CSS 变量回退、团队/模型/缓存/设置与任务时间线布局 | R:code:src/ui/app.js,code:src/ui/template.html | A::root,html[data-theme="light"],.app-shell,.topbar,.interrupted-row | S:默认暗色，浅色仅由 html[data-theme="light"] 覆盖；宿主 --color-*/--font-* 变量优先于本地回退；全离线无外部字体/CDN。
+template.html[EU5T]: F:MCP-App 控制台 HTML 外壳：内联样式/脚本占位符、暗色初始主题与启动状态容器 | R:code:src/ui/styles.css,code:src/ui/app.js,code:scripts/build.mjs | A:<html data-theme="dark">,/*__INLINE_CSS__*/,/*__INLINE_JS__*/,#ar-boot-status | S:构建时由 build.mjs 以函数替换器内联 CSS/JS；不得引入外链、重复 doctype 或残留占位符。

@@ -10,5 +10,9 @@ scripts/tmp-*.mjs
 *.bak
 .env
 .env.*
+.codex/
+.mcp.json
+.claude/settings.json
+opencode.json
 .DS_Store
 Thumbs.db
