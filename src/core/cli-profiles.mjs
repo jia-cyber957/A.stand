@@ -188,8 +188,12 @@ function opencodeConfigRoots(profileDir) {
   const roots = [];
   if (process.env.XDG_CONFIG_HOME) roots.push(path.join(process.env.XDG_CONFIG_HOME, "opencode"));
   roots.push(path.join(os.homedir(), ".config", "opencode"));
+  roots.push(path.join(os.homedir(), ".local", "share", "opencode"));
   if (process.platform === "win32" && process.env.APPDATA) {
     roots.push(path.join(process.env.APPDATA, "opencode"));
+  }
+  if (process.platform === "win32" && process.env.LOCALAPPDATA) {
+    roots.push(path.join(process.env.LOCALAPPDATA, "ai.opencode.desktop"));
   }
   return [...new Set(roots)];
 }
@@ -200,10 +204,10 @@ function probeOpencodeConfig(profileDir) {
       if (!fs.existsSync(root)) continue;
       const entries = fs.readdirSync(root);
       const hasAuth = entries.some((name) => /^(?:auth\.json|credentials\.json)$/i.test(name));
-      const hasConfig = entries.some((name) => /^(?:opencode\.json|config\.json)$/i.test(name));
-      if (hasAuth || hasConfig) {
+      const hasConfig = entries.some((name) => /^(?:opencode\.json|config\.json|storage|db|opencode\.db)$/i.test(name));
+      if (hasAuth || hasConfig || entries.length > 0) {
         return {
-          username: hasAuth ? "" : "本机桌面配置",
+          username: hasAuth ? "OpenCode 账号" : "本机桌面配置",
           email: "",
           loginMethod: hasAuth ? "opencode" : "local config",
           loggedIn: true,
@@ -253,7 +257,22 @@ function probeCodebuddyAccount() {
           return false;
         }
       });
-      if (hasAuthFile) {
+      const localStorageDir = path.join(root, "local_storage");
+      let hasLocalStorageAuth = false;
+      try {
+        if (fs.existsSync(localStorageDir)) {
+          const lsFiles = fs.readdirSync(localStorageDir, { withFileTypes: true });
+          hasLocalStorageAuth = lsFiles.some((ent) => {
+            if (!ent.isFile()) return false;
+            try {
+              return fs.statSync(path.join(localStorageDir, ent.name)).size > 20;
+            } catch {
+              return false;
+            }
+          });
+        }
+      } catch {}
+      if (hasAuthFile || hasLocalStorageAuth) {
         return {
           username: "CodeBuddy 本地登录态",
           email: "",

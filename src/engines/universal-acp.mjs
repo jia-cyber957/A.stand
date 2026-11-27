@@ -203,6 +203,11 @@ export class UniversalAcpEngine {
         } else pending.resolve(msg.result);
         return;
       }
+      if (msg.method === "session/update" && msg.params?.update?.sessionUpdate === "config_option_update") {
+        if (Array.isArray(msg.params.update.configOptions)) {
+          state.lastConfigOptions = msg.params.update.configOptions;
+        }
+      }
       const listener = msg.method && msg.params?.sessionId ? state.listeners.get(msg.params.sessionId) : null;
       if (listener) listener(msg);
     });
@@ -390,8 +395,18 @@ export class UniversalAcpEngine {
           new Promise((resolve) => setTimeout(() => resolve(null), MODELS_TIMEOUT_MS).unref?.()),
         ]);
         if (!state) throw new Error(`[${this.id}] model discovery timed out`);
+        state.lastConfigOptions = null;
         const created = await state.request("session/new", { cwd: process.cwd(), mcpServers: [] }, MODELS_TIMEOUT_MS);
-        const discovered = collectAcpModelOptions(created).map((model) => ({
+        let rawModels = collectAcpModelOptions(created);
+        if (!rawModels.length) {
+          if (!Array.isArray(state.lastConfigOptions)) {
+            await new Promise((r) => setTimeout(r, 350));
+          }
+          if (Array.isArray(state.lastConfigOptions)) {
+            rawModels = collectAcpModelOptions(state.lastConfigOptions);
+          }
+        }
+        const discovered = rawModels.map((model) => ({
           id: `cli:${this.id}:${model.value}`, modelName: model.value,
           displayName: model.name || model.value, displayNameZh: model.name || model.value,
           ...(model.description ? { description: model.description } : {}),

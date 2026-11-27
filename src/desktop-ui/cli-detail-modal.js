@@ -135,8 +135,9 @@ export function createCliDetailModal(host) {
     void fetchAccounts(eid);
   }
 
-  function formatAccountDisplay(eid, acc) {
+  function formatAccountDisplay(eid, acc, forceLoggedIn = false) {
     if (!acc) return "";
+    const effectiveLoggedIn = Boolean(acc.loggedIn || forceLoggedIn);
     const parts = [];
     if (acc.username && acc.email && acc.username !== acc.email) {
       parts.push(`${acc.username} (${acc.email})`);
@@ -146,12 +147,13 @@ export function createCliDetailModal(host) {
       parts.push(acc.username);
     } else if (acc.userId) {
       parts.push(eid === "doubao" ? `${L("豆包 ID", "Doubao ID")} ${acc.userId}` : acc.userId);
-    } else if (acc.loggedIn) {
+    } else if (effectiveLoggedIn) {
       if (eid === "minimax") parts.push(L("MiniMax OAuth 账号", "MiniMax OAuth account"));
       else if (eid === "deepseek-harness") parts.push(L("DeepSeek 官方账号", "DeepSeek Official Account"));
       else if (eid === "opencode") parts.push(L("本机桌面版配置", "Local Desktop Config"));
-      else if (acc.accountLabel) parts.push(acc.accountLabel);
-    } else if (acc.accountLabel && !(acc.loggedIn && acc.accountLabel === "未登录")) {
+      else if (eid === "codebuddy") parts.push(L("CodeBuddy 本地登录态", "CodeBuddy local session"));
+      else if (acc.accountLabel && acc.accountLabel !== "未登录") parts.push(acc.accountLabel);
+    } else if (acc.accountLabel) {
       parts.push(acc.accountLabel);
     }
     const raw = parts[0] || "";
@@ -206,16 +208,16 @@ export function createCliDetailModal(host) {
       .map((prof) => {
         const isDef = prof.id === "default" || prof.isDefault;
         const discoveredCount = allDiscoveredModels(eid).filter((m) => m && !m.isDefault).length;
-        const accLabel = isDef
-          ? formatAccountDisplay(eid, liveAcc) || prof.label || L("本机默认登录态", "Local default session")
-          : prof.label || prof.id;
         const loggedIn = isDef
           ? liveAcc?.status === "ready"
             ? true
             : liveAcc?.status === "logged_out"
-            ? discoveredCount > 0 && eid === "opencode"
+            ? discoveredCount > 0 && (eid === "opencode" || eid === "codebuddy")
             : Boolean(liveAcc?.loggedIn ?? (eng.loggedIn || eng.status === "ready"))
           : true;
+        const accLabel = isDef
+          ? formatAccountDisplay(eid, liveAcc, loggedIn) || prof.label || L("本机默认登录态", "Local default session")
+          : prof.label || prof.id;
         const isLoggingThis = isDef && loggingIn;
         const showLoginBtn = !isLoggingThis && (canInAppLogin || (eid === "codex" && !isDef));
         const statusText = isLoggingThis
