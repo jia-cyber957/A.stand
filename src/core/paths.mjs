@@ -3,11 +3,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CLI_ENGINES_META } from "./constants.mjs";
+import { listAllExtensibleCliDefs } from "./cli-registry.mjs";
 
 const isWin = process.platform === "win32";
 
 let detectionCache = { ts: 0, data: null };
 const DETECTION_TTL_MS = 60_000;
+let extensibleDetectionCache = { key: "", ts: 0, data: {} };
 
 function runQuick(cmd, args, timeoutMs = 4000) {
   try {
@@ -81,6 +83,40 @@ export function resolveGenericBinary(name) {
     if (cmd) return { command: cmd, useShell: true };
   }
   return { command: lines[0], useShell: false };
+}
+
+function expandWindowsEnv(raw) {
+  return String(raw || "").replace(/%([^%]+)%/g, (match, name) => {
+    const value = process.env[name] || process.env[name.toUpperCase()];
+    return value === undefined ? match : value;
+  });
+}
+
+/**
+ * Resolve an extensible CLI descriptor to a launchable binary.
+ * PATH wins; Windows install locations are expanded and checked as a fallback.
+ */
+export function resolveCliPresetBinary(def) {
+  if (!def?.command) return null;
+  const fromPath = resolveGenericBinary(def.command);
+  if (fromPath) return fromPath;
+  try {
+    if (path.isAbsolute(def.command) && fs.existsSync(def.command)) {
+      return { command: def.command, useShell: /\.(cmd|bat)$/i.test(def.command) };
+    }
+  } catch {}
+  if (!isWin) return null;
+  for (const candidate of def.windowsPaths || []) {
+    if (typeof candidate !== "string" || !candidate.trim()) continue;
+    const expanded = expandWindowsEnv(candidate.trim());
+    if (!expanded || expanded.includes("%")) continue;
+    try {
+      if (fs.existsSync(expanded)) {
+        return { command: expanded, useShell: /\.(cmd|bat)$/i.test(expanded) };
+      }
+    } catch {}
+  }
+  return null;
 }
 
 export function readCodexConfigSummary() {
@@ -231,63 +267,104 @@ function probeVersion(binInfo) {
   }
 }
 
-export function detectEngines(force = false, dataDir = "") {
+function detectExtensibleCliEngines(defs, force) {
+  const key = JSON.stringify(defs.map((d) => [d.id, d.command, d.args, d.windowsPaths]));
   const now = Date.now();
+  if (!force && extensibleDetectionCache.key === key && now - extensibleDetectionCache.ts < DETECTION_TTL_MS) {
+    return extensibleDetectionCache.data;
+  }
+  const data = {};
+  for (const def of defs) {
+    const bin = resolveCliPresetBinary(def);
+    const version = bin ? probeVersion(bin) : "";
+    const installed = Boolean(bin && version);
+    data[def.id] = {
+      ...def,
+      installed,
+      loggedIn: installed,
+      status: !bin ? "missing" : installed ? "ready" : "unauthenticated",
+      version,
+      binaryPath: bin?.command || "",
+      installCmd: def.installCmd || "",
+      loginCmd: def.loginCmd || "",
+      extensible: true,
+      custom: Boolean(def.custom),
+    };
+  }
+  extensibleDetectionCache = { key, ts: now, data };
+  return data;
+}
+
+export function detectEngines(force = false, dataDir = "", customCliEngines = []) {
+  const now = Date.now();
+  let base = null;
   if (!force && detectionCache.data && now - detectionCache.ts < DETECTION_TTL_MS) {
-    return detectionCache.data;
+    base = detectionCache.data;
+  }
+  if (!base) {
+
+    const codexBin = resolveCodexBinary();
+    const codexMeta = readCodexConfigSummary();
+    const claudeBin = resolveGenericBinary("claude");
+    const agyBin = resolveGenericBinary("agy");
+    const dshBin = resolveDshBinary(dataDir);
+    const dshVersion = dshBin && !dshBin.nodeTooOld ? probeVersion(dshBin) : "";
+    const dshReady = Boolean(dshBin && !dshBin.nodeTooOld && dshVersion);
+
+    base = {
+      codex: {
+        ...CLI_ENGINES_META.codex,
+        installed: Boolean(codexBin),
+        loggedIn: Boolean(codexBin && (codexMeta.hasAuth || process.env.OPENAI_API_KEY)),
+        status: !codexBin ? "missing" : codexMeta.hasAuth || process.env.OPENAI_API_KEY ? "ready" : "unauthenticated",
+        version: probeVersion(codexBin),
+        detectedModel: codexMeta.defaultModel || "gpt-6.2-sol",
+        binaryPath: codexBin?.command || "",
+        extensible: false,
+        custom: false,
+      },
+      "claude-code": {
+        ...CLI_ENGINES_META["claude-code"],
+        installed: Boolean(claudeBin),
+        loggedIn: Boolean(claudeBin && hasClaudeAuth()),
+        status: !claudeBin ? "missing" : hasClaudeAuth() ? "ready" : "unauthenticated",
+        version: probeVersion(claudeBin),
+        detectedModel: "",
+        binaryPath: claudeBin?.command || "",
+        extensible: false,
+        custom: false,
+      },
+      antigravity: {
+        ...CLI_ENGINES_META.antigravity,
+        installed: Boolean(agyBin),
+        loggedIn: Boolean(agyBin && hasAgyAuth()),
+        status: !agyBin ? "missing" : hasAgyAuth() ? "ready" : "unauthenticated",
+        version: probeVersion(agyBin),
+        detectedModel: "",
+        binaryPath: agyBin?.command || "",
+        extensible: false,
+        custom: false,
+      },
+      "deepseek-harness": {
+        ...CLI_ENGINES_META["deepseek-harness"],
+        installed: Boolean(dshBin),
+        loggedIn: dshReady,
+        status: !dshBin ? "missing" : dshBin.nodeTooOld ? "node_too_old" : dshReady ? "ready" : "unauthenticated",
+        version: dshVersion,
+        currentNode: dshBin?.nodeTooOld ? process.version : "",
+        requiredNode: dshBin?.nodeTooOld ? ">=24.9.0" : "",
+        detectedModel: "",
+        binaryPath: dshBin?.binJs || dshBin?.command || "",
+        extensible: false,
+        custom: false,
+      },
+    };
+
+    detectionCache = { ts: now, data: base };
   }
 
-  const codexBin = resolveCodexBinary();
-  const codexMeta = readCodexConfigSummary();
-  const claudeBin = resolveGenericBinary("claude");
-  const agyBin = resolveGenericBinary("agy");
-  const dshBin = resolveDshBinary(dataDir);
-  const dshVersion = dshBin && !dshBin.nodeTooOld ? probeVersion(dshBin) : "";
-  const dshReady = Boolean(dshBin && !dshBin.nodeTooOld && dshVersion);
-
-  const result = {
-    codex: {
-      ...CLI_ENGINES_META.codex,
-      installed: Boolean(codexBin),
-      loggedIn: Boolean(codexBin && (codexMeta.hasAuth || process.env.OPENAI_API_KEY)),
-      status: !codexBin ? "missing" : codexMeta.hasAuth || process.env.OPENAI_API_KEY ? "ready" : "unauthenticated",
-      version: probeVersion(codexBin),
-      detectedModel: codexMeta.defaultModel || "gpt-6.2-sol",
-      binaryPath: codexBin?.command || "",
-    },
-    "claude-code": {
-      ...CLI_ENGINES_META["claude-code"],
-      installed: Boolean(claudeBin),
-      loggedIn: Boolean(claudeBin && hasClaudeAuth()),
-      status: !claudeBin ? "missing" : hasClaudeAuth() ? "ready" : "unauthenticated",
-      version: probeVersion(claudeBin),
-      detectedModel: "",
-      binaryPath: claudeBin?.command || "",
-    },
-    antigravity: {
-      ...CLI_ENGINES_META.antigravity,
-      installed: Boolean(agyBin),
-      loggedIn: Boolean(agyBin && hasAgyAuth()),
-      status: !agyBin ? "missing" : hasAgyAuth() ? "ready" : "unauthenticated",
-      version: probeVersion(agyBin),
-      detectedModel: "",
-      binaryPath: agyBin?.command || "",
-    },
-    "deepseek-harness": {
-      ...CLI_ENGINES_META["deepseek-harness"],
-      installed: Boolean(dshBin),
-      loggedIn: dshReady,
-      status: !dshBin ? "missing" : dshBin.nodeTooOld ? "node_too_old" : dshReady ? "ready" : "unauthenticated",
-      version: dshVersion,
-      currentNode: dshBin?.nodeTooOld ? process.version : "",
-      requiredNode: dshBin?.nodeTooOld ? ">=24.9.0" : "",
-      detectedModel: "",
-      binaryPath: dshBin?.binJs || dshBin?.command || "",
-    },
-  };
-
-  detectionCache = { ts: now, data: result };
-  return result;
+  const extensible = detectExtensibleCliEngines(listAllExtensibleCliDefs(customCliEngines), force);
+  return { ...base, ...extensible };
 }
 
 export function readDshConfigModels() {

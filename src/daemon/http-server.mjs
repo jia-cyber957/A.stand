@@ -668,6 +668,34 @@ export async function createDaemonHttpServer({
       return;
     }
 
+    if (resource === "cli-engines") {
+      if (req.method === "POST" && segments.length === 2) {
+        const body = await readJsonBody(req);
+        if (!body.ok) return sendJson(res, body.status, { ok: false, error: body.error });
+        const result = store.upsertCustomCliEngine(body.value || {});
+        if (!result.ok) return sendJson(res, 400, { ok: false, error: result.error });
+        broadcast("state_changed");
+        sendJson(res, 200, {
+          ok: true,
+          engine: result.engine,
+          settings: store.getPublicState(),
+          state: await buildStatePayload(false, false),
+        });
+        return;
+      }
+      if (req.method === "DELETE" && id && !action) {
+        const deleted = store.deleteCustomCliEngine(id);
+        if (!deleted) return sendJson(res, 404, { ok: false, error: "Custom CLI engine not found" });
+        broadcast("state_changed");
+        sendJson(res, 200, {
+          ok: true,
+          settings: store.getPublicState(),
+          state: await buildStatePayload(false, false),
+        });
+        return;
+      }
+    }
+
     if (resource === "models") {
       if (req.method === "POST") {
         const body = await readJsonBody(req);
