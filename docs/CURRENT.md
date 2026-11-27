@@ -1,18 +1,18 @@
 # A.stand 当前状态与验收接力棒
 
 - **分支**：`main`（本地领先 `origin/main`，按用户要求暂不推送 GitHub，待验收后统一推送）
-- **最新纯代码基线**：`f083bde`（2026-11-27）
+- **最新纯代码基线**：`7526654`（2026-11-27）
 - **便携桌面包**：`dist-desktop/A.stand/a-stand.exe`（最新 `daemon.mjs` / `desktop.html` 已同步至 `dist-desktop/A.stand` 与 `%LOCALAPPDATA%\A.stand`）
 - **本机数据目录**：`%USERPROFILE%\.astand`（已手动只读复制旧插件配置；保留原 Antigravity v1 插件双轨并行）
 
-## 最近自动化回归结果（全部通过）
-- `npm run build`：6 份产物全部通过（`server.mjs` / `console.html` / `wait-job.mjs` / `daemon.mjs` / `stdio-bridge.mjs` / `desktop.html` 291.4 KB）
-- `node scripts/test-cli-platform.mjs`：**10/10 PASS**（软件内 npm 进度安装/取消、扫码/浏览器登录与防重弹、Qoder 中国/国际双卡、模型白名单、多账号隔离池、容错故障轮换与本地零 AI 交接班简报、检查更新、HTTP 端到端）
-- `node scripts/test-universal-cli.mjs`：**12/12 PASS**（通用 ACP 扁平/分组模型发现、白泽 `mode=plan` 协议级拒绝写权限、祝融放行、`session/load` 续接、真实缓存统计、429 分类、Headless argv 安全、及本机 OpenCode 真机实测 `hitRate=66%`）
-- `node scripts/test-v2-fixes.mjs`：**6/6 PASS**（Turn-1 projcache 竞态、映射盘 Worktree、单模型 429 精准报错、裸 `tool_calls` 拦截）
-- `npm run test:v2`：**10/10 PASS**（守护进程、鉴权、注册制与 Prompt、HTTP 握手、暂停拦截、stdio 桥、SSE、技能与扩展、脱敏诊断包）
-- `guard_common.py --all --links`：**PASS**（95 文件，0 阻塞，0 警告）
-- 本机实测 CLI：豆包 CLI (`doubao acp serve`, 16 模型)、MiniMax Code (`mcode acp`, CN OAuth)、Qoder 国际版 (`qodercli`) 与 Qoder 中国版 (`qoderclicn` 1.1.99 已就位)
+## 最近自动化回归与实机验收结果（全部通过）
+- `npm run build`：6 份产物全部通过（`desktop.html` 300.7 KB、`daemon.mjs` 1339.8 KB）
+- `node scripts/test-cli-platform.mjs`：**10/10 PASS**
+- `node scripts/test-universal-cli.mjs`：**12/12 PASS**（含 OpenCode 真机实测 `hitRate=66%`）
+- `node scripts/test-v2-fixes.mjs`：**6/6 PASS**
+- `npm run test:v2`：**10/10 PASS**
+- `guard_common.py --all --links`：**PASS**（96 文件，0 阻塞，0 警告）
+- **实机 7-CLI 全链路验收 + 浏览器视觉验收**：修复 Windows `.cmd` 引号转义（`windowsVerbatimArguments: true`）与 ACP `models.availableModels` 解析后，全部 7 个本机 CLI 在真实守护进程与浏览器界面下全部就绪：Codex (`74` 模型)、DeepSeek 官方账号 (`2` 模型归位至左侧账号区)、OpenCode (`18` 模型)、豆包 CLI (`16` 模型)、MiniMax Code (`4` 模型)、Qoder 中国版 (`14` 模型 / `nick5088404370`)、Qoder 国际版 (`17` 模型 / `kuo jia`)；「模型供应商」三区排版（上 CLI 容器网格 / 下左 CLI 账号与套餐 / 下右纯净 API 渠道）与 5 个 CLI 详情弹窗均无空白/报错。
 
 ## 四态验收清单
 | 功能项 | 当前状态 | 备注 |
