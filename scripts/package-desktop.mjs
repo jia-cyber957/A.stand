@@ -180,6 +180,16 @@ function main() {
   fs.mkdirSync(path.dirname(siblingRules), { recursive: true });
   fs.copyFileSync(RULES_FILE, siblingRules);
 
+  // If the repo was ever touched by a Windows Low-Integrity sandbox (e.g. Codex),
+  // inherited Low Mandatory Level causes Windows to abort a-stand.exe with 0xC0000142.
+  // Explicitly reset the packaged bundle to Medium integrity so double-clicking always works.
+  if (IS_WINDOWS) {
+    spawnSync("icacls", [OUT_DIR, "/setintegritylevel", "Medium", "/T", "/Q"], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+  }
+
   // 4. Report -----------------------------------------------------------------
   const exeSize = fs.statSync(path.join(OUT_DIR, exeName)).size;
   let folderBytes = 0;
