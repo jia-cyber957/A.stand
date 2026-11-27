@@ -4,13 +4,16 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { API_PROVIDERS, CLI_DEFAULT_MODELS_MAP, PLUGIN_VERSION } from "./constants.mjs";
-import { detectEngines, normalizeWorkspaceKey, readDshConfigModels } from "./paths.mjs";
+import { EXTENSIBLE_CLI_PRESETS, findExtensibleCliDef } from "./cli-registry.mjs";
+import { detectEngines, normalizeWorkspaceKey, readDshConfigModels, resolveCliPresetBinary } from "./paths.mjs";
 import { assertCanReuseApiKey, maskSecret } from "./store.mjs";
 import { createJobWorktree, detectGitRepo, finalizeJobWorktree } from "./worktree.mjs";
 import { AcpEngine } from "../engines/acp.mjs";
 import { AntigravityCliEngine } from "../engines/antigravity.mjs";
 import { ClaudeCodeEngine } from "../engines/claude-code.mjs";
 import { CodexEngine } from "../engines/codex.mjs";
+import { UniversalAcpEngine } from "../engines/universal-acp.mjs";
+import { UniversalHeadlessEngine } from "../engines/universal-headless.mjs";
 
 const MAX_INLINE_TEXT = 24_000;
 const MAX_BLOCKING_WAIT_MS = 120_000;
@@ -513,10 +516,45 @@ export class RelayOrchestrator {
       "claude-code": new ClaudeCodeEngine(),
       antigravity: new AntigravityCliEngine(),
     };
+    this.extensibleEngines = new Map(); // engineId -> { sig, engine }
+    this.cliModelProbes = new Map(); // engineId -> Promise (non-blocking dashboard discovery)
+    this.shuttingDown = false;
     this.jobs = new Map(); // jobId -> job state
     this.activeWriters = new Map(); // workspaceKey -> jobId
     this.stateListeners = new Set();
     this.#recoverOrphanedJobs();
+  }
+
+  // Resolve any preset/custom CLI engine on demand; built-in engines keep their dedicated adapters.
+  #getEngine(engineId) {
+    if (!engineId) return null;
+    if (this.engines[engineId]) return this.engines[engineId];
+    const def = findExtensibleCliDef(engineId, this.store.settings.customCliEngines || []);
+    if (!def) return null;
+    const sig = JSON.stringify([def.command, def.args, def.protocol, def.readOnlyMode, def.writeMode]);
+    const cached = this.extensibleEngines.get(engineId);
+    if (cached?.sig === sig) return cached.engine;
+    const Engine = def.protocol === "headless" ? UniversalHeadlessEngine : UniversalAcpEngine;
+    const engine = new Engine(def, resolveCliPresetBinary);
+    this.extensibleEngines.set(engineId, { sig, engine });
+    return engine;
+  }
+
+  // Dashboard model discovery must never block the panel. Cache hits are synchronous;
+  // misses probe in the background and emit a state refresh when the catalog lands.
+  #startCliModelProbe(engineId, engine) {
+    if (this.shuttingDown) return;
+    if (this.cliModelProbes.has(engineId)) return;
+    const probe = Promise.resolve()
+      .then(() => (this.shuttingDown ? null : engine.listModels(false)))
+      .then((models) => {
+        if (Array.isArray(models) && models.length > 0) {
+          this.#emitStateChange("cli_models_ready", { engineId, count: models.length });
+        }
+      })
+      .catch(() => {})
+      .finally(() => this.cliModelProbes.delete(engineId));
+    this.cliModelProbes.set(engineId, probe);
   }
 
   // ---- Lightweight state-change emitter (SSE consumers subscribe here) ----
@@ -937,7 +975,7 @@ export class RelayOrchestrator {
     this.#writeStatusSnapshot(job, { force: true });
     if (sid && job.interruptRequested) {
       const model = this.store.getModelById(job.modelId);
-      void this.engines[job.engine]?.interruptTurn?.(sid, model)?.catch(() => {});
+      void this.#getEngine(job.engine)?.interruptTurn?.(sid, model)?.catch(() => {});
     }
   }
 
@@ -1861,7 +1899,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
         for (let idx = 0; idx < available.length; idx++) {
           const model = available[idx];
           const engineId = model.engine;
-          const engine = this.engines[engineId];
+          const engine = this.#getEngine(engineId);
           if (!engine) continue;
 
           job.engine = engineId;
@@ -2360,7 +2398,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
     if (!job || job.status !== "running") {
       return { ok: false, text: `Job ${jobId} is not running.` };
     }
-    const engine = this.engines[job.engine];
+    const engine = this.#getEngine(job.engine);
     const model = this.store.getModelById(job.modelId);
     job.interruptRequested = true;
     this.#recordActivity(job, { type: "interrupt", summary: "Interrupt requested" });
@@ -2547,7 +2585,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
         for (let idx = 0; idx < available.length; idx++) {
           const model = available[idx];
           const engineId = model.engine;
-          const engine = this.engines[engineId];
+          const engine = this.#getEngine(engineId);
           if (!engine) continue;
 
           job.engine = engineId;
@@ -3066,7 +3104,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       return { ok: false, text: `No active session found for role=${role}.` };
     }
 
-    const engine = this.engines[rec.engine];
+    const engine = this.#getEngine(rec.engine);
     if (action === "reset") {
       if (rec.engine === "codex") await this.engines.codex.deleteSession(rec.sessionId);
       this.store.deleteSessionById(rec.sessionId);
@@ -3158,7 +3196,7 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       return this.engines["deepseek-harness"].testApiConnection(connection);
     }
 
-    const detected = detectEngines(true, this.store.dataDir);
+    const detected = detectEngines(true, this.store.dataDir, this.store.settings.customCliEngines || []);
     const engineId = input.engine || "codex";
     const info = detected[engineId];
     if (!info || !info.installed) {
@@ -3183,6 +3221,29 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
         return { ok: false, error: err?.message || String(err) };
       }
     }
+    if (info.extensible) {
+      const engine = this.#getEngine(engineId);
+      if (engine?.healthCheck) {
+        try {
+          const health = await engine.healthCheck();
+          return {
+            ok: Boolean(health.ok && info.loggedIn),
+            latencyMs: health.latencyMs,
+            version: health.version || info.version,
+            loggedIn: info.loggedIn,
+            agentInfo: health.agentInfo || null,
+            protocol: info.protocol,
+            error: health.ok
+              ? info.loggedIn
+                ? undefined
+                : `Not logged in — run: ${info.loginCmd || `${info.command} login`}`
+              : health.error || "CLI handshake failed",
+          };
+        } catch (err) {
+          return { ok: false, error: err?.message || String(err) };
+        }
+      }
+    }
     return {
       ok: info.loggedIn,
       version: info.version,
@@ -3192,7 +3253,8 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
   }
 
   async getDashboardState(forceDetect = false, fetchRateLimits = false) {
-    const engines = detectEngines(forceDetect, this.store.dataDir);
+    const customCliEngines = this.store.settings.customCliEngines || [];
+    const engines = detectEngines(forceDetect, this.store.dataDir, customCliEngines);
     const dshEngine = this.engines["deepseek-harness"];
     const dshSyncEnabled = engines["deepseek-harness"]?.status === "ready" && (forceDetect || fetchRateLimits);
     let codexRateLimits = this.engines.codex.latestRateLimits;
@@ -3263,6 +3325,26 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       });
     }
     const settings = this.store.getPublicState();
+    const cliSubModels = {
+      codex: codexModels,
+      ...CLI_DEFAULT_MODELS_MAP,
+    };
+    const installedAcp = Object.entries(engines).filter(
+      ([, info]) => info?.extensible && info.installed && info.protocol === "acp"
+    );
+    for (const [id] of installedAcp) {
+      const engine = this.#getEngine(id);
+      if (!engine?.listModels) continue;
+      if (Array.isArray(engine.latestModels) && engine.latestModels.length > 0) {
+        cliSubModels[id] = engine.latestModels;
+      } else {
+        this.#startCliModelProbe(id, engine);
+      }
+    }
+    const cliEnginesMeta = {};
+    for (const [id, info] of Object.entries(engines)) {
+      cliEnginesMeta[id] = { ...info };
+    }
 
     return {
       settings,
@@ -3273,10 +3355,10 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       dshModels,
       dshModelsSynced: dshEngine.modelsFetchedAt > 0,
       dshChannels: [...dshChannelMap.values()],
-      cliSubModels: {
-        codex: codexModels,
-        ...CLI_DEFAULT_MODELS_MAP,
-      },
+      cliEnginePresets: EXTENSIBLE_CLI_PRESETS,
+      customCliEngines,
+      cliEnginesMeta,
+      cliSubModels,
       cooldowns: this.store.getAllActiveCooldowns(),
       sessions: this.store.listSessions(),
       telemetry: this.telemetry.getSummary(30),
@@ -3374,9 +3456,14 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
   }
 
   async shutdown() {
+    this.shuttingDown = true;
     for (const job of this.jobs.values()) {
       if (job.status === "running") this.#markJobTerminal(job, "interrupted", job.error || CRASH_RECOVERY_ERROR);
     }
-    await Promise.allSettled(Object.values(this.engines).map((e) => e.shutdown?.()));
+    const engines = [
+      ...Object.values(this.engines),
+      ...[...this.extensibleEngines.values()].map((entry) => entry.engine),
+    ];
+    await Promise.allSettled(engines.map((e) => e.shutdown?.()));
   }
 }

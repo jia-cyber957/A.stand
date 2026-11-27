@@ -1,7 +1,8 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { API_PROVIDERS, DEFAULT_MODELS } from "./constants.mjs";
+import { API_PROVIDERS, CLI_ENGINES_META, DEFAULT_MODELS } from "./constants.mjs";
+import { EXTENSIBLE_CLI_PRESETS, MAX_CUSTOM_ENGINES, sanitizeCustomCliEngine } from "./cli-registry.mjs";
 import { normalizeWorkspaceKey, readDshConfigModels } from "./paths.mjs";
 
 export function isDynamicModelId(id) {
@@ -22,6 +23,19 @@ function assertCustomId(id) {
 
 function isValidModelRef(id, validIds) {
   return validIds.has(id) || isDynamicModelId(id);
+}
+
+function sanitizeCustomCliEngineList(raw) {
+  const out = [];
+  const seen = new Set();
+  for (const item of Array.isArray(raw) ? raw : []) {
+    if (out.length >= MAX_CUSTOM_ENGINES) break;
+    const result = sanitizeCustomCliEngine(item);
+    if (!result.ok || seen.has(result.engine.id)) continue;
+    seen.add(result.engine.id);
+    out.push(result.engine);
+  }
+  return out;
 }
 
 function atomicWriteJson(filePath, data, mode) {
@@ -165,6 +179,7 @@ export class RelayStore {
       },
       models: structuredClone(DEFAULT_MODELS),
       channels: [],
+      customCliEngines: [],
     };
   }
 
@@ -263,6 +278,7 @@ export class RelayStore {
       },
       models: mergedModels,
       channels,
+      customCliEngines: sanitizeCustomCliEngineList(raw.customCliEngines),
     };
     if (legacy.length && JSON.stringify(migratedKeys) !== JSON.stringify(this.secrets.apiKeys)) {
       this.secrets.apiKeys = migratedKeys;
@@ -544,16 +560,25 @@ export class RelayStore {
         const engine = parts.slice(0, sep);
         const modelName = parts.slice(sep + 1);
         if (engine && modelName) {
+          const def =
+            CLI_ENGINES_META[engine] ||
+            EXTENSIBLE_CLI_PRESETS.find((p) => p.id === engine) ||
+            (this.settings.customCliEngines || []).find((e) => e.id === engine);
+          const isDefault = modelName === "default";
+          const label = def?.labelEn || def?.labelZh || def?.name || engine;
           return {
             id: modelId,
-            name: modelName,
+            name: isDefault ? `${label} (Default)` : modelName,
+            displayName: isDefault ? `${label} (Default)` : modelName,
+            displayNameZh: isDefault ? `${def?.labelZh || label}（默认）` : modelName,
             mode: "cli",
             engine,
-            modelName,
+            modelName: isDefault ? "" : modelName,
             providerId: engine,
             baseUrl: "",
-            builtin: true,
+            builtin: !def?.custom,
             dynamic: true,
+            isDefault,
             apiKey: "",
           };
         }
@@ -890,6 +915,33 @@ export class RelayStore {
     if (!target || target.builtin) return false;
     const models = this.settings.models.filter((m) => m.id !== modelId);
     this.#commitLibrary({ ...this.settings, models }, { removedIds: [modelId], keyRemovals: [modelId] });
+    return true;
+  }
+
+  upsertCustomCliEngine(input) {
+    const result = sanitizeCustomCliEngine(input);
+    if (!result.ok) return result;
+    const list = Array.isArray(this.settings.customCliEngines) ? [...this.settings.customCliEngines] : [];
+    const index = list.findIndex((engine) => engine.id === result.engine.id);
+    if (index >= 0) {
+      list[index] = result.engine;
+    } else {
+      if (list.length >= MAX_CUSTOM_ENGINES) {
+        return { ok: false, error: `At most ${MAX_CUSTOM_ENGINES} custom CLI engines are allowed` };
+      }
+      list.push(result.engine);
+    }
+    this.settings.customCliEngines = list;
+    this.saveSettings();
+    return { ok: true, engine: result.engine };
+  }
+
+  deleteCustomCliEngine(id) {
+    const list = Array.isArray(this.settings.customCliEngines) ? this.settings.customCliEngines : [];
+    const next = list.filter((engine) => engine.id !== id);
+    if (next.length === list.length) return false;
+    this.settings.customCliEngines = next;
+    this.saveSettings();
     return true;
   }
 
