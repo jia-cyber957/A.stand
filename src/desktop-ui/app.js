@@ -1566,26 +1566,47 @@ function renderBlockedState(icon, title, desc, allowRetry) {
   </div>`;
 }
 
+let lastRenderedHtml = "";
+
+const SCROLL_PRESERVE_SELECTORS = [
+  ".nav",
+  ".modal-body",
+  ".cli-preset-list",
+  ".cascade-left",
+  ".cascade-right",
+  ".picker-list",
+  ".model-check-grid",
+  ".prompt-box",
+  ".code-box",
+  ".json-box",
+];
+
+function captureInnerScrolls(root) {
+  const saved = [];
+  for (const sel of SCROLL_PRESERVE_SELECTORS) {
+    const nodes = root.querySelectorAll(sel);
+    nodes.forEach((node, idx) => {
+      if (node.scrollTop > 0 || node.scrollLeft > 0) {
+        saved.push({ sel, idx, top: node.scrollTop, left: node.scrollLeft });
+      }
+    });
+  }
+  return saved;
+}
+
+function restoreInnerScrolls(root, saved) {
+  for (const item of saved) {
+    const nodes = root.querySelectorAll(item.sel);
+    const node = nodes[item.idx];
+    if (!node) continue;
+    if (item.top > 0) node.scrollTop = item.top;
+    if (item.left > 0) node.scrollLeft = item.left;
+  }
+}
+
 function render() {
   const root = document.getElementById("root");
   if (!root) return;
-
-  // Page switches reset the scroll to the top; every other render preserves main + modal scroll positions.
-  const scrollEl = document.querySelector('[data-scroll-root="1"]');
-  if (scrollEl && !ui.resetScroll) ui.scrollTop = scrollEl.scrollTop;
-  const modalBodyScroll = document.querySelector(".modal-body")?.scrollTop ?? null;
-  const presetListScroll = document.querySelector(".cli-preset-list")?.scrollTop ?? null;
-  if (ui.page === "activity" && !ui.resetScroll) getActivityView().captureScroll();
-  if (ui.resetScroll) ui.resetScroll = false;
-
-  const active = document.activeElement;
-  const focusKey = active && active.dataset ? active.dataset.focusKey : "";
-  let caret = null;
-  try {
-    if (focusKey && typeof active.selectionStart === "number") caret = active.selectionStart;
-  } catch {
-    caret = null;
-  }
 
   let html;
   if (ui.fatal) {
@@ -1598,18 +1619,34 @@ function render() {
     ${renderOverlay()}
     ${ui.toast ? `<div class="toast ${ui.toastKind === "error" ? "error" : ""}" role="status">${ui.toastKind === "error" ? iconSvg("alert") : iconSvg("checkCircle")}<span>${esc(ui.toast)}</span></div>` : ""}`;
   }
+
+  // Skip no-op DOM teardowns so background SSE/poll ticks never flicker or reset hover/scroll state.
+  if (html === lastRenderedHtml && !ui.resetScroll) {
+    return;
+  }
+
+  // Page switches reset the scroll to the top; every other render preserves main + all inner scroll positions.
+  const scrollEl = document.querySelector('[data-scroll-root="1"]');
+  if (scrollEl && !ui.resetScroll) ui.scrollTop = scrollEl.scrollTop;
+  const innerScrolls = ui.resetScroll ? [] : captureInnerScrolls(root);
+  if (ui.page === "activity" && !ui.resetScroll) getActivityView().captureScroll();
+  if (ui.resetScroll) ui.resetScroll = false;
+
+  const active = document.activeElement;
+  const focusKey = active && active.dataset ? active.dataset.focusKey : "";
+  let caret = null;
+  try {
+    if (focusKey && typeof active.selectionStart === "number") caret = active.selectionStart;
+  } catch {
+    caret = null;
+  }
+
+  lastRenderedHtml = html;
   root.innerHTML = html;
 
   const nextScroll = document.querySelector('[data-scroll-root="1"]');
   if (nextScroll) nextScroll.scrollTop = ui.scrollTop;
-  if (modalBodyScroll != null) {
-    const nextModalBody = root.querySelector(".modal-body");
-    if (nextModalBody) nextModalBody.scrollTop = modalBodyScroll;
-  }
-  if (presetListScroll != null) {
-    const nextPresetList = root.querySelector(".cli-preset-list");
-    if (nextPresetList) nextPresetList.scrollTop = presetListScroll;
-  }
+  restoreInnerScrolls(root, innerScrolls);
   if (ui.page === "activity") getActivityView().restoreScroll();
 
   if (focusKey) {

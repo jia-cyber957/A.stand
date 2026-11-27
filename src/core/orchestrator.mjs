@@ -666,14 +666,17 @@ export class RelayOrchestrator {
   }
 
   // Dashboard model discovery must never block the panel. Cache hits are synchronous;
-  // misses probe in the background and emit a state refresh when the catalog lands.
-  #startCliModelProbe(engineId, engine) {
+  // misses probe in the background and emit a state refresh ONLY when the catalog actually changes.
+  #startCliModelProbe(engineId, engine, force = false) {
     if (this.shuttingDown) return;
     if (this.cliModelProbes.has(engineId)) return;
+    const prevSig = JSON.stringify((engine.latestModels || []).map((m) => m?.id || ""));
     const probe = Promise.resolve()
-      .then(() => (this.shuttingDown ? null : engine.listModels(false)))
+      .then(() => (this.shuttingDown ? null : engine.listModels(force)))
       .then((models) => {
-        if (Array.isArray(models) && models.length > 0) {
+        if (!Array.isArray(models) || models.length === 0) return;
+        const nextSig = JSON.stringify(models.map((m) => m?.id || ""));
+        if (nextSig !== prevSig) {
           this.#emitStateChange("cli_models_ready", { engineId, count: models.length });
         }
       })
@@ -710,11 +713,17 @@ export class RelayOrchestrator {
 
   #startCliAccountProbe(engineId, def) {
     if (this.shuttingDown || this.cliAccountProbes.has(engineId)) return;
+    const prev = this.cliAccountSnapshots.get(engineId);
+    const sigOf = (a) =>
+      a ? JSON.stringify([a.status, a.loggedIn, a.username, a.email, a.userId, a.accountLabel, a.loginMethod]) : "";
+    const prevSig = sigOf(prev);
     const probe = Promise.resolve()
       .then(() => probeCliAccountInfo(engineId, def, ""))
       .then((account) => {
         this.cliAccountSnapshots.set(engineId, account);
-        this.#emitStateChange("cli_account_ready", { engineId });
+        if (sigOf(account) !== prevSig) {
+          this.#emitStateChange("cli_account_ready", { engineId });
+        }
       })
       .catch(() => {})
       .finally(() => this.cliAccountProbes.delete(engineId));
@@ -3588,8 +3597,13 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
       if (Array.isArray(engine.latestModels) && engine.latestModels.length > 0) {
         cliSubModels[id] = engine.latestModels;
       }
-      if (!hasConcrete || forceDetect) {
-        this.#startCliModelProbe(id, engine);
+      const fetchedAt = Number(engine.modelsFetchedAt || 0);
+      const needsProbe =
+        forceDetect ||
+        fetchedAt === 0 ||
+        (!hasConcrete && Date.now() - fetchedAt >= 60_000);
+      if (needsProbe) {
+        this.#startCliModelProbe(id, engine, forceDetect);
       }
     }
     const cliAccounts = this.#getCliAccountsSnapshot(engines);
