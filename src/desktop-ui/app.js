@@ -16,6 +16,7 @@
 import { iconSvg, clientIconSvg, CLIENT_ICON_KEYS, normalizeClientIconKey } from "./icons.js";
 import { createExtensionsView } from "./extensions-view.js";
 import { createActivityView } from "./activity-view.js";
+import { createCliCatalogModal } from "./cli-catalog-modal.js";
 
 /* ==========================================================================
    Constants
@@ -891,6 +892,20 @@ function modelCatalog() {
     }
   }
 
+  // Ensure every installed/custom extensible CLI (ACP or Headless like Doubao) has a selectable default entry.
+  for (const [eid, eng] of Object.entries(engines)) {
+    if (!eng?.extensible || !eng.installed) continue;
+    const defId = `cli:${eid}:default`;
+    add({
+      id: defId,
+      name: `${engineLabel(eid)}${isEn() ? " (Default)" : "（默认）"}`,
+      engine: eid,
+      mode: "cli",
+      modelName: "",
+      isDefault: true,
+    });
+  }
+
   for (const m of settings.models || []) {
     if (m.mode === "cli") continue;
     add({
@@ -1228,6 +1243,30 @@ function watchSseStaleness() {
    ========================================================================== */
 let extensionsView = null;
 let activityView = null;
+let cliCatalogModal = null;
+
+function getCliCatalogModal() {
+  if (!cliCatalogModal) {
+    cliCatalogModal = createCliCatalogModal({
+      esc,
+      api,
+      iconSvg,
+      scheduleRender,
+      openModal,
+      closeModal,
+      showToast,
+      showError,
+      copyText,
+      isEn,
+      getState: () => state,
+      applyPayload,
+      refreshState,
+      engineLabel,
+      engineTag,
+    });
+  }
+  return cliCatalogModal;
+}
 
 // The extensions page owns its own rendering; app.js only supplies the host bridge.
 function getExtensionsView() {
@@ -1838,19 +1877,32 @@ function renderEngineRow(eid) {
   const test = ui.channelTest && ui.channelTest.key === `cli:${eid}` ? ui.channelTest : null;
   const rl = state?.codexRateLimits;
   const showQuota = eid === "codex" && rl;
+  const isCustom = Boolean(eng.custom || meta.custom);
+  const proto = eng.protocol || meta.protocol || "";
+  const protoPill =
+    proto === "acp"
+      ? `<span class="tag blue">ACP</span>`
+      : proto === "headless"
+      ? `<span class="tag plain">Headless</span>`
+      : "";
+  const subCount = (state?.cliSubModels?.[eid] || []).filter((m) => !m.isDefault).length;
+
   return `<div class="engine-row ${showQuota ? "has-quota" : ""}">
     <div class="engine-avatar">${esc(engineTag(eid))}</div>
     <div class="engine-main">
       <div class="engine-name">
         <span class="truncate">${esc(label)}</span>
         ${engineStatusPill(eng)}
+        ${protoPill}
+        ${isCustom ? `<span class="tag violet">${esc(isEn() ? "Custom" : "自定义")}</span>` : ""}
+        ${subCount > 0 ? `<span class="tag plain nums">${esc(isEn() ? `${subCount} models` : `${subCount} 模型`)}</span>` : ""}
         ${eid === "codex" && eng.detectedModel ? `<span class="tag plain mono">${esc(eng.detectedModel)}</span>` : ""}
         ${eid === "codex" && rl?.planType ? `<span class="tag plain mono">${esc(String(rl.planType).toUpperCase())}</span>` : ""}
       </div>
       <div class="engine-meta">
         ${version ? `<span class="mono">${esc(version)}</span>` : ""}
         ${eng.installed ? "" : meta.installCmd ? `<span class="mono truncate" style="max-width:320px">${esc(meta.installCmd)}</span>` : ""}
-        ${test ? `<span style="color:${test.ok ? "var(--green)" : "var(--red)"}">${esc(test.ok ? t("connOk") : `${t("connFail")}${test.error ? `: ${test.error}` : ""}`)}</span>` : ""}
+        ${test ? `<span style="color:${test.ok ? "var(--green)" : "var(--red)"}">${esc(test.ok ? `${t("connOk")}${test.latencyMs ? ` (${test.latencyMs}ms)` : ""}` : `${t("connFail")}${test.error ? `: ${test.error}` : ""}`)}</span>` : ""}
       </div>
       ${showQuota ? `<div class="engine-quota">${renderQuotaBars()}</div>` : ""}
       ${cooled.length
@@ -1868,6 +1920,10 @@ function renderEngineRow(eid) {
       <button class="btn xs" data-action="test-cli" data-engine="${esc(eid)}" ${test && test.loading ? "disabled" : ""}>
         ${iconSvg("zap")} ${esc(test && test.loading ? t("testing") : t("testConnection"))}
       </button>
+      ${isCustom
+        ? `<button class="btn xs" data-action="cli-open-custom" data-engine="${esc(eid)}" title="${esc(t("edit"))}">${iconSvg("edit")}</button>
+           <button class="btn xs danger" data-action="cli-delete-custom" data-engine="${esc(eid)}" title="${esc(t("delete"))}">${iconSvg("trash")}</button>`
+        : ""}
     </div>
   </div>`;
 }
@@ -1927,6 +1983,19 @@ function renderChannelCard(channel) {
 
 function renderProvidersPage() {
   const engines = state?.engines || {};
+  const allIds = Object.keys(engines);
+  const orderedIds = [
+    ...ENGINE_ORDER.filter((id) => id in engines),
+    ...allIds.filter((id) => !ENGINE_ORDER.includes(id)),
+  ];
+  // Show installed + custom CLIs by default so the page stays crisp; tuck uninstalled presets into "+ 添加 CLI 引擎".
+  const visibleEngineIds = orderedIds.filter((id) => {
+    const e = engines[id];
+    return Boolean(e && (e.installed || e.custom));
+  });
+  const displayedIds = visibleEngineIds.length ? visibleEngineIds : ENGINE_ORDER.filter((id) => id in engines);
+  const hiddenCount = Math.max(0, orderedIds.length - displayedIds.length);
+
   const customChannels = state?.settings?.channels || [];
   const extraChannels = (state?.dshChannels || []).filter((c) => !customChannels.some((x) => x.id === c.id));
   const channels = [...customChannels.map((c) => ({ ...c, source: c.source || "custom" })), ...extraChannels];
@@ -1934,12 +2003,21 @@ function renderProvidersPage() {
   return `<div class="content-inner">
     <div class="section-head">
       <span class="section-title">${esc(t("cliEngines"))}</span>
+      <span class="section-sub nums">${displayedIds.length}</span>
       <div class="spacer"></div>
       <button class="btn xs" data-action="refresh-detect" ${ui.detecting ? "disabled" : ""}>${iconSvg("refresh")} ${esc(ui.detecting ? t("loading") : t("refreshDetect"))}</button>
+      <button class="btn xs primary" data-action="cli-open-catalog">${iconSvg("plus")} ${esc(isEn() ? "Add CLI engine" : "添加 CLI 引擎")}</button>
     </div>
     <div class="card-list">
-      ${ENGINE_ORDER.map(renderEngineRow).join("")}
+      ${displayedIds.map(renderEngineRow).join("")}
     </div>
+    ${hiddenCount > 0
+      ? `<div class="field-hint" style="margin-top:-6px">${esc(
+          isEn()
+            ? `${hiddenCount} more official CLI presets available (Doubao, Qoder, MiniMax, Kimi, CodeBuddy, Qwen, Gemini, Cursor…) — click “Add CLI engine” to install or add a custom ACP CLI.`
+            : `另有 ${hiddenCount} 个官方 CLI 预设可按需接入（豆包 CLI、Qoder、MiniMax、Kimi、CodeBuddy、Qwen、Gemini、Cursor 等），点击右上角「添加 CLI 引擎」查看或自定义 ACP 容器。`
+        )}</div>`
+      : ""}
     <div class="section-head" style="margin-top:6px">
       <span class="section-title">${esc(t("apiChannels"))}</span>
       <div class="spacer"></div>
@@ -2400,6 +2478,7 @@ function renderOverlay() {
   if (modal.type === "client") return renderClientDrawer(modal);
   if (modal.type === "setup") return renderSetupModal();
   if (modal.type === "channel") return renderChannelModal();
+  if (modal.type === "cli-catalog") return getCliCatalogModal().renderModal(overlayShell, modalHeader);
   if (modal.type === "extension") return getExtensionsView().renderModal(modal);
   if (modal.type === "confirm") return renderConfirmModal();
   return "";
@@ -2790,12 +2869,15 @@ async function onActionClick(event) {
   if (!target) return;
   const action = target.dataset.action;
 
-  // Skills & Extensions and Live Activity own their scoped actions.
+  // Skills & Extensions, Live Activity and CLI Catalog own their scoped actions.
   if (action.startsWith("ext-")) {
     if (await getExtensionsView().handleAction(action, target)) return;
   }
   if (action.startsWith("act-")) {
     if (await getActivityView().handleAction(action, target, event)) return;
+  }
+  if (action.startsWith("cli-")) {
+    if (await getCliCatalogModal().handleAction(action, target)) return;
   }
 
   switch (action) {
@@ -3186,13 +3268,13 @@ async function onActionClick(event) {
     }
     case "test-cli": {
       const eid = target.dataset.engine;
-      ui.channelTest = { key: `cli:${eid}`, loading: true, ok: false, error: "" };
+      ui.channelTest = { key: `cli:${eid}`, loading: true, ok: false, error: "", latencyMs: 0 };
       scheduleRender();
       try {
         const res = await api("/api/test-connection", { method: "POST", body: { mode: "cli", engine: eid } });
-        ui.channelTest = { key: `cli:${eid}`, loading: false, ok: Boolean(res?.ok), error: res?.error || "" };
+        ui.channelTest = { key: `cli:${eid}`, loading: false, ok: Boolean(res?.ok), error: res?.error || "", latencyMs: res?.latencyMs || 0 };
       } catch (err) {
-        ui.channelTest = { key: `cli:${eid}`, loading: false, ok: false, error: err?.message || "" };
+        ui.channelTest = { key: `cli:${eid}`, loading: false, ok: false, error: err?.message || "", latencyMs: 0 };
       }
       scheduleRender();
       return;
@@ -3544,6 +3626,10 @@ function onInput(event) {
   if (!el || !el.dataset) return;
   if (el.dataset.extField) {
     getExtensionsView().handleInput(el);
+    return;
+  }
+  if (el.dataset.cliField) {
+    getCliCatalogModal().handleInput(el);
     return;
   }
   if (el.dataset.ui === "client-search") {
