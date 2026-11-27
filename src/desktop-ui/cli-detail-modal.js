@@ -196,7 +196,7 @@ export function createCliDetailModal(host) {
     const profiles = rawProfiles;
     const supportsMulti =
       view.accountsData?.supportsMultiAccountIsolation ??
-      ["codex", "deepseek-harness", "qoder", "qoder-cn", "opencode", "codebuddy"].includes(eid);
+      ["codex", "deepseek-harness", "qoder", "qoder-cn", "opencode", "codebuddy", "minimax", "doubao"].includes(eid);
     const canInAppLogin = Boolean(
       eng.extensible || ["doubao", "qoder", "qoder-cn", "minimax", "opencode", "codebuddy"].includes(eid)
     );
@@ -266,38 +266,27 @@ export function createCliDetailModal(host) {
 
     const addProfileHtml = supportsMulti
       ? view.addingProfile
-        ? `<div class="cli-detail-add-form">
-            <input class="input" data-cd-field="profileLabel" data-focus-key="cd-prof-label" placeholder="${esc(L("输入账号备注（如：备用号 2）", "Account label (e.g. Backup #2)"))}" value="${esc(view.profileLabelDraft)}" maxlength="40" />
-            <button class="btn xs primary" data-action="cd-save-profile">${esc(L("创建并登录", "Create & sign in"))}</button>
-            <button class="btn xs ghost" data-action="cd-cancel-add-profile">${esc(L("取消", "Cancel"))}</button>
+        ? `<div class="stack" style="gap:6px">
+            <div class="cli-detail-add-form">
+              <input class="input" data-cd-field="profileLabel" data-focus-key="cd-prof-label" placeholder="${esc(L("输入账号备注（如：备用号 2）", "Account label (e.g. Backup #2)"))}" value="${esc(view.profileLabelDraft)}" maxlength="40" />
+              <button class="btn xs primary" data-action="cd-save-profile">${esc(L("创建并登录", "Create & sign in"))}</button>
+              <button class="btn xs ghost" data-action="cd-cancel-add-profile">${esc(L("取消", "Cancel"))}</button>
+            </div>
+            ${eid === "doubao"
+              ? `<div class="cli-detail-multi-tip" style="color:var(--amber)">${esc(L("提示：豆包切号时会短暂切换本机豆包登录态（若外部终端同时在使用豆包也会同步切换），后台会自动备份原号并仅在额度不足或手动切号时执行。", "Note: switching Doubao accounts swaps the local Doubao login session (affecting external Doubao CLI sessions); your original account is backed up automatically."))}</div>`
+              : ""}
           </div>`
         : `<button class="cli-detail-add-btn" data-action="cd-open-add-profile">
             ${iconSvg("plus", 13)}
-            <span>${esc(L(`添加另一个 ${engineLabel(eid)} 账号（独立目录隔离，异常自动轮换）`, `Add another ${engineLabel(eid)} account (isolated profile, auto-rotation)`))}</span>
+            <span>${esc(L(`添加另一个 ${engineLabel(eid)} 账号（多账号轮换）`, `Add another ${engineLabel(eid)} account (multi-account rotation)`))}</span>
           </button>`
       : "";
-
-    const singleAccountNote =
-      !supportsMulti && (eid === "doubao" || eid === "minimax")
-        ? `<div class="cli-detail-multi-tip">${esc(
-            eid === "doubao"
-              ? L(
-                  "豆包 CLI 登录态托管于系统共享守护服务，暂无法同机并行多开账号；换号请直接点上方「切换/重登」扫码。",
-                  "Doubao CLI shares a single OS daemon, so isolated multi-account isn't supported; use Re-sign in above to switch accounts."
-                )
-              : L(
-                  "MiniMax Code 凭证托管于系统凭据管理器，暂无法同机并行多开账号；换号请直接点上方「切换/重登」。",
-                  "MiniMax Code stores auth in the OS credential manager, so isolated multi-account isn't supported; use Re-sign in above to switch accounts."
-                )
-          )}</div>`
-        : "";
 
     return `<div class="cli-detail-card">
       ${rowsHtml}
       ${cooldownHtml}
       ${multiTip}
       ${addProfileHtml}
-      ${singleAccountNote}
     </div>
     ${renderLoginBar(eid)}
     ${renderInstallBar(eid)}`;

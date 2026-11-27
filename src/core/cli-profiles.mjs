@@ -8,7 +8,16 @@ const ACCOUNT_CACHE_TTL_MS = 60_000;
 const ACCOUNT_PROBE_TIMEOUT_MS = 8_000;
 const PROFILE_ID_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 const ENGINE_ID_RE = /^[a-z0-9][a-z0-9_-]{1,31}$/;
-const ISOLATED_ENGINES = Object.freeze(["codex", "deepseek-harness", "qoder", "qoder-cn", "opencode", "codebuddy"]);
+const ISOLATED_ENGINES = Object.freeze([
+  "codex",
+  "deepseek-harness",
+  "qoder",
+  "qoder-cn",
+  "opencode",
+  "codebuddy",
+  "minimax",
+  "doubao",
+]);
 
 /** @type {Map<string, { ts: number, value: object }>} */
 const accountCache = new Map();
@@ -43,7 +52,7 @@ export function buildProfileLaunchOverlay(engineId, profileDir = "") {
   if (engineId === "deepseek-harness") return { env: { DSH_HOME: dir }, extraArgs: [] };
   if (engineId === "qoder" || engineId === "qoder-cn") return { env: {}, extraArgs: ["--config-dir", dir] };
   if (engineId === "opencode") return { env: { XDG_CONFIG_HOME: dir }, extraArgs: [] };
-  if (engineId === "codebuddy") {
+  if (engineId === "codebuddy" || engineId === "minimax") {
     const env = { HOME: dir, USERPROFILE: dir };
     if (process.platform === "win32") {
       const parsed = path.parse(path.resolve(dir));
@@ -55,6 +64,97 @@ export function buildProfileLaunchOverlay(engineId, profileDir = "") {
     return { env, extraArgs: [] };
   }
   return { env: {}, extraArgs: [] };
+}
+
+function doubaoLoginRootDir() {
+  if (process.platform === "win32") {
+    const local = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
+    return path.join(local, "doubao_cli", "doubao-cli-pc-login");
+  }
+  return path.join(os.homedir(), ".doubao", "doubao-cli-pc-login");
+}
+
+function copyDirClean(src, dst) {
+  if (!fs.existsSync(src)) return false;
+  fs.rmSync(dst, { recursive: true, force: true });
+  fs.mkdirSync(path.dirname(dst), { recursive: true });
+  fs.cpSync(src, dst, { recursive: true, force: true });
+  return true;
+}
+
+/**
+ * Gracefully switch Doubao's single-service login directory using safe per-profile vault snapshots.
+ * Never destroys the original "default" snapshot; stops the shared service cleanly before swapping.
+ */
+export async function swapDoubaoAccountVault({ dataDir, targetProfileId = "default", doubaoBin = null } = {}) {
+  const cleanTarget = String(targetProfileId || "default").trim();
+  if (!dataDir) return { ok: false, error: "dataDir is required" };
+  if (cleanTarget !== "default" && !PROFILE_ID_RE.test(cleanTarget)) {
+    return { ok: false, error: "Invalid CLI profile id" };
+  }
+  const vaultRoot = path.join(path.resolve(dataDir), "cli-profiles", "doubao");
+  const activeMetaPath = path.join(vaultRoot, "active.json");
+  const liveDir = doubaoLoginRootDir();
+  fs.mkdirSync(vaultRoot, { recursive: true });
+
+  let currentId = "default";
+  try {
+    if (fs.existsSync(activeMetaPath)) {
+      const parsed = JSON.parse(fs.readFileSync(activeMetaPath, "utf8"));
+      if (parsed?.activeProfileId) currentId = String(parsed.activeProfileId);
+    }
+  } catch {}
+
+  const vaultFor = (pid) => path.join(vaultRoot, pid, "doubao-cli-pc-login");
+  const defaultVault = vaultFor("default");
+  // Always ensure the user's original login state is safely backed up under "default" first.
+  if (currentId === "default" && fs.existsSync(liveDir) && !fs.existsSync(defaultVault)) {
+    try {
+      copyDirClean(liveDir, defaultVault);
+    } catch {}
+  }
+
+  if (currentId === cleanTarget) {
+    return { ok: true, swapped: false, activeProfileId: currentId };
+  }
+
+  // Graceful stop of Doubao's shared daemon so files are unlocked cleanly.
+  const bin = doubaoBin || resolveCliPresetBinary({ command: "doubao", windowsPaths: ["%LOCALAPPDATA%\\doubao_cli\\app\\current\\doubao.exe"] });
+  if (bin) {
+    await runCli(bin, ["--service-stop"], 4000).catch(() => {});
+  }
+
+  // Save current live state back to current profile's vault (preserves refreshed tokens).
+  if (fs.existsSync(liveDir)) {
+    try {
+      copyDirClean(liveDir, vaultFor(currentId));
+    } catch (err) {
+      return { ok: false, error: `Failed to snapshot current Doubao profile: ${err?.message || err}` };
+    }
+  }
+
+  // Restore target profile's vault (or clear live dir so a brand-new profile can scan a fresh QR).
+  const targetVault = vaultFor(cleanTarget);
+  const rollbackDir = path.join(vaultRoot, ".rollback-tmp");
+  try {
+    if (fs.existsSync(liveDir)) copyDirClean(liveDir, rollbackDir);
+    fs.rmSync(liveDir, { recursive: true, force: true });
+    if (fs.existsSync(targetVault)) {
+      copyDirClean(targetVault, liveDir);
+    }
+    fs.writeFileSync(activeMetaPath, JSON.stringify({ activeProfileId: cleanTarget, updatedAt: new Date().toISOString() }, null, 2), "utf8");
+    fs.rmSync(rollbackDir, { recursive: true, force: true });
+    clearCliAccountCache("doubao");
+    return { ok: true, swapped: true, activeProfileId: cleanTarget, hasExistingSession: fs.existsSync(targetVault) };
+  } catch (err) {
+    try {
+      if (fs.existsSync(rollbackDir)) {
+        copyDirClean(rollbackDir, liveDir);
+        fs.rmSync(rollbackDir, { recursive: true, force: true });
+      }
+    } catch {}
+    return { ok: false, error: `Failed to switch Doubao profile: ${err?.message || err}` };
+  }
 }
 
 function runCli(bin, args, timeoutMs = ACCOUNT_PROBE_TIMEOUT_MS) {
@@ -298,6 +398,28 @@ function probeCodebuddyAccount(profileDir = "") {
   return { username: "", email: "", loginMethod: "codebuddy", loggedIn: false, detail: "" };
 }
 
+function probeMiniMaxAccount(profileDir = "") {
+  const home = profileDir ? path.resolve(profileDir) : os.homedir();
+  const candidates = [
+    { region: "cn", file: path.join(home, ".minimax", "auth", "prod", "cn", "mcode-public", "auth.json") },
+    { region: "global", file: path.join(home, ".minimax", "auth", "prod", "en", "mcode-public", "auth.json") },
+  ];
+  for (const c of candidates) {
+    try {
+      if (fs.existsSync(c.file) && fs.statSync(c.file).size > 20) {
+        return {
+          username: c.region === "cn" ? "MiniMax CN OAuth" : "MiniMax Global OAuth",
+          email: "",
+          loginMethod: "minimax_oauth",
+          loggedIn: true,
+          detail: c.region,
+        };
+      }
+    } catch {}
+  }
+  return { username: "", email: "", loginMethod: "minimax_oauth", loggedIn: false, detail: "" };
+}
+
 async function probeAccount(engineId, def, profileDir) {
   const base = {
     engineId,
@@ -312,6 +434,7 @@ async function probeAccount(engineId, def, profileDir) {
   if (engineId === "codex") return { ...base, ...probeCodexConfig(profileDir) };
   if (engineId === "deepseek-harness") return { ...base, ...probeDshAccount(profileDir) };
   if (engineId === "codebuddy") return { ...base, ...probeCodebuddyAccount(profileDir) };
+  if (engineId === "minimax") return { ...base, ...probeMiniMaxAccount(profileDir) };
   if (engineId === "opencode") return { ...base, ...probeOpencodeConfig(profileDir) };
 
   if (engineId === "doubao" || engineId === "qoder" || engineId === "qoder-cn" || engineId === "minimax") {

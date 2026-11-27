@@ -168,9 +168,9 @@ async function main() {
   });
 
   await test("profile isolation matrix, safe paths and launch overlays", () => {
-    const trueIds = ["codex", "deepseek-harness", "qoder", "qoder-cn", "opencode", "codebuddy"];
+    const trueIds = ["codex", "deepseek-harness", "qoder", "qoder-cn", "opencode", "codebuddy", "minimax", "doubao"];
     for (const id of trueIds) assert.equal(supportsMultiAccountIsolation(id), true, id);
-    for (const id of ["doubao", "minimax", "kimi", "qwen", "gemini", "cursor-cli", "claude-code"]) {
+    for (const id of ["kimi", "qwen", "gemini", "cursor-cli", "claude-code"]) {
       assert.equal(supportsMultiAccountIsolation(id), false, id);
     }
 
@@ -195,6 +195,9 @@ async function main() {
     const cb = buildProfileLaunchOverlay("codebuddy", codexDir);
     assert.equal(cb.env.HOME, codexDir);
     assert.equal(cb.env.USERPROFILE, codexDir);
+    const mm = buildProfileLaunchOverlay("minimax", codexDir);
+    assert.equal(mm.env.HOME, codexDir);
+    assert.equal(mm.env.USERPROFILE, codexDir);
     assert.deepEqual(buildProfileLaunchOverlay("doubao", codexDir), { env: {}, extraArgs: [] });
   });
 
@@ -242,7 +245,7 @@ async function main() {
         assert.equal(profiles[0].id, "default");
         assert.equal(profiles[0].isDefault, true);
       }
-      assert.deepEqual(store.getCliAccountProfiles("doubao"), []);
+      assert.deepEqual(store.getCliAccountProfiles("kimi"), []);
 
       const set = store.setCliModelWhitelist("qoder", ["m1", "m1", " m2 ", ""]);
       assert.deepEqual(set.modelIds, ["m1", "m2"]);
@@ -260,7 +263,7 @@ async function main() {
       assert.equal(reloaded.deleteCliAccountProfile("qoder", "default").ok, false);
       assert.equal(reloaded.updateCliAccountProfile("qoder", "default", { enabled: false }).ok, false);
       assert.equal(reloaded.deleteCliAccountProfile("qoder", added.profile.id).ok, true);
-      assert.equal(reloaded.addCliAccountProfile("doubao", "Nope").ok, false);
+      assert.equal(reloaded.addCliAccountProfile("kimi", "Nope").ok, false);
 
       fs.rmSync(path.join(dir, "settings.json"), { force: true });
       fs.writeFileSync(path.join(dir, "settings.json"), JSON.stringify({ version: 3 }), "utf8");

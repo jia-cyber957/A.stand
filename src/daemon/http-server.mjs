@@ -878,6 +878,7 @@ export async function createDaemonHttpServer({
             autoOpen: body.value?.autoOpen !== false,
             profileId,
             profileDir,
+            dataDir: store.dataDir,
             onUpdate: (snapshot) => {
               broadcast("state_changed");
               if (snapshot?.status === "succeeded") {

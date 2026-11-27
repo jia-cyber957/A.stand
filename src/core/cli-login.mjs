@@ -2,7 +2,7 @@ import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { findExtensibleCliDef } from "./cli-registry.mjs";
-import { buildProfileLaunchOverlay } from "./cli-profiles.mjs";
+import { buildProfileLaunchOverlay, swapDoubaoAccountVault } from "./cli-profiles.mjs";
 import { CLI_ENGINES_META } from "./constants.mjs";
 import { resolveCliPresetBinary } from "./paths.mjs";
 
@@ -115,7 +115,7 @@ export function buildLoginLaunchSpec(engineId, def, region = "cn", profileDir = 
       command: bin.command,
       args: ["login", "--no-browser", "--region", safeRegion],
       useShell: bin.useShell,
-      env: { ...baseEnv, NO_BROWSER: "1" },
+      env: { ...baseEnv, ...overlay.env, NO_BROWSER: "1" },
       autoOpen: resolveLoginAutoOpen(engineId, true),
     };
   }
@@ -239,6 +239,7 @@ export async function startCliLogin({
   autoOpen = true,
   profileId = "",
   profileDir = "",
+  dataDir = "",
   onUpdate = null,
 } = {}) {
   const def = resolveLoginDef(engineId, customEngines);
@@ -252,12 +253,40 @@ export async function startCliLogin({
     await new Promise((r) => setTimeout(r, 200));
   }
 
+  // For Doubao multi-account, transparently snapshot the current vault and switch to the target profile first.
+  if (engineId === "doubao" && dataDir && profileId) {
+    const swapped = await swapDoubaoAccountVault({ dataDir, targetProfileId: profileId });
+    if (!swapped.ok) return { ok: false, error: swapped.error };
+  }
+
   const spec = buildLoginLaunchSpec(engineId, def, region, profileDir);
   if (!spec.ok) return spec;
   if (profileDir) {
     try {
       fs.mkdirSync(profileDir, { recursive: true });
     } catch {}
+  }
+
+  // MiniMax CLI exits immediately with "Already signed in" on re-login unless logged out in this profile first.
+  if (engineId === "minimax") {
+    await new Promise((resolve) => {
+      const useShell = Boolean(spec.useShell) && isWin;
+      const quote = (v) => `"${String(v).replace(/"/g, '""')}"`;
+      const cmd = useShell ? process.env.ComSpec || "cmd.exe" : spec.command;
+      const args = useShell ? ["/d", "/s", "/c", `"${quote(spec.command)} "logout""`] : ["logout"];
+      execFile(
+        cmd,
+        args,
+        {
+          env: spec.env,
+          windowsHide: true,
+          timeout: 4000,
+          ...(useShell ? { windowsVerbatimArguments: true } : {}),
+          shell: false,
+        },
+        () => resolve()
+      );
+    });
   }
 
   const session = {
