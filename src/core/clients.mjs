@@ -250,7 +250,15 @@ export class ClientRegistry {
     return this.#public(this.#record(clientId));
   }
 
-  create({ label, iconKey, note } = {}) {
+  create({ label, iconKey, note, reusePending = false } = {}) {
+    if (reusePending && !cleanText(label, 80) && !presetByKey(iconKey)) {
+      const existing = this.clients.find(
+        (c) => c.status === "waiting" && !c.firstSeenAt && !c.customName && c.totalCalls === 0 && c.enabled !== false
+      );
+      if (existing) {
+        return { client: this.#public(existing), token: this.#token(existing.id), reused: true };
+      }
+    }
     const preset = presetByKey(iconKey);
     const now = new Date().toISOString();
     const client = {
@@ -367,13 +375,14 @@ export class ClientRegistry {
     return true;
   }
 
-  buildSetupBundle(clientId, { httpUrl, bridgeScript, rulesFile } = {}) {
+  buildSetupBundle(clientId, { httpUrl, bridgeScript, rulesFile, skillsFile } = {}) {
     const client = this.#record(clientId);
     if (!client) return null;
     const token = this.#token(clientId);
     const url = cleanText(httpUrl, 400) || "http://127.0.0.1:3426/mcp";
     const bridge = bridgeScript || path.join(process.cwd(), "dist", "stdio-bridge.mjs");
     const rules = rulesFile || path.join(process.cwd(), "plugin", "rules", "AGENTS.md");
+    const skills = skillsFile || path.join(process.cwd(), "plugin", "skills", "agent-relay", "SKILL.md");
     const customSlot = client.customName;
     const stdioCommand = `node "${bridge}" --url "${url}" --token "${token}"`;
 
@@ -420,12 +429,13 @@ export class ClientRegistry {
       "对应的 stdio 配置：",
       stdioBridgeConfigJson,
       "",
-      "【3. 委托规则（4 行摘要）】",
-      `如果本机可读取 ${rules}，请先完整阅读；不可读取时按下面 4 条执行：`,
-      "- oracle：严格只读的顾问/审查者，负责方案评审、代码审查与调研，绝不修改任何文件。",
-      "- hephaestus：工作区可写的工程师，负责多文件实现、重构与调试，并在交卷前跑测试。",
-      "- 委托时写清目标、约束与文件路径；同一任务续写才复用 sessionId。",
-      "- 新任务一律省略 sessionId，让子代理获得干净的上下文与缓存。",
+      "【3. 同步委托规则与配套 Skill（跨会话长期生效）】",
+      `- 常驻规则：读取 ${rules}，并将其内容写入当前客户端的全局/常驻规则文件（建议用 <!-- a-stand:start --> 与 <!-- a-stand:end --> 包裹，方便后续一键剥离）；若不可读取，按以下 4 条执行：`,
+      "  1) oracle：严格只读的顾问/审查者，负责方案评审、代码审查与调研，绝不修改任何文件。",
+      "  2) hephaestus：工作区可写的工程师，负责多文件实现、重构与调试，并在交卷前跑测试。",
+      "  3) 委托时写清目标、约束与文件路径；同一任务续写才复用 sessionId。",
+      "  4) 新任务一律省略 sessionId，让子代理获得干净的上下文与缓存。",
+      `- 配套 Skill：如果当前客户端支持本地 Skill 目录（如 Antigravity / Claude Code / Codex / Cursor 等），请把 ${skills} 复制安装为名为 a-stand 的 Skill（例如 skills/a-stand/SKILL.md），以完整支持异步门铃、并行 Worktree 与智能选型。`,
       "",
       "【4. 握手校验】",
       "写入 MCP 配置后，大多数宿主需要用户手动刷新 MCP 或再发送一条消息，才会加载新工具。",
@@ -453,17 +463,46 @@ export class ClientRegistry {
       "Equivalent stdio config:",
       stdioBridgeConfigJson,
       "",
-      "[3. Delegation rules (4-line summary)]",
-      `If ${rules} is readable on this machine, read it first; otherwise follow these 4 lines:`,
-      "- oracle: strictly read-only advisor/reviewer for design reviews, code review and research; never modifies files.",
-      "- hephaestus: workspace-write engineer for multi-file implementation, refactors and debugging; runs tests before handing off.",
-      "- State goal, constraints and file paths in each delegation; reuse sessionId only when continuing the exact same task.",
-      "- Omit sessionId for every new task so the subagent starts with a clean context and cache.",
+      "[3. Install delegation rules & bundled Skill (persists across chats)]",
+      `- Persistent rules: read ${rules} and add it to this client's global/user rules (wrap with <!-- a-stand:start --> and <!-- a-stand:end --> so it can be cleanly removed later); if unreadable, follow these 4 lines:`,
+      "  1) oracle: strictly read-only advisor/reviewer for design reviews, code review and research; never modifies files.",
+      "  2) hephaestus: workspace-write engineer for multi-file implementation, refactors and debugging; runs tests before handing off.",
+      "  3) State goal, constraints and file paths in each delegation; reuse sessionId only when continuing the exact same task.",
+      "  4) Omit sessionId for every new task so the subagent starts with a clean context and cache.",
+      `- Bundled Skill: if this client supports local Skill directories (e.g. Antigravity / Claude Code / Codex / Cursor), copy ${skills} into your skills directory as a-stand/SKILL.md so async doorbells, parallel worktrees and smart model selection work in every new thread.`,
       "",
       "[4. Handshake check]",
       "After writing the MCP config, most hosts require the user to manually refresh MCP or send another message before new tools load.",
       'If the a-stand tools are not visible yet, explicitly tell the user to refresh MCP or send another message; once the tools load, call agent_relay_session(action="status") once to complete the handshake and auto-fill the client name.',
       "A reply with enabled/limits means you are connected.",
+    ].join("\n");
+
+    const disconnectPromptZh = [
+      "请把 A.stand 常驻代理从当前客户端干净剥离，按下面 3 步操作，不要改动其他无关配置：",
+      "",
+      "【1. 移除 MCP 配置】",
+      "打开当前客户端的 MCP 配置文件，仅删除名为 a-stand 的服务器条目（保留所有其他 MCP 服务器）。",
+      "",
+      "【2. 清理配套规则与 Skill】",
+      "- 如果此前在全局/常驻规则中写入了 <!-- a-stand:start --> ... <!-- a-stand:end --> 区块（或独立的 a-stand 规则文件），将其一并删除。",
+      "- 如果此前在本地 Skills 目录安装了名为 a-stand（或 agent-relay）的 Skill 目录，将其删除。",
+      "",
+      "【3. 确认完成】",
+      "不要关闭本机其他程序或修改其他配置。完成后告知用户刷新 MCP 或重启客户端即可彻底解绑，不再出现连接报错。",
+    ].join("\n");
+
+    const disconnectPromptEn = [
+      "Cleanly disconnect and remove A.stand from this MCP client. Follow these 3 steps without touching unrelated settings:",
+      "",
+      "[1. Remove MCP server entry]",
+      "Open this client's MCP configuration file and delete ONLY the server entry named a-stand (keep all other MCP servers intact).",
+      "",
+      "[2. Remove bundled rules and Skill]",
+      "- If an <!-- a-stand:start --> ... <!-- a-stand:end --> block (or dedicated a-stand rule file) was added to global/user rules, remove it.",
+      "- If a local Skill folder named a-stand (or agent-relay) was installed in this client's skills directory, remove it.",
+      "",
+      "[3. Confirm cleanup]",
+      "Do not modify unrelated tools or stop other local apps. Tell the user to refresh MCP or restart the client so no stale connection errors remain.",
     ].join("\n");
 
     return {
@@ -474,6 +513,8 @@ export class ClientRegistry {
       stdioBridgeConfigJson,
       promptZh,
       promptEn,
+      disconnectPromptZh,
+      disconnectPromptEn,
     };
   }
 }

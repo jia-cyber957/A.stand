@@ -183,6 +183,9 @@ async function main() {
       rulesFile: fs.existsSync(path.join(DIST_DIR, "plugin", "rules", "AGENTS.md"))
         ? path.join(DIST_DIR, "plugin", "rules", "AGENTS.md")
         : path.resolve(DIST_DIR, "..", "plugin", "rules", "AGENTS.md"),
+      skillsFile: fs.existsSync(path.join(DIST_DIR, "plugin", "skills", "agent-relay", "SKILL.md"))
+        ? path.join(DIST_DIR, "plugin", "skills", "agent-relay", "SKILL.md")
+        : path.resolve(DIST_DIR, "..", "plugin", "skills", "agent-relay", "SKILL.md"),
       version: PLUGIN_VERSION,
     });
 

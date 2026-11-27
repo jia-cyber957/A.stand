@@ -82,7 +82,7 @@ const STRINGS = {
   navSettings: ["全局设置", "Settings"],
 
   titleClients: ["已接上游", "Upstream Clients"],
-  subClients: ["管理已接入的 AI 客户端、注册码与接入 Prompt", "Manage connected AI clients, tokens and setup prompts"],
+  subClients: ["管理已接入的 AI 客户端与接入 / 剥离 Prompt", "Manage connected AI clients and connect / disconnect prompts"],
   titleActivity: ["实时任务", "Live Activity"],
   subActivity: ["运行中子 Agent、最近任务与崩溃恢复", "Running subagents, recent jobs and crash recovery"],
   titleRoles: ["角色与队列", "Roles & Queues"],
@@ -137,8 +137,8 @@ const STRINGS = {
   disabledClients: ["已停用的上游", "Disabled upstreams"],
   noClients: ["还没有接入任何上游", "No upstream clients yet"],
   noClientsDesc: [
-    "点击「接入新上游」生成注册码与 AI 接入 Prompt，直接粘贴给你的 AI 客户端即可自动完成配置。",
-    "Click “Connect upstream” to generate a token and a ready-to-paste AI setup prompt for your client.",
+    "点击「接入新上游」复制 AI 接入 Prompt，直接粘贴给你的 AI 客户端；握手成功后会自动出现在这里。",
+    "Click “Connect upstream” to copy the AI setup prompt and paste it into your client; it appears here automatically once connected.",
   ],
   noSearchResult: ["没有匹配的上游", "No matching upstreams"],
   lastActive: ["最近活跃", "Last active"],
@@ -167,53 +167,51 @@ const STRINGS = {
     "Works with Antigravity, Codex, Claude Code, Cursor, WorkBuddy, Windsurf, VS Code and any MCP client.",
   ],
 
-  setupTitle: ["接入 Prompt", "Setup prompt"],
-  setupSub: ["把下面的内容直接粘贴给你的 AI 客户端", "Paste the following into your AI client"],
+  setupTitle: ["接入新上游", "Connect upstream"],
+  setupSub: ["把下面的 AI 接入 Prompt 直接粘贴发给你的 AI 客户端即可", "Paste this AI setup prompt into your AI client"],
   promptHeroTitle: ["一键复制 AI 接入 Prompt", "One-click AI setup prompt"],
   promptHeroDesc: [
-    "直接粘贴发给 Antigravity / Codex / Claude Code / Cursor / WorkBuddy，让 AI 自己完成连接和规则配置。",
-    "Paste it into Antigravity / Codex / Claude Code / Cursor / WorkBuddy and let the AI configure the connection and rules itself.",
-  ],
-  tabPrompt: ["AI 接入 Prompt", "AI setup prompt"],
-  tabHttp: ["HTTP 配置 JSON", "HTTP config JSON"],
-  tabStdio: ["stdio 传话桥兜底", "stdio bridge fallback"],
-  stdioHint: [
-    "适用于 Cursor OAuth 或较老的客户端：通过本地 stdio 传话桥连接。",
-    "For Cursor OAuth or older clients: connect through the local stdio bridge.",
+    "已内置 MCP 连接、配套委托规则与 Skill 安装步骤，直接发给 Antigravity / Codex / Claude Code / Cursor / WorkBuddy 即可自动完成接入。",
+    "Includes MCP setup, delegation rules and bundled Skill installation. Paste directly into Antigravity / Codex / Claude Code / Cursor / WorkBuddy.",
   ],
   copyPromptBig: ["一键复制 AI 接入 Prompt", "Copy AI setup prompt"],
-  waitingHandshake: ["等待上游首次握手…", "Waiting for the first upstream handshake…"],
+  waitingHandshake: ["等待上游首次握手…（未连上不会污染上游列表）", "Waiting for first handshake… (won't clutter your list until connected)"],
   connectedAs: ["已识别并连接：%s", "Connected: %s"],
   waitingHint: [
     "发给 AI 写入配置后，如未立刻变绿，请在该 AI 里刷新 MCP 或再发一条消息",
     "After sending it to your AI, if this does not turn green, refresh MCP or send one more message in that client",
   ],
-  promptMissing: ["服务端未返回接入 Prompt，请改用 HTTP 配置 JSON。", "The server did not return a setup prompt; use the HTTP config JSON instead."],
+  promptMissing: ["服务端未返回接入 Prompt。", "The server did not return a setup prompt."],
   viewPrompt: ["查看接入 Prompt", "View setup prompt"],
-
+  disconnectTitle: ["从该 AI 客户端剥离 A.stand", "Disconnect from this AI client"],
+  disconnectDesc: [
+    "一键复制剥离 Prompt 发给对应 AI，让它干净移除 MCP 配置、规则与 Skill，避免残留连接报错。",
+    "Copy the disconnect prompt and send it to this AI so it cleanly removes the MCP entry, rules and Skill without leaving errors.",
+  ],
+  copyDisconnectPrompt: ["一键复制 AI 剥离 Prompt", "Copy AI disconnect prompt"],
+  disconnectCopied: ["AI 剥离 Prompt 已复制", "Disconnect prompt copied"],
+  advancedCredential: ["高级：连接凭证管理", "Advanced: connection credential"],
+  resetToken: ["重置连接凭证", "Reset credential"],
+  resetTokenDesc: ["旧凭证会立即失效，需要重新发送新的接入 Prompt。", "The old credential stops working immediately; resend the new setup prompt."],
+  deleteClient: ["移除该上游记录", "Remove upstream"],
+  deleteClientDesc: ["移除后旧凭证立即失效；建议先复制剥离 Prompt 清理对面配置。", "Revokes access immediately; copy the disconnect prompt first to clean up the client config."],
+  saveName: ["保存名称", "Save name"],
+  confirmResetToken: ["确认重置连接凭证？", "Reset this credential?"],
+  confirmResetTokenMsg: [
+    "旧连接凭证会立即失效，已连接的客户端需要重新发送接入 Prompt。",
+    "The old credential stops working immediately and the client must be reconnected with the new prompt.",
+  ],
+  confirmDeleteClient: ["确认移除该上游？", "Remove this upstream?"],
+  confirmDeleteClientMsg: [
+    "建议先点击「一键复制 AI 剥离 Prompt」发给对应 AI 清理对面配置，再移除此记录。移除后旧凭证将立即失效。",
+    "Tip: send the AI disconnect prompt to the client first to clean up its MCP config. Removing revokes its credential immediately.",
+  ],
   detailTitle: ["上游详情", "Upstream details"],
   renameLabel: ["显示名称", "Display name"],
   renamePlaceholder: ["留空使用自动识别的名称", "Leave empty to use the detected name"],
   iconLabel: ["图标", "Icon"],
   enabledLabel: ["启用该上游", "Enable this upstream"],
   enabledDesc: ["停用后该上游无法调用 A.stand，但配置会保留。", "When disabled the client cannot call A.stand, but its config is kept."],
-  tokenLabel: ["注册码", "Token"],
-  tokenDesc: ["注册码等同于访问凭证，请勿泄露给他人。", "The token is a credential — never share it."],
-  resetToken: ["重置注册码", "Reset token"],
-  resetTokenDesc: ["旧注册码会立即失效，需要重新接入。", "The old token stops working immediately; the client must reconnect."],
-  deleteClient: ["删除上游", "Delete upstream"],
-  deleteClientDesc: ["删除后需要重新生成注册码才能接入。", "You must generate a new token to reconnect after deleting."],
-  saveName: ["保存名称", "Save name"],
-  confirmResetToken: ["确认重置注册码？", "Reset this token?"],
-  confirmResetTokenMsg: [
-    "旧注册码会立即失效，已连接的客户端需要重新接入。",
-    "The old token stops working immediately and connected clients must reconnect.",
-  ],
-  confirmDeleteClient: ["确认删除该上游？", "Delete this upstream?"],
-  confirmDeleteClientMsg: [
-    "该操作不可撤销，删除后需要重新生成注册码。",
-    "This cannot be undone. You will need a new token to reconnect.",
-  ],
   clientNotFound: ["未找到该上游", "Upstream not found"],
 
   crashTitle: ["检测到崩溃恢复任务", "Crash recovery detected"],
@@ -747,6 +745,21 @@ function activeClients() {
   return (state?.clients || []).map(normalizeClient);
 }
 
+function isDraftInvite(client) {
+  return Boolean(
+    client &&
+      !client.connected &&
+      !client.lastSeenAt &&
+      client.callCount === 0 &&
+      !client.customName &&
+      client.enabled
+  );
+}
+
+function visibleClients() {
+  return activeClients().filter((c) => !isDraftInvite(c));
+}
+
 function normalizeClient(raw) {
   const c = raw || {};
   const detected = c.detectedClientName || c.detectedName || c.clientName || "";
@@ -982,16 +995,8 @@ function cooldowns() {
    Theme
    ========================================================================== */
 function syncNativeWindowTheme(resolved) {
-  try {
-    const invoke =
-      window.__TAURI__?.core?.invoke ||
-      window.__TAURI_INTERNALS__?.invoke;
-    if (typeof invoke === "function") {
-      Promise.resolve(invoke("set_window_theme", { theme: resolved })).catch(() => {});
-    }
-  } catch {
-    /* ignore outside Tauri shell */
-  }
+  if (!uiToken) return;
+  api("/api/ui-theme", { method: "POST", body: { theme: resolved } }).catch(() => {});
 }
 
 function applyTheme() {
@@ -1287,7 +1292,7 @@ function navGroup(zh, en, items) {
 }
 
 function renderSidebar() {
-  const clients = activeClients();
+  const clients = visibleClients();
   const activeCount = clients.filter((c) => c.enabled).length;
   const running = (state?.activeJobs || []).length;
   const daemon = state?.daemon || {};
@@ -1487,7 +1492,6 @@ function clientRow(client) {
       <span class="client-sub">${metaParts.join('<span class="sep">·</span>')}</span>
     </span>
     <span class="client-side">
-      <span class="client-token" title="${esc(t("tokenLabel"))}">${esc(clientTokenPreview(client))}</span>
       <button class="btn xs copy-prompt" data-action="copy-client-prompt" data-client="${esc(client.id)}">${iconSvg("copy")} ${esc(t("copyPrompt"))}</button>
       <button class="switch ${client.enabled ? "on" : ""}" data-action="toggle-client" data-client="${esc(client.id)}" role="switch" aria-checked="${client.enabled}" aria-label="${esc(t("enabledLabel"))}"></button>
       <span class="client-chevron">${iconSvg("chevronRight")}</span>
@@ -1496,7 +1500,7 @@ function clientRow(client) {
 }
 
 function renderClientsPage() {
-  const all = activeClients();
+  const all = visibleClients();
   const query = ui.clientSearch.trim().toLowerCase();
   const matches = (c) => {
     if (!query) return true;
@@ -1512,9 +1516,6 @@ function renderClientsPage() {
       ${iconSvg("search")}
       <input class="input" type="search" data-ui="client-search" data-focus-key="client-search" placeholder="${esc(t("searchClients"))}" value="${esc(ui.clientSearch)}" aria-label="${esc(t("searchClients"))}" />
     </div>
-    <button class="btn ${ui.maskTokens ? "active" : ""}" data-action="toggle-mask" aria-pressed="${ui.maskTokens}" title="${esc(t("maskTokens"))}">
-      ${iconSvg(ui.maskTokens ? "eyeOff" : "eye")} ${esc(t("maskTokens"))}
-    </button>
     <div class="topbar-spacer"></div>
     <button class="btn primary" data-action="open-register" ${ui.creatingClient ? "disabled" : ""}>${iconSvg("plus")} ${esc(ui.creatingClient ? t("generating") : t("addClient"))}</button>
   </div>`;
@@ -2432,39 +2433,6 @@ function renderSetupModal() {
   const connected = Boolean(client && client.connected);
   const clientName = client?.name || setup.clientName || "";
   const promptText = setupPromptText(setup) || fallbackPrompt(setup);
-  const tab = ui.setupTab;
-
-  const tabs = `<div class="tabs">
-    <button class="tab ${tab === "prompt" ? "active" : ""}" data-action="setup-tab" data-tab="prompt">${esc(t("tabPrompt"))}</button>
-    <button class="tab ${tab === "http" ? "active" : ""}" data-action="setup-tab" data-tab="http">${esc(t("tabHttp"))}</button>
-    <button class="tab ${tab === "stdio" ? "active" : ""}" data-action="setup-tab" data-tab="stdio">${esc(t("tabStdio"))}</button>
-  </div>`;
-
-  let panel = "";
-  if (tab === "http") {
-    const json = setup.httpConfigJson || "";
-    panel = `<div class="field">
-      <div class="row">
-        <span class="field-label" style="flex:1">${esc(t("tabHttp"))}</span>
-        <button class="btn xs" data-action="copy-http">${iconSvg("copy")} ${esc(t("copy"))}</button>
-      </div>
-      <div class="prompt-box">${esc(json || "—")}</div>
-    </div>`;
-  } else if (tab === "stdio") {
-    panel = `<div class="field">
-      <div class="field-hint">${esc(t("stdioHint"))}</div>
-      <div class="row">
-        <span class="field-label" style="flex:1">${esc(t("tabStdio"))}</span>
-        <button class="btn xs" data-action="copy-stdio">${iconSvg("copy")} ${esc(t("copy"))}</button>
-      </div>
-      <div class="prompt-box">${esc(setup.stdioBridgeConfigJson || setup.stdioCommand || "—")}</div>
-      ${setup.stdioCommand ? `<div class="field-hint mono" style="word-break:break-all">${esc(setup.stdioCommand)}</div>` : ""}
-    </div>`;
-  } else {
-    panel = `<div class="field">
-      <div class="prompt-box">${esc(promptText || t("promptMissing"))}</div>
-    </div>`;
-  }
 
   return overlayShell(`<div class="modal wide" role="dialog" aria-modal="true" aria-label="${esc(t("setupTitle"))}">
     ${modalHeader(t("setupTitle"), t("setupSub"))}
@@ -2479,11 +2447,11 @@ function renderSetupModal() {
         </div>
         <div class="prompt-actions">
           <button class="btn primary" data-action="copy-prompt">${iconSvg("copy")} ${esc(t("copyPromptBig"))}</button>
-          <button class="btn" data-action="copy-token" title="${esc(setup.token || "")}">${iconSvg("key")} ${esc(t("tokenLabel"))}</button>
         </div>
       </div>
-      ${tabs}
-      ${panel}
+      <div class="field">
+        <div class="prompt-box">${esc(promptText || t("promptMissing"))}</div>
+      </div>
       <div class="conn-banner ${connected ? "connected" : "waiting"}">
         <span class="conn-pulse"></span>
         <span style="flex:1">${esc(connected ? t("connectedAs", clientName || client?.name || "") : t("waitingHandshake"))}</span>
@@ -2491,7 +2459,7 @@ function renderSetupModal() {
       </div>
     </div>
     <div class="modal-foot">
-      <button class="btn ghost" data-action="open-client" data-client="${esc(setup.clientId || "")}">${esc(t("detailTitle"))}</button>
+      ${connected ? `<button class="btn ghost" data-action="open-client" data-client="${esc(setup.clientId || "")}">${esc(t("detailTitle"))}</button>` : ""}
       <div class="spacer"></div>
       <button class="btn primary" data-action="close-modal">${esc(t("close"))}</button>
     </div>
@@ -2553,21 +2521,30 @@ function renderClientDrawer(modal) {
       </div>
 
       <div class="detail-section">
-        <div class="detail-label">${esc(t("tokenLabel"))}</div>
+        <div class="detail-label">${esc(t("viewPrompt"))}</div>
         <div class="row">
-          <span class="client-token mono" style="flex:1;max-width:none" title="${esc(tokenText)}">${esc(tokenText)}</span>
-          <button class="btn xs" data-action="copy-token" data-client="${esc(client.id)}">${iconSvg("copy")} ${esc(t("copy"))}</button>
-        </div>
-        <div class="field-hint">${esc(t("tokenDesc"))}</div>
-        <div class="row" style="margin-top:4px">
           <button class="btn sm" data-action="view-prompt" data-client="${esc(client.id)}">${iconSvg("spark")} ${esc(t("viewPrompt"))}</button>
-          <button class="btn sm" data-action="reset-token" data-client="${esc(client.id)}">${iconSvg("refresh")} ${esc(t("resetToken"))}</button>
         </div>
       </div>
 
       <div class="detail-section">
-        <div class="detail-label">${esc(t("enabledLabel"))}</div>
-        <div class="setting-desc">${esc(t("enabledDesc"))}</div>
+        <div class="detail-label">${esc(t("disconnectTitle"))}</div>
+        <div class="setting-desc">${esc(t("disconnectDesc"))}</div>
+        <div class="row" style="margin-top:4px">
+          <button class="btn sm" data-action="copy-disconnect-prompt" data-client="${esc(client.id)}">${iconSvg("copy")} ${esc(t("copyDisconnectPrompt"))}</button>
+        </div>
+      </div>
+
+      <div class="detail-section">
+        <details>
+          <summary class="disclosure" style="cursor:pointer;list-style:none">${esc(t("advancedCredential"))}</summary>
+          <div class="stack" style="margin-top:8px;gap:8px">
+            <div class="setting-desc">${esc(t("resetTokenDesc"))}</div>
+            <div class="row">
+              <button class="btn xs" data-action="reset-token" data-client="${esc(client.id)}">${iconSvg("refresh")} ${esc(t("resetToken"))}</button>
+            </div>
+          </div>
+        </details>
       </div>
 
       <div class="danger-zone">
@@ -2720,7 +2697,7 @@ async function createClientAndOpenSetup() {
   ui.registerError = "";
   scheduleRender();
   try {
-    const res = await api("/api/clients", { method: "POST", body: {} });
+    const res = await api("/api/clients", { method: "POST", body: { reusePending: true } });
     if (res?.token) ui.tokenCache[res.client?.id || ""] = res.token;
     applyPayload(res);
     if (!res?.state) await refreshState({ silent: true });
@@ -2749,6 +2726,8 @@ function normalizeSetup(raw, token) {
     token: setup.token || token || "",
     promptZh: setup.promptZh || "",
     promptEn: setup.promptEn || "",
+    disconnectPromptZh: setup.disconnectPromptZh || "",
+    disconnectPromptEn: setup.disconnectPromptEn || "",
     httpConfigJson: setup.httpConfigJson || "",
     stdioBridgeConfigJson: setup.stdioBridgeConfigJson || "",
     stdioCommand: setup.stdioCommand || "",
@@ -2971,6 +2950,18 @@ async function onActionClick(event) {
     case "copy-client-prompt":
       void copyClientPrompt(target.dataset.client);
       return;
+    case "copy-disconnect-prompt": {
+      const clientId = target.dataset.client;
+      loadClientSetup(clientId, { open: false })
+        .then(({ setup }) => {
+          const text = isEn()
+            ? setup.disconnectPromptEn || setup.disconnectPromptZh
+            : setup.disconnectPromptZh || setup.disconnectPromptEn;
+          return copyText(text, t("disconnectCopied"));
+        })
+        .catch((err) => showError("", err));
+      return;
+    }
     case "view-prompt": {
       const clientId = target.dataset.client;
       loadClientSetup(clientId, { open: true }).catch((err) => showError("", err));
@@ -3705,8 +3696,8 @@ async function boot() {
   if (booted) return;
   booted = true;
   loadPreferences();
-  applyTheme();
   uiToken = readUiToken();
+  applyTheme();
   bindEvents();
 
   // Paint the shell immediately so the window never shows a blank canvas.

@@ -122,6 +122,7 @@ export async function createDaemonHttpServer({
   desktopHtmlPath,
   bridgeScript,
   rulesFile,
+  skillsFile,
   version = PLUGIN_VERSION,
 } = {}) {
   if (!store || !orchestrator || !clientRegistry) {
@@ -133,6 +134,7 @@ export async function createDaemonHttpServer({
   const htmlPath = desktopHtmlPath || path.resolve(process.cwd(), "dist", "desktop.html");
   const resolvedBridge = bridgeScript || path.resolve(process.cwd(), "dist", "stdio-bridge.mjs");
   const resolvedRules = rulesFile || path.resolve(process.cwd(), "plugin", "rules", "AGENTS.md");
+  const resolvedSkills = skillsFile || path.resolve(process.cwd(), "plugin", "skills", "agent-relay", "SKILL.md");
 
   const sessions = new Map(); // mcp-session-id -> { transport, server, clientId, transportKind, lastUsedAt }
   const sseClients = new Set();
@@ -515,11 +517,28 @@ export async function createDaemonHttpServer({
       return;
     }
 
+    if (req.method === "POST" && resource === "ui-theme") {
+      const body = await readJsonBody(req);
+      if (!body.ok) return sendJson(res, body.status, { ok: false, error: body.error });
+      const theme = body.value?.theme === "dark" ? "dark" : body.value?.theme === "light" ? "light" : "";
+      if (!theme) return sendJson(res, 400, { ok: false, error: "Invalid theme" });
+      try {
+        const themePath = path.join(store.dataDir, "ui-theme.txt");
+        fs.mkdirSync(path.dirname(themePath), { recursive: true });
+        fs.writeFileSync(themePath, `${theme}\n`, "utf8");
+        sendJson(res, 200, { ok: true, theme });
+      } catch (err) {
+        sendJson(res, 500, { ok: false, error: err?.message || String(err) });
+      }
+      return;
+    }
+
     if (resource === "clients") {
       const setupOpts = () => ({
         httpUrl: mcpUrl(),
         bridgeScript: resolvedBridge,
         rulesFile: resolvedRules,
+        skillsFile: resolvedSkills,
       });
       if (req.method === "POST" && segments.length === 2) {
         const body = await readJsonBody(req);

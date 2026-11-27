@@ -32,6 +32,7 @@ const IS_WINDOWS = process.platform === "win32";
 
 const RUNTIME_FILES = ["daemon.mjs", "desktop.html", "stdio-bridge.mjs", "wait-job.mjs"];
 const RULES_FILE = path.join(ROOT, "plugin", "rules", "AGENTS.md");
+const SKILLS_FILE = path.join(ROOT, "plugin", "skills", "agent-relay", "SKILL.md");
 
 function log(message) {
   console.log(`[package-desktop] ${message}`);
@@ -138,7 +139,7 @@ function main() {
   if (build.code !== 0) fail(`npm run build failed (exit ${build.code}${build.error ? `: ${build.error}` : ""})`);
   const bundlePaths = RUNTIME_FILES.map((name) => path.join(DIST, name));
   assertFiles(bundlePaths, "dist bundles");
-  assertFiles([RULES_FILE], "rules file");
+  assertFiles([RULES_FILE, SKILLS_FILE], "rules/skills files");
 
   // 2. Tauri release binary ---------------------------------------------------
   // On Windows, compiling build scripts inside Desktop/Documents can be blocked by
@@ -172,13 +173,16 @@ function main() {
   const rulesTarget = path.join(OUT_DIR, "plugin", "rules", "AGENTS.md");
   fs.mkdirSync(path.dirname(rulesTarget), { recursive: true });
   fs.copyFileSync(RULES_FILE, rulesTarget);
-  // `daemon.mjs` derives its rulesFile as `<daemon dir>/../plugin/rules/AGENTS.md`
-  // (see src/daemon/index.mjs), so a portable layout also needs the sibling copy one
-  // level above A.stand/ for the delegation rules to resolve. The in-folder copy keeps
-  // the bundle self-contained and lets it degrade gracefully once the folder is moved.
+  const skillsTarget = path.join(OUT_DIR, "plugin", "skills", "agent-relay", "SKILL.md");
+  fs.mkdirSync(path.dirname(skillsTarget), { recursive: true });
+  fs.copyFileSync(SKILLS_FILE, skillsTarget);
+  // Keep sibling copies one level above A.stand/ as fallback resolution paths.
   const siblingRules = path.join(OUT_DIR, "..", "plugin", "rules", "AGENTS.md");
   fs.mkdirSync(path.dirname(siblingRules), { recursive: true });
   fs.copyFileSync(RULES_FILE, siblingRules);
+  const siblingSkills = path.join(OUT_DIR, "..", "plugin", "skills", "agent-relay", "SKILL.md");
+  fs.mkdirSync(path.dirname(siblingSkills), { recursive: true });
+  fs.copyFileSync(SKILLS_FILE, siblingSkills);
 
   // If the repo was ever touched by a Windows Low-Integrity sandbox (e.g. Codex),
   // inherited Low Mandatory Level causes Windows to abort a-stand.exe with 0xC0000142.
@@ -202,7 +206,7 @@ function main() {
   };
   walk(OUT_DIR);
 
-  const shipped = ["a-stand.exe", ...RUNTIME_FILES, "plugin/rules/AGENTS.md", "../plugin/rules/AGENTS.md"];
+  const shipped = ["a-stand.exe", ...RUNTIME_FILES, "plugin/rules/AGENTS.md", "plugin/skills/agent-relay/SKILL.md"];
   log(`portable files: ${shipped.join(", ")}`);
   log(`${exeName}: ${formatBytes(exeSize)}`);
   log(`portable folder: ${formatBytes(folderBytes)} total`);

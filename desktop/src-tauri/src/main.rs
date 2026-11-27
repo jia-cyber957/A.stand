@@ -10,24 +10,66 @@
 mod daemon;
 mod tray;
 
-use tauri::{Manager, RunEvent, Theme, WindowEvent};
+use std::fs;
+use std::path::PathBuf;
+use std::thread;
+use std::time::Duration;
+use tauri::{AppHandle, Manager, RunEvent, Theme, WindowEvent};
 
-#[tauri::command]
-fn set_window_theme(window: tauri::WebviewWindow, theme: String) {
-    let target = match theme.trim().to_ascii_lowercase().as_str() {
+fn ui_theme_file() -> Option<PathBuf> {
+    if let Ok(explicit) = std::env::var("ASTAND_DATA_DIR").or_else(|_| std::env::var("PLUGIN_DATA")) {
+        let trimmed = explicit.trim();
+        if !trimmed.is_empty() {
+            return Some(PathBuf::from(trimmed).join("ui-theme.txt"));
+        }
+    }
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .ok()?;
+    Some(PathBuf::from(home).join(".astand").join("ui-theme.txt"))
+}
+
+fn read_saved_theme() -> Option<Theme> {
+    let path = ui_theme_file()?;
+    let raw = fs::read_to_string(path).ok()?;
+    match raw.trim().to_ascii_lowercase().as_str() {
         "dark" => Some(Theme::Dark),
         "light" => Some(Theme::Light),
         _ => None,
-    };
-    let _ = window.set_theme(target);
+    }
+}
+
+fn apply_native_theme(app: &AppHandle, target: Option<Theme>) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(window) = handle.get_webview_window("main") {
+            let _ = window.set_theme(target);
+        }
+    });
+}
+
+fn start_theme_watcher(app: AppHandle) {
+    let initial = read_saved_theme();
+    apply_native_theme(&app, initial);
+    thread::spawn(move || {
+        let mut last = initial;
+        loop {
+            thread::sleep(Duration::from_millis(250));
+            let current = read_saved_theme();
+            if current != last {
+                last = current;
+                apply_native_theme(&app, current);
+            }
+        }
+    });
 }
 
 fn main() {
     tauri::Builder::default()
         .manage(daemon::DaemonState::default())
-        .invoke_handler(tauri::generate_handler![set_window_theme])
         .setup(|app| {
             tray::build(app.handle())?;
+            start_theme_watcher(app.handle().clone());
             let handle = app.handle().clone();
             daemon::start_supervisor(handle);
             Ok(())

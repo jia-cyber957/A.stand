@@ -241,65 +241,82 @@ const BRAND_ICONS = {
   antigravity: `
     <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
       <defs>
-        <linearGradient id="astand-ag" x1="4" y1="4" x2="20" y2="20" gradientUnits="userSpaceOnUse">
-          <stop stop-color="#4285F4" />
-          <stop offset="0.55" stop-color="#7C6CF6" />
-          <stop offset="1" stop-color="#A142F4" />
+        <linearGradient id="astand-ag-base" x1="12" y1="3" x2="12" y2="21" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stop-color="#EA4335" />
+          <stop offset="32%" stop-color="#34A853" />
+          <stop offset="68%" stop-color="#2580FF" />
+          <stop offset="100%" stop-color="#1A73E8" />
         </linearGradient>
+        <radialGradient id="astand-ag-warm" cx="56%" cy="22%" r="48%">
+          <stop offset="0%" stop-color="#FF5E3A" />
+          <stop offset="48%" stop-color="#FBBC05" stop-opacity="0.92" />
+          <stop offset="100%" stop-color="#2580FF" stop-opacity="0" />
+        </radialGradient>
+        <radialGradient id="astand-ag-green" cx="34%" cy="32%" r="42%">
+          <stop offset="0%" stop-color="#34A853" stop-opacity="0.95" />
+          <stop offset="100%" stop-color="#2580FF" stop-opacity="0" />
+        </radialGradient>
       </defs>
-      <circle cx="12" cy="12" r="9" fill="none" stroke="#C7D2FE" stroke-width="1.2" />
-      <path d="M12 4.6 19 19h-3.1L12 10.9 8.1 19H5L12 4.6Z" fill="url(#astand-ag)" />
-      <circle cx="18.6" cy="6.2" r="1.4" fill="#4285F4" />
+      <path d="M12 3.2c2.5 0 4.3 3.2 6.2 8.7 1.1 3.3 2.5 6.4 3.2 7.5.5.8-.1 1.7-1.1 1.5-1.5-.3-3.2-2.2-4.8-4.7-1.1-1.7-2.2-2.6-3.5-2.6s-2.4.9-3.5 2.6c-1.6 2.5-3.3 4.4-4.8 4.7-1 .2-1.6-.7-1.1-1.5.7-1.1 2.1-4.2 3.2-7.5C7.7 6.4 9.5 3.2 12 3.2Z" fill="url(#astand-ag-base)" />
+      <path d="M12 3.2c2.5 0 4.3 3.2 6.2 8.7 1.1 3.3 2.5 6.4 3.2 7.5.5.8-.1 1.7-1.1 1.5-1.5-.3-3.2-2.2-4.8-4.7-1.1-1.7-2.2-2.6-3.5-2.6s-2.4.9-3.5 2.6c-1.6 2.5-3.3 4.4-4.8 4.7-1 .2-1.6-.7-1.1-1.5.7-1.1 2.1-4.2 3.2-7.5C7.7 6.4 9.5 3.2 12 3.2Z" fill="url(#astand-ag-green)" />
+      <path d="M12 3.2c2.5 0 4.3 3.2 6.2 8.7 1.1 3.3 2.5 6.4 3.2 7.5.5.8-.1 1.7-1.1 1.5-1.5-.3-3.2-2.2-4.8-4.7-1.1-1.7-2.2-2.6-3.5-2.6s-2.4.9-3.5 2.6c-1.6 2.5-3.3 4.4-4.8 4.7-1 .2-1.6-.7-1.1-1.5.7-1.1 2.1-4.2 3.2-7.5C7.7 6.4 9.5 3.2 12 3.2Z" fill="url(#astand-ag-warm)" />
     </svg>`,
   codex: `
     <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
-      <path d="M12 3.2 19.6 7.6v8.8L12 20.8 4.4 16.4V7.6L12 3.2Z" fill="#111827" />
-      <path d="M12 7.1 16.1 9.5v4.9L12 16.8 7.9 14.4V9.5L12 7.1Z" fill="none" stroke="#F9FAFB" stroke-width="1.3" />
-      <path d="M12 10.1v3.8" stroke="#F9FAFB" stroke-width="1.3" stroke-linecap="round" />
+      <rect x="2" y="2" width="20" height="20" rx="5.5" fill="#10A37F" />
+      <g fill="none" stroke="#FFFFFF" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 6.1a3.2 3.2 0 0 1 3.1 2.3l2.2 1.3a3.2 3.2 0 0 1 .4 5.2l-.1 2.5a3.2 3.2 0 0 1-4.7 2.2L12 19a3.2 3.2 0 0 1-4.9-1.5l-1.9-1.1a3.2 3.2 0 0 1-.4-5.2l.1-2.5a3.2 3.2 0 0 1 4.7-2.2L12 6.1Z" />
+        <polygon points="12,9.2 14.4,10.6 14.4,13.4 12,14.8 9.6,13.4 9.6,10.6" />
+        <path d="M12 6.1v3.1M17.1 9.7l-2.7 1.5M16.9 15.7l-2.5-1.4M12 17.9v-3.1M6.9 14.3l2.7-1.5M7.1 8.3l2.5 1.4" />
+      </g>
     </svg>`,
   "claude-code": `
     <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
-      <g stroke="#D97757" stroke-width="2" stroke-linecap="round">
-        <path d="M12 3.4v4.1" />
-        <path d="M12 16.5v4.1" />
-        <path d="M3.4 12h4.1" />
-        <path d="M16.5 12h4.1" />
-        <path d="m5.9 5.9 2.9 2.9" />
-        <path d="m15.2 15.2 2.9 2.9" />
-        <path d="m18.1 5.9-2.9 2.9" />
-        <path d="m8.8 15.2-2.9 2.9" />
+      <rect x="2" y="2" width="20" height="20" rx="5.5" fill="#D97757" />
+      <g stroke="#FFF8F3" stroke-width="1.75" stroke-linecap="round">
+        <path d="M12 5.2v5.1M12 13.7v5.1M5.2 12h5.1M13.7 12h5.1" />
+        <path d="m7.1 7.1 3.5 3.5M13.4 13.4l3.5 3.5M16.9 7.1l-3.5 3.5M10.6 13.4l-3.5 3.5" />
       </g>
-      <circle cx="12" cy="12" r="2.4" fill="#D97757" />
+      <circle cx="12" cy="12" r="2.2" fill="#FFF8F3" />
     </svg>`,
   cursor: `
     <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
-      <path d="M12 2.8 20 7.4v9.2L12 21.2 4 16.6V7.4L12 2.8Z" fill="#111827" />
-      <path d="m12 6.4 4.7 2.7v5.8L12 17.6l-4.7-2.7V9.1L12 6.4Z" fill="none" stroke="#E5E7EB" stroke-width="1.2" />
-      <path d="m12 9.4 2.4 1.4v2.8L12 15l-2.4-1.4v-2.8L12 9.4Z" fill="#E5E7EB" />
+      <polygon points="12,2.4 20.4,7.2 12,12 3.6,7.2" fill="#E5E7EB" />
+      <polygon points="3.6,7.2 12,12 12,21.6 3.6,16.8" fill="#52525B" />
+      <polygon points="20.4,7.2 20.4,16.8 12,21.6 12,12" fill="#18181B" />
+      <polygon points="12,12 18.6,8.2 12,19.4" fill="#FAFAFA" opacity="0.92" />
     </svg>`,
   workbuddy: `
     <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
-      <rect x="3" y="3" width="18" height="18" rx="5" fill="#2563EB" />
-      <path d="M6.8 8.4 9 15.6l3-5.1 3 5.1 2.2-7.2" fill="none" stroke="#FFFFFF" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" />
+      <defs>
+        <linearGradient id="astand-wb-bg" x1="3" y1="3" x2="21" y2="21" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stop-color="#06C896" />
+          <stop offset="100%" stop-color="#10B981" />
+        </linearGradient>
+      </defs>
+      <rect x="2" y="2" width="20" height="20" rx="5.5" fill="url(#astand-wb-bg)" />
+      <path d="M5 12.2 4.3 9.7c-.2-.6.4-1.1 1-.9l3 .8c1.1-.7 2.4-1.3 3.8-1.6l1.8-3.4c.3-.6 1.1-.6 1.5-.1l2.7 3.2c1.1.3 2.1.8 2.9 1.5v7.3c0 2.5-2 4.5-4.5 4.5H7.8C6.2 19.7 5 17.6 5 15.2v-3Z" fill="#FFFFFF" opacity="0.94" />
+      <rect x="7.3" y="10.4" width="12.5" height="9.2" rx="4.2" transform="rotate(-24 13.5 15)" fill="#05B384" />
+      <rect x="10.1" y="13.4" width="1.9" height="4.1" rx="0.95" transform="rotate(-24 11 15.4)" fill="#FFFFFF" />
+      <rect x="14.7" y="11.3" width="1.9" height="4.1" rx="0.95" transform="rotate(-24 15.6 13.3)" fill="#FFFFFF" />
     </svg>`,
   windsurf: `
     <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
-      <rect x="3" y="3" width="18" height="18" rx="5" fill="#0EA5E9" />
-      <path d="M6 13.6c1.7-2.4 3.4-2.4 5.1 0s3.4 2.4 5.1 0 3.4-2.4 5.1 0" fill="none" stroke="#FFFFFF" stroke-width="1.7" stroke-linecap="round" />
-      <path d="M6 17c1.7-2.4 3.4-2.4 5.1 0s3.4 2.4 5.1 0 3.4-2.4 5.1 0" fill="none" stroke="#BAE6FD" stroke-width="1.4" stroke-linecap="round" />
+      <rect x="2" y="2" width="20" height="20" rx="5.5" fill="#0B1F2A" />
+      <path d="M5.2 16.5c1.8-4.8 4.4-8.2 9.4-8.6 1.5-.1 2.7.2 3.8.7-2.6.8-4.1 2.6-5 5.4-1 2.9-3.1 4.4-6.2 4.4-.8 0-1.4-.1-2-.3Z" fill="#09B6A2" />
+      <path d="M8.8 18.2c1.4-3.1 3.4-5.2 7.2-5.5 1.1-.1 2 .1 2.8.5-2 .6-3.1 1.9-3.9 3.8-.7 1.7-2.2 2.4-4.5 2.4-.6 0-1.1-.1-1.6-.2Z" fill="#38BDF8" />
     </svg>`,
   vscode: `
     <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
-      <path d="M17.2 3.4 21 5.3v13.4l-3.8 1.9L8 13.4 4.3 16 2.5 14.2l2.1-2.2-2.1-2.2L4.3 8 8 10.6l9.2-7.2Z" fill="#007ACC" />
-      <path d="M8 10.6v2.8L4.3 16 2.5 14.2l2.1-2.2-2.1-2.2L4.3 8 8 10.6Z" fill="#1F9CF0" />
-      <path d="m17.2 3.4 3.8 1.9v13.4l-3.8 1.9V3.4Z" fill="#1F9CF0" />
+      <path d="M17.2 3.2 21 5.1v13.8l-3.8 1.9L8.2 13.4 4.4 16.2 2.6 14.4l2.2-2.4-2.2-2.4 1.8-1.8 3.8 2.8 9-7.4Z" fill="#007ACC" />
+      <path d="M8.2 10.6v2.8L4.4 16.2 2.6 14.4l2.2-2.4-2.2-2.4 1.8-1.8 3.8 2.8Z" fill="#1F9CF0" />
+      <path d="M17.2 3.2 21 5.1v13.8l-3.8 1.9V3.2Z" fill="#29B6F6" />
     </svg>`,
   generic: `
     <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
-      <rect x="3" y="3" width="18" height="18" rx="5" fill="#E5E7EB" />
-      <path d="M8 12h8" stroke="#6B7280" stroke-width="1.8" stroke-linecap="round" />
-      <path d="M12 8v8" stroke="#6B7280" stroke-width="1.8" stroke-linecap="round" />
-      <circle cx="12" cy="12" r="3.4" fill="none" stroke="#9CA3AF" stroke-width="1.2" />
+      <rect x="2.5" y="2.5" width="19" height="19" rx="5.5" fill="#374151" />
+      <path d="m8 9.2 3 2.8-3 2.8" fill="none" stroke="#F9FAFB" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+      <path d="M12.5 15h3.8" stroke="#9CA3AF" stroke-width="1.8" stroke-linecap="round" />
     </svg>`,
 };
 
