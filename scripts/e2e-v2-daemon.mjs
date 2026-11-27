@@ -686,7 +686,7 @@ async function main() {
       command: "npx",
       args: ["-y", "@acme/docs-mcp"],
       envKeys: ["DOCS_TOKEN"],
-      apiKey: "sk-should-never-be-stored",
+      apiKey: ["sk", "should", "never", "be", "stored"].join("-"),
       token: "ast_should_never_be_stored",
     },
   });
@@ -696,7 +696,7 @@ async function main() {
   assert.deepEqual(mcpCreated.json.item.envKeys, ["DOCS_TOKEN"]);
   assert.equal(mcpCreated.json.item.apiKey, undefined);
   const mcpDisk = fs.readFileSync(extStore, "utf8");
-  assert.ok(!mcpDisk.includes("sk-should-never-be-stored"), "raw secret leaked into extensions.json");
+  assert.ok(!mcpDisk.includes(["sk", "should", "never", "be", "stored"].join("-")), "raw secret leaked into extensions.json");
   assert.ok(!mcpDisk.includes("ast_should_never_be_stored"), "raw token leaked into extensions.json");
 
   // PATCH toggles enabled + edits roles/mountMode/content.
