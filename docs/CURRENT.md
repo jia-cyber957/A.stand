@@ -1,7 +1,7 @@
 # A.stand 当前状态与验收接力棒
 
 - **分支**：`main`（本地领先 `origin/main`，按用户要求暂不推送 GitHub，待验收后统一推送）
-- **最新纯代码基线**：`7526654`（2026-11-27）
+- **最新纯代码基线**：`7ba63a9`（2026-11-27）
 - **便携桌面包**：`dist-desktop/A.stand/a-stand.exe`（最新 `daemon.mjs` / `desktop.html` 已同步至 `dist-desktop/A.stand` 与 `%LOCALAPPDATA%\A.stand`）
 - **本机数据目录**：`%USERPROFILE%\.astand`（已手动只读复制旧插件配置；保留原 Antigravity v1 插件双轨并行）
 
