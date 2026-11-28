@@ -3,7 +3,7 @@ import readline from "node:readline";
 import { ROLE_SPECS } from "../core/constants.mjs";
 import { resolveGenericBinary } from "../core/paths.mjs";
 import { normalizeUsage } from "../core/telemetry.mjs";
-import { safeKill, utf8Env } from "./base.mjs";
+import { safeKill, utf8EnvChecked } from "./base.mjs";
 
 /**
  * Official Antigravity CLI (`agy`) adapter for headless delegation & cross-host readiness.
@@ -38,7 +38,7 @@ export class AntigravityCliEngine {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
       shell: bin.useShell,
-      env: utf8Env(),
+      env: await utf8EnvChecked(),
     });
 
     const sessionId = existingSessionId || `agy-${Date.now()}`;

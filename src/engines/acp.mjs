@@ -8,7 +8,7 @@ import zlib from "node:zlib";
 import { ROLE_SPECS } from "../core/constants.mjs";
 import { resolveDshBinary } from "../core/paths.mjs";
 import { normalizeUsage } from "../core/telemetry.mjs";
-import { proseTitle, safeKill, UpstreamProtocolError, utf8Env } from "./base.mjs";
+import { proseTitle, safeKill, UpstreamProtocolError, utf8EnvChecked } from "./base.mjs";
 
 const SHELL_TOOL_RE = /\b(pwsh|powershell|bash|sh|zsh|shell|exec|execute|run_command|run_terminal|terminal|command)\b/i;
 // Prompt deadlines are progress-based, not wall-clock based: a turn may legitimately run for
@@ -1204,7 +1204,7 @@ export class AcpEngine {
           stdio: ["pipe", "pipe", "pipe"],
           windowsHide: true,
           shell: bin.useShell,
-          env: utf8Env({ DSH_PERMISSION_MODE: "read-only" }),
+          env: await utf8EnvChecked({ DSH_PERMISSION_MODE: "read-only" }),
         });
 
         const configOptions = await new Promise((resolve) => {
@@ -1546,7 +1546,7 @@ export class AcpEngine {
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
         shell: bin.useShell,
-        env: utf8Env(extraEnv),
+        env: await utf8EnvChecked(extraEnv),
       });
 
       const state = {

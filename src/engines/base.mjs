@@ -111,6 +111,19 @@ async function isLoopbackReachable(host, port) {
 }
 
 /**
+ * Stable fingerprint of the effective proxy configuration.
+ *
+ * Long-lived CLI processes (Codex app-server, ACP children) capture their proxy
+ * environment at spawn time. Comparing this fingerprint against a freshly built
+ * env tells us whether the user flipped the proxy state (e.g. turning a local
+ * proxy on/off) so an idle process can be recycled instead of running with a
+ * stale environment.
+ */
+export function proxyFingerprint(env) {
+  return PROXY_ENV_KEYS.map((k) => `${k}=${env?.[k] || ""}`).join("|");
+}
+
+/**
  * Builds the UTF-8 env but drops dead loopback proxies (e.g. an inactive
  * 127.0.0.1:10808 left over from a stopped TUN/VPN tool) that would otherwise
  * blackhole every outbound request. Live loopback proxies and non-loopback

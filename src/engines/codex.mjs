@@ -3,7 +3,7 @@ import readline from "node:readline";
 import { CODEX_BROKEN_GUI_PLUGINS, CODEX_OFFICE_PLUGINS, ROLE_SPECS } from "../core/constants.mjs";
 import { resolveCodexBinary } from "../core/paths.mjs";
 import { normalizeUsage } from "../core/telemetry.mjs";
-import { proseTitle, safeKill, UpstreamProtocolError, utf8EnvChecked } from "./base.mjs";
+import { proseTitle, proxyFingerprint, safeKill, UpstreamProtocolError, utf8EnvChecked } from "./base.mjs";
 
 function parseRateLimitSnapshot(snap) {
   if (!snap || typeof snap !== "object") return null;
@@ -190,6 +190,7 @@ export class CodexEngine {
     this.initialized = false;
     this.serverVersion = "";
     this.spawnedWithKeepOffice = null;
+    this.proxyFingerprint = "";
     this.nextId = 1;
     this.pending = new Map();
     this.loadedThreads = new Set();
@@ -224,8 +225,17 @@ export class CodexEngine {
 
   async ensureConnected() {
     const keepOffice = Boolean(this.getKeepOfficePlugins?.());
+    const env = await utf8EnvChecked();
+    const fp = proxyFingerprint(env);
     if (this.proc && !this.proc.killed && this.initialized && this.spawnedWithKeepOffice === keepOffice) {
-      return;
+      const proxyFlipped = Boolean(this.proxyFingerprint) && this.proxyFingerprint !== fp;
+      if (proxyFlipped && this.pending.size === 0 && this.activeTurns.size === 0) {
+        // The proxy state flipped while Codex was idle: recycle the app-server so
+        // the next turn runs with the new environment without restarting A.stand.
+        await this.shutdown();
+      } else {
+        return;
+      }
     }
     if (this.connectingPromise) {
       await this.connectingPromise;
@@ -254,8 +264,9 @@ export class CodexEngine {
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
         shell: bin.useShell,
-        env: await utf8EnvChecked(),
+        env,
       });
+      this.proxyFingerprint = fp;
 
       this.proc.on("exit", (code, signal) => {
         const err = new Error(`codex app-server exited (code=${code}, signal=${signal})`);

@@ -1,33 +1,40 @@
 import { spawn } from "node:child_process";
+import path from "node:path";
 import readline from "node:readline";
 import { ROLE_SPECS } from "../core/constants.mjs";
 import { resolveCliPresetBinary } from "../core/paths.mjs";
 import { normalizeUsage } from "../core/telemetry.mjs";
-import { safeKill, utf8EnvChecked } from "./base.mjs";
+import { proxyFingerprint, safeKill, utf8EnvChecked } from "./base.mjs";
 
 const MODELS_TTL_MS = 300_000, MODELS_EMPTY_RETRY_MS = 15_000, MODELS_TIMEOUT_MS = 25_000, HEALTH_TIMEOUT_MS = 15_000;
 const DEFAULT_IDLE_TIMEOUT_MS = 1_800_000, DEFAULT_ABSOLUTE_TIMEOUT_MS = 7_200_000;
 const READ_ONLY_TOOL_RE = /^(read|view|open|search|grep|glob|find|list|ls|stat|inspect|cat|head|tail|describe)\b/i;
 const WRITE_TOOL_RE = /\b(write|edit|delete|remove|create|move|rename|patch|apply|shell|command|exec|execute|run|terminal|spawn|bash|sh|powershell|cmd|mkdir|rm|cp|mv|chmod)\b/i;
 const RATE_LIMIT_RE = /\b429\b|rate[\s_-]?limit|too many requests|quota|credits?\b|insufficient|balance/i;
-const CN_ACP_ENGINE_IDS = new Set(["doubao", "qoder-cn", "minimax"]);
 const PROXY_ENV_KEYS = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"];
-const LOOPBACK_PROXY_RE = /^(?:https?|socks\d?):\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\/?$/i;
 /**
- * CN ACP CLIs route through a local proxy when one is exported; if that proxy is dead
- * (e.g. a stopped 127.0.0.1:10808), every request hangs. Drop dead loopback proxies for
- * all engines (via utf8EnvChecked) and unconditionally for domestic engines (Doubao
- * always, mirroring the login path in cli-login.mjs).
+ * Dead loopback proxies (e.g. a stopped 127.0.0.1:10808 left over from a TUN/VPN
+ * tool) are dropped for every engine by utf8EnvChecked(). Only Doubao clears the
+ * proxy variables unconditionally, mirroring the login path in cli-login.mjs:
+ * other engines must keep a *live* local proxy, otherwise MiniMax Global breaks
+ * while the user is outside a VPN.
  */
 export async function buildAcpEnv(engineId) {
   const env = await utf8EnvChecked();
-  if (!CN_ACP_ENGINE_IDS.has(engineId)) return env;
+  if (engineId !== "doubao") return env;
   for (const key of PROXY_ENV_KEYS) {
-    const value = env[key];
-    if (!value) continue;
-    if (engineId === "doubao" || LOOPBACK_PROXY_RE.test(String(value).trim())) env[key] = "";
+    if (env[key]) env[key] = "";
   }
   return env;
+}
+/**
+ * Normalize a working directory into a stable map key plus the absolute path
+ * used to spawn the child process. Windows paths are case-insensitive, so the
+ * key is lowercased there to avoid two clients for the same directory.
+ */
+function normalizeCwd(cwd) {
+  const resolved = path.resolve(cwd || process.cwd());
+  return { key: process.platform === "win32" ? resolved.toLowerCase() : resolved, resolved };
 }
 const round1 = (n) => Math.round(n * 10) / 10;
 const asNumber = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
@@ -143,9 +150,11 @@ export class UniversalAcpEngine {
     this.id = descriptor.id;
     this.descriptor = descriptor;
     this.resolveBinaryFn = resolveBinaryFn;
-    this.client = null;
-    this.connecting = null;
-    this.sessions = new Set();
+    // One child process per working directory: some ACP CLIs (CodeBuddy) ignore
+    // session/new's cwd and only honour the spawned process cwd.
+    this.clients = new Map();
+    this.connecting = new Map();
+    this.sessions = new Map();
     this.busy = new Set();
     this.pendingCancels = new Set();
     this.latestModels = [];
@@ -159,16 +168,17 @@ export class UniversalAcpEngine {
     }
     return bin;
   }
-  async #connect() {
+  async #connect(cwdKey, normalizedCwd, env, fingerprint) {
     const bin = this.#resolveBinary();
     const launched = launchForShell(bin.command, this.descriptor.args || [], bin.useShell);
     const proc = spawn(launched.command, launched.args, {
+      cwd: normalizedCwd,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
       ...(launched.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
-      env: await buildAcpEnv(this.id),
+      env,
     });
-    const state = { proc, initialized: false, agentInfo: null, nextId: 1, pending: new Map(), listeners: new Map(), sessionRoles: new Map(), stderrRing: [] };
+    const state = { proc, cwdKey, cwd: normalizedCwd, proxyFingerprint: fingerprint, initialized: false, agentInfo: null, nextId: 1, pending: new Map(), listeners: new Map(), sessionRoles: new Map(), sessions: new Set(), stderrRing: [] };
     const sendRaw = (obj) => {
       if (!proc.stdin?.writable) throw new Error("ACP stdin closed");
       proc.stdin.write(`${JSON.stringify(obj)}\n`);
@@ -203,7 +213,7 @@ export class UniversalAcpEngine {
       state.pending.clear();
       for (const listener of state.listeners.values()) listener({ method: "__exit__", params: { code } });
       state.listeners.clear();
-      if (this.client === state) this.client = null;
+      if (this.clients.get(cwdKey) === state) this.clients.delete(cwdKey);
     });
     readline.createInterface({ input: proc.stdout }).on("line", (line) => {
       const trimmed = String(line || "").trim();
@@ -245,18 +255,60 @@ export class UniversalAcpEngine {
       }, 20_000);
       state.agentInfo = init?.agentInfo || null;
       state.initialized = true;
-      this.client = state;
+      this.clients.set(cwdKey, state);
       return state;
     } catch (err) {
       await safeKill(proc).catch(() => {});
       throw markRateLimitError(err, state.stderrRing.join("\n"));
     }
   }
-  async #ensureClient() {
-    if (this.client?.initialized && this.client.proc && this.client.proc.exitCode === null) return this.client;
-    if (this.connecting) return this.connecting;
-    this.connecting = this.#connect();
-    try { return await this.connecting; } finally { this.connecting = null; }
+  /**
+   * A client is idle when no turn is streaming on it and no request is in
+   * flight. Only idle clients may be recycled on a proxy state flip.
+   */
+  #isClientIdle(state) {
+    if (!state) return true;
+    if (state.listeners?.size) return false;
+    if (state.pending?.size) return false;
+    for (const sessionId of state.sessions || []) {
+      if (this.busy.has(sessionId)) return false;
+    }
+    return true;
+  }
+  #clientForSession(sessionId) {
+    for (const state of this.clients.values()) {
+      if (state.sessions?.has(sessionId)) return state;
+    }
+    return null;
+  }
+  #anyLiveClient() {
+    for (const state of this.clients.values()) {
+      if (state.initialized && state.proc && state.proc.exitCode === null) return state;
+    }
+    return null;
+  }
+  async #ensureClient(cwd) {
+    const { key: cwdKey, resolved: normalizedCwd } = normalizeCwd(cwd);
+    const env = await buildAcpEnv(this.id);
+    const fp = proxyFingerprint(env);
+    const existing = this.clients.get(cwdKey);
+    if (existing?.initialized && existing.proc && existing.proc.exitCode === null) {
+      const proxyFlipped = Boolean(existing.proxyFingerprint) && existing.proxyFingerprint !== fp;
+      if (!proxyFlipped || !this.#isClientIdle(existing)) return existing;
+      // The proxy state flipped while this client was idle: recycle the child
+      // process so the next turn runs with a fresh environment.
+      this.clients.delete(cwdKey);
+      await safeKill(existing.proc).catch(() => {});
+    }
+    const pending = this.connecting.get(cwdKey);
+    if (pending) return pending;
+    const promise = this.#connect(cwdKey, normalizedCwd, env, fp);
+    this.connecting.set(cwdKey, promise);
+    try {
+      return await promise;
+    } finally {
+      if (this.connecting.get(cwdKey) === promise) this.connecting.delete(cwdKey);
+    }
   }
   #answerPermission(state, msg) {
     const params = msg.params || {};
@@ -293,14 +345,16 @@ export class UniversalAcpEngine {
   async runTurn({ cwd, role, model, effort = "medium", prompt, existingSessionId, requireResume = false, onActivity, onSessionReady, idleTimeoutMs, absoluteTimeoutMs }) {
     const startedAt = Date.now();
     const spec = ROLE_SPECS[role] || ROLE_SPECS.oracle;
-    const state = await this.#ensureClient();
+    const { key: cwdKey, resolved: normalizedCwd } = normalizeCwd(cwd);
+    const state = await this.#ensureClient(normalizedCwd);
     let sessionId = existingSessionId || "";
     let reused = false, resumedFromDisk = false;
-    if (sessionId && this.sessions.has(sessionId)) reused = true;
+    if (sessionId && this.sessions.get(sessionId) === cwdKey) reused = true;
     else if (sessionId) {
       try {
-        await state.request("session/load", { sessionId, cwd, mcpServers: [] }, 20_000);
-        this.sessions.add(sessionId);
+        await state.request("session/load", { sessionId, cwd: normalizedCwd, mcpServers: [] }, 20_000);
+        this.sessions.set(sessionId, cwdKey);
+        state.sessions.add(sessionId);
         reused = resumedFromDisk = true;
       } catch (err) {
         if (requireResume) throw err;
@@ -308,10 +362,11 @@ export class UniversalAcpEngine {
       }
     }
     if (!sessionId) {
-      const created = await state.request("session/new", { cwd, mcpServers: [] }, 30_000);
+      const created = await state.request("session/new", { cwd: normalizedCwd, mcpServers: [] }, 30_000);
       sessionId = created?.sessionId;
       if (!sessionId) throw new Error(`[${this.id}] ACP session/new returned no sessionId`);
-      this.sessions.add(sessionId);
+      this.sessions.set(sessionId, cwdKey);
+      state.sessions.add(sessionId);
     }
     if (this.busy.has(sessionId)) throw new Error(`[${this.id}] session ${sessionId} already has an active turn`);
     this.busy.add(sessionId);
@@ -436,13 +491,14 @@ export class UniversalAcpEngine {
         displayNameZh: `${this.descriptor.labelZh || label}（默认）`, isDefault: true, engine: this.id,
       };
       try {
+        const existing = this.#anyLiveClient();
         const state = await Promise.race([
-          this.#ensureClient(),
+          existing ? Promise.resolve(existing) : this.#ensureClient(process.cwd()),
           new Promise((resolve) => setTimeout(() => resolve(null), MODELS_TIMEOUT_MS).unref?.()),
         ]);
         if (!state) throw new Error(`[${this.id}] model discovery timed out`);
         state.lastConfigOptions = null;
-        const created = await state.request("session/new", { cwd: process.cwd(), mcpServers: [] }, MODELS_TIMEOUT_MS);
+        const created = await state.request("session/new", { cwd: state.cwd || process.cwd(), mcpServers: [] }, MODELS_TIMEOUT_MS);
         let rawModels = collectAcpModelOptions(created);
         if (!rawModels.length) {
           if (!Array.isArray(state.lastConfigOptions)) {
@@ -471,9 +527,10 @@ export class UniversalAcpEngine {
   }
   async interruptTurn(sessionId) {
     if (!sessionId) return false;
-    if (!this.client || !this.busy.has(sessionId)) { this.pendingCancels.add(sessionId); return false; }
+    const state = this.#clientForSession(sessionId);
+    if (!state || !this.busy.has(sessionId)) { this.pendingCancels.add(sessionId); return false; }
     try {
-      this.client.sendRaw({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId } });
+      state.sendRaw({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId } });
       return true;
     } catch { return false; }
   }
@@ -514,10 +571,13 @@ export class UniversalAcpEngine {
   }
 
   async shutdown() {
-    const state = this.client;
-    this.client = null;
+    const states = [...this.clients.values()];
+    this.clients.clear();
+    this.connecting.clear();
     this.sessions.clear();
     this.busy.clear();
-    if (state?.proc) await safeKill(state.proc).catch(() => {});
+    for (const state of states) {
+      if (state.proc) await safeKill(state.proc).catch(() => {});
+    }
   }
 }

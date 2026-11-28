@@ -26,7 +26,7 @@ import {
 } from "../src/core/cli-profiles.mjs";
 import { buildLocalHandoffBrief, classifyChannelFailure } from "../src/core/orchestrator.mjs";
 import { RelayStore } from "../src/core/store.mjs";
-import { utf8EnvChecked } from "../src/engines/base.mjs";
+import { proxyFingerprint, utf8EnvChecked } from "../src/engines/base.mjs";
 
 const results = [];
 const WATCHDOG_MS = 28_000;
@@ -181,6 +181,32 @@ async function main() {
     assert.equal(env.ALL_PROXY, "", "dead loopback proxy must be stripped");
     assert.equal(env.HTTPS_PROXY, "http://203.0.113.1:3128", "non-loopback proxy must be preserved");
     assert.equal(env.HTTP_PROXY, "http://proxy.example.com:8080", "non-loopback host proxy must be preserved");
+  });
+
+  await test("proxyFingerprint changes when a proxy var flips and is stable otherwise", async () => {
+    const base = {
+      ALL_PROXY: "http://127.0.0.1:1",
+      HTTPS_PROXY: "http://203.0.113.1:3128",
+      HTTP_PROXY: "http://proxy.example.com:8080",
+    };
+    const baseline = proxyFingerprint(await utf8EnvChecked({ ...base }));
+    assert.ok(baseline.includes("HTTP_PROXY="), "fingerprint must cover the proxy keys");
+
+    const flipped = proxyFingerprint(
+      await utf8EnvChecked({ ...base, HTTP_PROXY: "http://proxy.example.com:9090" })
+    );
+    assert.notEqual(flipped, baseline, "fingerprint must change when a proxy value flips");
+
+    const flippedAgain = proxyFingerprint(
+      await utf8EnvChecked({ ...base, HTTP_PROXY: "http://proxy.example.com:9090" })
+    );
+    assert.equal(flippedAgain, flipped, "fingerprint must be stable for identical proxy state");
+
+    const restored = proxyFingerprint(await utf8EnvChecked({ ...base }));
+    assert.equal(restored, baseline, "fingerprint must return to the baseline when proxies revert");
+
+    const cleared = proxyFingerprint(await utf8EnvChecked({ ...base, HTTP_PROXY: "" }));
+    assert.notEqual(cleared, baseline, "clearing a proxy var must change the fingerprint");
   });
 
   await test("profile isolation matrix, safe paths and launch overlays", () => {

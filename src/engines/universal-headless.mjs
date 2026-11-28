@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { ROLE_SPECS } from "../core/constants.mjs";
 import { resolveCliPresetBinary } from "../core/paths.mjs";
 import { normalizeUsage } from "../core/telemetry.mjs";
-import { safeKill, utf8Env } from "./base.mjs";
+import { safeKill, utf8EnvChecked } from "./base.mjs";
 import { launchForShell, markRateLimitError } from "./universal-acp.mjs";
 
 const DEFAULT_TIMEOUT_MS = 10 * 60_000;
@@ -61,7 +61,7 @@ export class UniversalHeadlessEngine {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
       ...(launched.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
-      env: utf8Env(),
+      env: await utf8EnvChecked(),
     });
     this.proc = proc;
     let stdout = "";
@@ -166,7 +166,7 @@ export class UniversalHeadlessEngine {
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
         ...(launched.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
-        env: utf8Env(),
+        env: await utf8EnvChecked(),
       });
       const result = await new Promise((resolve, reject) => {
         let out = "";

@@ -3,7 +3,7 @@ import readline from "node:readline";
 import { ROLE_SPECS } from "../core/constants.mjs";
 import { resolveGenericBinary } from "../core/paths.mjs";
 import { normalizeUsage } from "../core/telemetry.mjs";
-import { safeKill, utf8Env } from "./base.mjs";
+import { safeKill, utf8EnvChecked } from "./base.mjs";
 
 /**
  * Official Claude Code CLI adapter (`claude -p --output-format stream-json --resume`).
@@ -51,7 +51,7 @@ export class ClaudeCodeEngine {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
       shell: bin.useShell,
-      env: utf8Env(),
+      env: await utf8EnvChecked(),
     });
 
     const procKey = existingSessionId || `pending-${Date.now()}`;
