@@ -493,6 +493,7 @@ const ui = {
   offline: false,
 
   clientSearch: "",
+  providerSearch: "",
   showDisabled: true,
   modal: null,
   setupTab: "prompt",
@@ -1426,9 +1427,9 @@ function navItem(page, icon, label, badge) {
   </button>`;
 }
 
-function navGroup(zh, en, items) {
+function navGroup(label, items) {
   return `<div class="nav-group">
-    <div class="nav-group-label"><span>${esc(zh)}</span><span class="nav-group-en">${esc(en)}</span></div>
+    <div class="nav-group-label">${esc(label)}</div>
     ${items.join("")}
   </div>`;
 }
@@ -1451,31 +1452,31 @@ function renderSidebar() {
 
   return `<aside class="sidebar">
     <div class="sidebar-head">
-      <button class="brand-mark" data-action="toggle-sidebar" title="${esc(ui.sidebarCollapsed ? t("expandSidebar") : t("collapseSidebar"))}" aria-label="${esc(ui.sidebarCollapsed ? t("expandSidebar") : t("collapseSidebar"))}">${iconSvg("brand", 30)}</button>
+      <button class="brand-mark" data-action="toggle-sidebar" title="${esc(ui.sidebarCollapsed ? t("expandSidebar") : t("collapseSidebar"))}" aria-label="${esc(ui.sidebarCollapsed ? t("expandSidebar") : t("collapseSidebar"))}">${iconSvg("brand", 24)}</button>
       <div class="brand-text">
         <span class="brand-name">A.stand</span>
-        <span class="version-pill">v2</span>
       </div>
       <button class="sidebar-collapse" data-action="toggle-sidebar" title="${esc(ui.sidebarCollapsed ? t("expandSidebar") : t("collapseSidebar"))}" aria-label="${esc(ui.sidebarCollapsed ? t("expandSidebar") : t("collapseSidebar"))}">
-        ${iconSvg(ui.sidebarCollapsed ? "expand" : "collapse")}
+        ${iconSvg(ui.sidebarCollapsed ? "expand" : "collapse", 15)}
       </button>
     </div>
     <nav class="nav">
-      ${navGroup(t("groupDispatch"), "DISPATCH", [
+      ${navGroup(t("groupDispatch"), [
         navItem("activity", "activity", t("navActivity"), activityBadge),
         navItem("roles", "roles", t("navRoles")),
         navItem("extensions", "extensions", t("navExtensions"), extensionsBadge),
       ])}
-      ${navGroup(t("groupConnect"), "CONNECT", [
+      ${navGroup(t("groupConnect"), [
         navItem("clients", "clients", t("navClients"), clientBadge),
         navItem("providers", "providers", t("navProviders")),
       ])}
-      ${navGroup(t("groupObserve"), "OBSERVE", [navItem("observability", "observability", t("navObservability"))])}
-      ${navGroup(t("groupSystem"), "SYSTEM", [navItem("settings", "settings", t("navSettings"))])}
+      ${navGroup(t("groupObserve"), [navItem("observability", "observability", t("navObservability"))])}
+      ${navGroup(t("groupSystem"), [navItem("settings", "settings", t("navSettings"))])}
     </nav>
     <div class="sidebar-foot">
       <button class="gateway-chip" data-action="copy-gateway" title="${esc(t("copyGateway"))}">
         <span class="status-dot ${ui.offline ? "off" : ""}"></span>
+        <span class="gateway-label">${esc(isEn() ? "Gateway" : "网关")}</span>
         <span class="mono">${esc(gateway)}</span>
       </button>
     </div>
@@ -1483,46 +1484,48 @@ function renderSidebar() {
 }
 
 function renderTopbar() {
-  const titles = {
-    clients: [t("titleClients"), t("subClients")],
-    activity: [t("titleActivity"), t("subActivity")],
-    roles: [t("titleRoles"), t("subRoles")],
-    extensions: [t("titleExtensions"), t("subExtensions")],
-    providers: [t("titleProviders"), t("subProviders")],
-    observability: [t("titleObservability"), t("subObservability")],
-    settings: [t("titleSettings"), t("subSettings")],
+  const crumbs = {
+    activity: [t("groupDispatch"), t("navActivity")],
+    roles: [t("groupDispatch"), t("navRoles")],
+    extensions: [t("groupDispatch"), t("navExtensions")],
+    clients: [t("groupConnect"), t("navClients")],
+    providers: [t("groupConnect"), t("navProviders")],
+    observability: [t("groupObserve"), t("navObservability")],
+    settings: [t("groupSystem"), t("navSettings")],
   };
-  const [title, sub] = titles[ui.page] || titles.clients;
+  const [groupLabel, pageLabel] = crumbs[ui.page] || crumbs.providers;
   const updApp = ui.updates?.app?.hasUpdate ? ui.updates.app : null;
   const updCliCount = (ui.updates?.clis || []).filter((c) => c.hasUpdate).length;
   const hasAnyUpd = Boolean(updApp || updCliCount > 0);
   const updLabel = ui.checkingUpdates
     ? isEn() ? "Checking…" : "检查中…"
     : updApp
-    ? isEn() ? `Update v${updApp.latestVersion}` : `立即更新 v${updApp.latestVersion}`
+    ? isEn() ? `Update v${updApp.latestVersion}` : `更新 v${updApp.latestVersion}`
     : updCliCount > 0
-    ? isEn() ? `${updCliCount} CLI updates` : `${updCliCount} 个 CLI 可更新`
+    ? isEn() ? `${updCliCount} CLI updates` : `${updCliCount} 更新`
     : isEn() ? "Check updates" : "检查更新";
 
   return `<header class="topbar">
-    <div class="page-title-wrap">
-      <h1 class="page-title">${esc(title)}</h1>
-      <span class="page-sub">${esc(sub)}</span>
-    </div>
+    <nav class="topbar-crumb" aria-label="Breadcrumb">
+      <span class="crumb-group">${esc(groupLabel)}</span>
+      <span class="crumb-sep">/</span>
+      <h1 class="crumb-current">${esc(pageLabel)}</h1>
+    </nav>
     <div class="topbar-spacer"></div>
     <div class="topbar-actions">
-      <button class="btn xs ${hasAnyUpd ? "primary" : ""}" data-action="check-updates" ${ui.checkingUpdates ? "disabled" : ""} title="${esc(isEn() ? "Check A.stand and CLI updates" : "检查 A.stand 本体与各 CLI 更新")}">
-        ${iconSvg("upload", 13)} ${esc(updLabel)}
+      <button class="topbar-btn ${hasAnyUpd ? "has-update" : ""}" data-action="check-updates" ${ui.checkingUpdates ? "disabled" : ""} title="${esc(isEn() ? "Check A.stand and CLI updates" : "检查 A.stand 本体与各 CLI 更新")}">
+        ${iconSvg("upload", 14)}
+        ${hasAnyUpd || ui.checkingUpdates ? `<span>${esc(updLabel)}</span>` : ""}
       </button>
-      <button class="btn xs ${ui.privacyMask ? "primary" : ""}" data-action="toggle-privacy-mask" title="${esc(isEn() ? "Mask accounts and API keys for screenshots" : "隐藏账号邮箱、手机号与密钥，方便截图分享")}">
-        ${iconSvg(ui.privacyMask ? "eyeOff" : "eye", 13)} ${esc(isEn() ? (ui.privacyMask ? "Masked" : "Mask") : ui.privacyMask ? "已打码" : "账号打码")}
+      <button class="topbar-btn ${ui.privacyMask ? "active" : ""}" data-action="toggle-privacy-mask" title="${esc(isEn() ? "Mask accounts and API keys for screenshots" : "隐藏账号邮箱、手机号与密钥，方便截图分享")}">
+        ${iconSvg(ui.privacyMask ? "eyeOff" : "eye", 14)}
+        <span>${esc(isEn() ? (ui.privacyMask ? "Masked" : "Mask") : ui.privacyMask ? "已打码" : "账号打码")}</span>
       </button>
-      <div class="seg" role="group" aria-label="${esc(t("language"))}">
-        <button class="seg-btn ${!isEn() ? "active" : ""}" data-action="set-lang" data-lang="zh">中文</button>
-        <button class="seg-btn ${isEn() ? "active" : ""}" data-action="set-lang" data-lang="en">EN</button>
-      </div>
-      <button class="icon-btn" data-action="cycle-theme" title="${esc(`${t("themeToggle")} · ${themeLabel()}`)}" aria-label="${esc(t("themeToggle"))}">
-        ${iconSvg(themeIcon())}
+      <button class="topbar-btn" data-action="set-lang" data-lang="${isEn() ? "zh" : "en"}" title="${esc(t("language"))}">
+        <span>${isEn() ? "中文" : "EN"}</span>
+      </button>
+      <button class="topbar-btn icon-only" data-action="cycle-theme" title="${esc(`${t("themeToggle")} · ${themeLabel()}`)}" aria-label="${esc(t("themeToggle"))}">
+        ${iconSvg(themeIcon(), 15)}
       </button>
     </div>
   </header>`;
@@ -2421,6 +2424,171 @@ function renderChannelCard(channel) {
   </div>`;
 }
 
+function renderMagpieCliRows(eid) {
+  const eng = state?.engines?.[eid] || {};
+  const meta = state?.cliEnginesMeta?.[eid] || {};
+  const rl = state?.codexRateLimits;
+  const showQuota = eid === "codex" && Boolean(rl);
+  const { loggedIn, probing, identity, subCount, acc } = engineLoginSummary(eid);
+  const loginSess = state?.cliLogins?.[eid] || null;
+  const loggingIn = Boolean(
+    loginSess && (loginSess.status === "starting" || loginSess.status === "waiting_browser" || loginSess.status === "waiting_qr")
+  );
+  const canInAppLogin = Boolean(
+    eng.installed && (eng.extensible || ["doubao", "qoder", "qoder-cn", "minimax", "opencode", "codebuddy", "junie", "kiro", "codearts"].includes(eid))
+  );
+  const loginBarHtml = eng.installed ? getCliCatalogModal().renderLoginBar(eid) : "";
+  const installBarHtml = getCliCatalogModal().renderInstallBar(eid);
+  const cooled = engineCooldownModels(eid);
+  const cliName = shortEngineLabel(eid);
+  const isCustom = Boolean(eng.custom || meta.custom);
+  const cliUpd = (ui.updates?.clis || []).find((c) => c.id === eid && c.hasUpdate);
+  const isLocalConfigOnly = eid === "opencode" && acc?.loginMethod === "local config";
+  const rawProfiles = Array.isArray(state?.cliAccountProfiles?.[eid]) && state.cliAccountProfiles[eid].length > 0
+    ? state.cliAccountProfiles[eid]
+    : [{ id: "default", label: "", enabled: true, isDefault: true }];
+
+  const rightStatusText = (() => {
+    if (loggingIn) return isEn() ? "Signing in…" : "登录中…";
+    if (probing) return isEn() ? "Checking…" : "检测中…";
+    if (!loggedIn) return isEn() ? "Not signed in" : "未登录";
+    if (eid === "codex" && (rl?.planType || acc?.planType)) {
+      const p = String(rl?.planType || acc?.planType);
+      return `ChatGPT ${p.charAt(0).toUpperCase()}${p.slice(1).toLowerCase()}`;
+    }
+    if (isLocalConfigOnly) return isEn() ? "Local config" : "本机配置";
+    if (acc?.loginMethod === "minimax_oauth") return "OAuth";
+    if (eid === "deepseek-harness") return isEn() ? "CLI Runtime" : "官方 CLI";
+    return isEn() ? "Ready" : "正常可用";
+  })();
+
+  return rawProfiles
+    .map((prof) => {
+      const isDef = prof.id === "default" || prof.isDefault;
+      const rowLoggedIn = isDef ? loggedIn : Boolean(prof.enabled);
+      const statusDot = loggingIn && isDef ? "warn" : rowLoggedIn ? "ok" : probing && isDef ? "off" : "off";
+      const modelStr = subCount > 0 ? (isEn() ? `${subCount} models` : `${subCount} 个模型`) : "";
+      const verStr = eng.version ? String(eng.version).replace(/^[^0-9]*/, "v") : "";
+
+      const subtitle = isDef
+        ? rowLoggedIn
+          ? [
+              identity && identity !== "已登录" && identity !== "Signed in"
+                ? `${isEn() ? "Signed in" : "已登录"} ${identity}`
+                : isEn() ? "Signed in" : "已登录",
+              modelStr,
+            ].filter(Boolean).join(" · ")
+          : [isEn() ? "Not signed in" : "未登录", verStr, modelStr].filter(Boolean).join(" · ")
+        : `${prof.enabled ? (isEn() ? "Active in rotation" : "已启用 · 参与轮换") : isEn() ? "Paused" : "已暂停"}`;
+
+      const rowTitle = isDef ? cliName : `${cliName} · ${prof.label || prof.id}`;
+      const badgeText = isDef
+        ? isCustom
+          ? isEn() ? "Custom" : "自定义"
+          : isEn() ? "CLI" : "套餐"
+        : isEn() ? "Account" : "独立账号";
+
+      return `<div class="mg-row-wrap">
+        <div class="mg-row" data-action="cd-open" data-engine="${esc(eid)}" role="button" tabindex="0">
+          <div class="mg-row-icon">${engineIconSvg(eid, 26)}</div>
+          <div class="mg-row-main">
+            <div class="mg-row-title">
+              <span class="mg-row-name truncate">${esc(rowTitle)}</span>
+              <span class="mg-pill">${esc(badgeText)}</span>
+              ${isDef && cliUpd ? `<span class="mg-pill blue">↑ v${esc(cliUpd.latestVersion)}</span>` : ""}
+            </div>
+            <div class="mg-row-sub truncate">${esc(subtitle)}</div>
+          </div>
+          <div class="mg-row-right">
+            <span class="mg-status ${rowLoggedIn ? "ok" : ""}">
+              <span class="dot-inline ${statusDot}"></span>
+              <span class="truncate">${esc(isDef ? rightStatusText : prof.enabled ? (isEn() ? "Active" : "已启用") : isEn() ? "Paused" : "已暂停")}</span>
+            </span>
+            ${isDef && eid === "codex"
+              ? `<button class="mg-icon-act" data-action="refresh-quota" title="${esc(t("refreshQuota"))}" aria-label="${esc(t("refreshQuota"))}">${iconSvg("refresh", 14)}</button>`
+              : ""}
+            ${isDef && !rowLoggedIn && !loggingIn && canInAppLogin
+              ? `<button class="btn xs primary" data-action="cli-login-start" data-engine="${esc(eid)}">${esc(isEn() ? "Sign in" : "登录")}</button>`
+              : ""}
+            ${isDef && isCustom
+              ? `<button class="mg-icon-act" data-action="cli-open-custom" data-engine="${esc(eid)}" title="${esc(t("edit"))}">${iconSvg("edit", 14)}</button>
+                 <button class="mg-icon-act danger" data-action="cli-delete-custom" data-engine="${esc(eid)}" title="${esc(t("delete"))}">${iconSvg("trash", 14)}</button>`
+              : ""}
+            <span class="mg-chevron">${iconSvg("chevronRight", 15)}</span>
+          </div>
+        </div>
+        ${isDef && showQuota
+          ? `<div class="mg-row-extra">${renderQuotaBars()}${rl?.cached ? `<div class="field-hint" style="margin-top:4px">${esc(isEn() ? "Showing cached quota — click refresh when online." : "显示上次缓存额度 · 连通 chatgpt.com 后点右侧刷新")}</div>` : ""}</div>`
+          : isDef && eid === "codex" && rowLoggedIn
+          ? `<div class="mg-row-extra"><div class="field-hint">${esc(isEn() ? "5h/7d quota unavailable — click refresh when chatgpt.com is reachable." : "暂未同步 5h/7d 额度 · 可访问 chatgpt.com 后点右侧刷新")}</div></div>`
+          : ""}
+        ${isDef && cooled.length
+          ? `<div class="mg-row-extra mg-cooldown-row">${cooled
+              .map(
+                (x) => `<span class="tag amber">⏳ ${esc(x.model.name)} · ${esc(x.cd.manualOnly ? t("balanceDepleted") : fmtCountdown(x.cd.untilMs))}
+                  <button class="chip-btn" data-action="clear-cooldown" data-model="${esc(x.model.id)}" title="${esc(t("restore"))}">${esc(t("restore"))}</button>
+                </span>`
+              )
+              .join("")}</div>`
+          : ""}
+        ${isDef && (loginBarHtml || installBarHtml) ? `<div class="mg-row-extra">${installBarHtml}${loginBarHtml}</div>` : ""}
+      </div>`;
+    })
+    .join("");
+}
+
+function renderMagpieChannelRow(channel) {
+  const readOnly = channel.source === "dsh" || channel.readOnly;
+  const models = channel.models || [];
+  const rawKey = channel.maskedApiKey || (channel.hasApiKey ? t("keyMasked") : "");
+  const key = ui.privacyMask && rawKey ? "••••••••" : rawKey;
+  const cooled = channelCooldownModels(channel);
+  const name = ui.privacyMask
+    ? maskPrivacyText(channel.name || providerName(channel.providerId))
+    : channel.name || providerName(channel.providerId);
+  const rawHost = String(channel.baseUrl || "").replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
+  const hostDisplay = rawHost ? (ui.privacyMask ? maskPrivacyText(rawHost) : rawHost) : "";
+  const modelStr = models.length ? (isEn() ? `${models.length} models` : `${models.length} 个模型`) : t("noModelsFetched");
+  const subtitle = [hostDisplay, modelStr].filter(Boolean).join(" · ");
+  const test = ui.channelTest && ui.channelTest.key === `channel:${channel.id}` ? ui.channelTest : null;
+
+  return `<div class="mg-row-wrap">
+    <div class="mg-row" ${readOnly ? "" : `data-action="edit-channel" data-channel="${esc(channel.id)}" role="button" tabindex="0"`}>
+      <div class="mg-row-icon">${engineIconSvg(channel.providerId === "deepseek" ? "deepseek-harness" : "api", 26)}</div>
+      <div class="mg-row-main">
+        <div class="mg-row-title">
+          <span class="mg-row-name truncate">${esc(name)}</span>
+          <span class="mg-pill">${esc(readOnly ? t("readOnly") : "API")}</span>
+        </div>
+        <div class="mg-row-sub truncate" title="${esc(channel.baseUrl || "")}">${esc(subtitle)}</div>
+      </div>
+      <div class="mg-row-right">
+        <span class="mg-status ok">
+          <span class="dot-inline ok"></span>
+          <span class="mono truncate" style="max-width:120px">${esc(key || (isEn() ? "Configured" : "已配置"))}</span>
+        </span>
+        ${readOnly
+          ? ""
+          : `<button class="mg-icon-act" data-action="test-channel" data-channel="${esc(channel.id)}" title="${esc(isEn() ? "Test connection" : "测试连通")}">${iconSvg("zap", 14)}</button>
+             <button class="mg-icon-act danger" data-action="delete-channel" data-channel="${esc(channel.id)}" title="${esc(t("delete"))}">${iconSvg("trash", 14)}</button>
+             <span class="mg-chevron">${iconSvg("chevronRight", 15)}</span>`}
+      </div>
+    </div>
+    ${test
+      ? `<div class="mg-row-extra"><div class="field-hint" style="color:${test.ok ? "var(--green)" : "var(--red)"}">${esc(test.loading ? t("testing") : test.ok ? t("connOk") : `${t("connFail")}${test.error ? `: ${test.error}` : ""}`)}</div></div>`
+      : ""}
+    ${cooled.length
+      ? `<div class="mg-row-extra mg-cooldown-row">${cooled
+          .map(
+            (x) => `<span class="tag amber">⏳ ${esc(x.model.name || x.model.modelName || x.model.id)} · ${esc(x.cd.manualOnly ? t("balanceDepleted") : fmtCountdown(x.cd.untilMs))}
+              <button class="chip-btn" data-action="clear-cooldown" data-model="${esc(x.model.id)}" title="${esc(t("restore"))}">${esc(t("restore"))}</button>
+            </span>`
+          )
+          .join("")}</div>`
+      : ""}
+  </div>`;
+}
+
 function renderProvidersPage() {
   const engines = state?.engines || {};
   const allIds = Object.keys(engines);
@@ -2435,7 +2603,6 @@ function renderProvidersPage() {
   const displayedIds = visibleEngineIds.length ? visibleEngineIds : ENGINE_ORDER.filter((id) => id in engines);
   const hiddenCount = Math.max(0, orderedIds.length - displayedIds.length);
 
-  // Bottom-right API Channels: strictly user-added / third-party API channels (DeepSeek official account lives on the left!).
   const customChannels = state?.settings?.channels || [];
   const extraApiChannels = (state?.dshChannels || []).filter(
     (c) =>
@@ -2448,62 +2615,54 @@ function renderProvidersPage() {
   const accountSortedIds = [...displayedIds].sort((a, b) => {
     const rank = (eid) => {
       const s = engineLoginSummary(eid);
-      if (s.loggedIn && !(eid === "opencode" && s.acc?.loginMethod === "local config")) return 0; // Signed-in cloud accounts first
-      if (s.loggedIn) return 1; // Local-config-ready (e.g. OpenCode) second
-      return 2; // Not signed in at bottom
+      if (s.loggedIn && !(eid === "opencode" && s.acc?.loginMethod === "local config")) return 0;
+      if (s.loggedIn) return 1;
+      return 2;
     };
     const diff = rank(a) - rank(b);
     if (diff !== 0) return diff;
     return displayedIds.indexOf(a) - displayedIds.indexOf(b);
   });
 
-  return `<div class="content-inner">
-    <div class="section-head">
-      <span class="section-title">${esc(t("cliEngines"))}</span>
-      <span class="section-sub nums">${displayedIds.length}</span>
-      <span class="field-hint" style="margin-left:6px">${esc(isEn() ? "Installed local CLI runtimes" : "本机已装 CLI 执行容器")}</span>
-      <div class="spacer"></div>
-      <button class="btn xs" data-action="refresh-detect" ${ui.detecting ? "disabled" : ""}>${iconSvg("refresh")} ${esc(ui.detecting ? t("loading") : t("refreshDetect"))}</button>
-      <button class="btn xs primary" data-action="cli-open-catalog">${iconSvg("plus")} ${esc(isEn() ? "Add CLI engine" : "添加 CLI 引擎")}</button>
-    </div>
-    <div class="cli-engine-grid">
-      ${displayedIds.map(renderEngineTile).join("")}
-    </div>
-    ${hiddenCount > 0
-      ? `<div class="field-hint" style="margin-top:-4px">${esc(
-          isEn()
-            ? `${hiddenCount} more official CLI presets available (Kimi, CodeBuddy, Qwen, Gemini, Cursor…) — click “Add CLI engine” to install or add a custom ACP CLI.`
-            : `另有 ${hiddenCount} 个官方 CLI 预设可按需接入（Kimi、CodeBuddy、Qwen、Gemini、Cursor 等），点击右上角「添加 CLI 引擎」一键安装或自定义。`
-        )}</div>`
-      : ""}
+  const q = String(ui.providerSearch || "").trim().toLowerCase();
+  const filteredChannels = q
+    ? channels.filter((c) =>
+        `${c.name || ""} ${c.baseUrl || ""} ${providerName(c.providerId)}`.toLowerCase().includes(q)
+      )
+    : channels;
+  const filteredEngines = q
+    ? accountSortedIds.filter((eid) => {
+        const s = engineLoginSummary(eid);
+        return `${eid} ${shortEngineLabel(eid)} ${engineLabel(eid)} ${s.identity || ""}`.toLowerCase().includes(q);
+      })
+    : accountSortedIds;
 
-    <div class="providers-split-grid">
-      <div class="providers-col">
-        <div class="section-head">
-          <span class="section-title">${esc(isEn() ? "Accounts & Quotas" : "账号与额度")}</span>
-          <span class="section-sub nums">${accountSortedIds.reduce((acc, eid) => acc + Math.max(1, (state?.cliAccountProfiles?.[eid] || []).length), 0)}</span>
-        </div>
-        <div class="card-list">
-          ${accountSortedIds.map(renderCliAccountCards).join("")}
-        </div>
-      </div>
+  const hasRows = filteredChannels.length > 0 || filteredEngines.length > 0;
 
-      <div class="providers-col">
-        <div class="section-head">
-          <span class="section-title">${esc(t("apiChannels"))}</span>
-          <span class="section-sub nums">${channels.length}</span>
-          <div class="spacer"></div>
-          <button class="btn xs primary" data-action="open-channel">${iconSvg("plus")} ${esc(t("addChannel"))}</button>
-        </div>
-        ${channels.length
-          ? `<div class="card-list">${channels.map(renderChannelCard).join("")}</div>`
-          : `<div class="card"><div class="empty-state">
-              <div class="empty-icon">${iconSvg("database", 18)}</div>
-              <div style="font-weight:600;color:var(--ink);margin-bottom:4px">${esc(t("noChannels"))}</div>
-              <div style="max-width:340px;margin:0 auto 14px">${esc(t("noChannelsDesc"))}</div>
-              <button class="btn primary" data-action="open-channel">${iconSvg("plus")} ${esc(t("addChannel"))}</button>
-            </div></div>`}
+  return `<div class="content-inner mg-providers-shell">
+    <div class="mg-toolbar">
+      <div class="mg-search-wrap">
+        <input class="mg-search-input" type="search" data-ui="provider-search" data-focus-key="provider-search" placeholder="${esc(isEn() ? "Search providers…" : "查找供应商")}" value="${esc(ui.providerSearch || "")}" />
       </div>
+      <button class="mg-ghost-act" data-action="refresh-detect" ${ui.detecting ? "disabled" : ""}>
+        ${iconSvg("refresh", 14)}
+        <span>${esc(ui.detecting ? t("loading") : isEn() ? "Refresh" : "刷新检测")}</span>
+      </button>
+    </div>
+
+    ${hasRows
+      ? `<div class="mg-group-card">
+          ${filteredChannels.map(renderMagpieChannelRow).join("")}
+          ${filteredEngines.map(renderMagpieCliRows).join("")}
+        </div>`
+      : `<div class="mg-group-card"><div class="empty-state">${esc(isEn() ? "No matching providers" : "没有找到匹配的供应商")}</div></div>`}
+
+    <div class="mg-add-bar">
+      <button class="mg-add-link" data-action="cli-open-catalog">${iconSvg("plus", 14)} <span>${esc(isEn() ? "Add CLI provider" : "添加 CLI 供应商")}</span></button>
+      <button class="mg-add-link" data-action="open-channel">${iconSvg("plus", 14)} <span>${esc(isEn() ? "Add API channel" : "添加 API 渠道")}</span></button>
+      ${hiddenCount > 0
+        ? `<span class="mg-add-hint">${esc(isEn() ? `${hiddenCount} more official CLI presets available` : `另有 ${hiddenCount} 个官方 CLI 预设可一键接入`)}</span>`
+        : ""}
     </div>
   </div>`;
 }
@@ -4160,6 +4319,11 @@ function onInput(event) {
   }
   if (el.dataset.ui === "client-search") {
     ui.clientSearch = el.value;
+    scheduleRender();
+    return;
+  }
+  if (el.dataset.ui === "provider-search") {
+    ui.providerSearch = el.value;
     scheduleRender();
     return;
   }

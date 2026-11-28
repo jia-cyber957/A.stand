@@ -7,31 +7,31 @@
 :root {
   color-scheme: light;
 
-  --bg-app: #ffffff;
-  --bg-sidebar: #f7f8fa;
+  --bg-app: #fafafa;
+  --bg-sidebar: #f6f6f8;
   --bg-elevated: #ffffff;
-  --bg-subtle: #f7f8fa;
-  --bg-hover: #f1f3f6;
-  --bg-active: #eceef2;
+  --bg-subtle: #f4f5f7;
+  --bg-hover: #efeff2;
+  --bg-active: #e7e8ec;
   --bg-input: #ffffff;
-  --bg-code: #f7f8fa;
+  --bg-code: #f5f6f8;
   --bg-overlay: rgba(17, 24, 39, 0.34);
 
-  --border: #e6e8ec;
-  --border-strong: #d7dbe2;
-  --border-input: #dfe3e9;
+  --border: #e8e9ed;
+  --border-strong: #d4d6dc;
+  --border-input: #dfe1e7;
 
-  --ink: #111827;
-  --ink-2: #374151;
-  --ink-3: #4b5563;
+  --ink: #18181b;
+  --ink-2: #52525b;
+  --ink-3: #71717a;
   --ink-inverse: #ffffff;
 
-  --accent: #111827;
-  --accent-hover: #1f2937;
-  --accent-soft: #f1f3f6;
-  --seg-active-bg: #111827;
+  --accent: #18181b;
+  --accent-hover: #27272a;
+  --accent-soft: #f1f2f5;
+  --seg-active-bg: #18181b;
   --seg-active-ink: #ffffff;
-  --seg-active-border: #111827;
+  --seg-active-border: #18181b;
   --seg-active-muted-bg: rgba(255, 255, 255, 0.16);
   --seg-active-muted-ink: #ffffff;
   --brand: #2563eb;
@@ -50,8 +50,8 @@
   --violet: #7c3aed;
   --violet-soft: rgba(124, 58, 237, 0.09);
 
-  --shadow-xs: 0 1px 2px rgba(17, 24, 39, 0.04);
-  --shadow-sm: 0 1px 3px rgba(17, 24, 39, 0.06), 0 1px 2px rgba(17, 24, 39, 0.04);
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.035);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.03);
   --shadow-md: 0 8px 24px rgba(17, 24, 39, 0.08), 0 2px 6px rgba(17, 24, 39, 0.05);
   --shadow-lg: 0 24px 60px rgba(17, 24, 39, 0.18), 0 6px 16px rgba(17, 24, 39, 0.08);
 
@@ -62,14 +62,14 @@
   --r-xl: 16px;
   --r-pill: 999px;
 
-  --font: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", "PingFang SC",
-    "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", Roboto, Arial, sans-serif;
+  --font: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", -apple-system, BlinkMacSystemFont,
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", Roboto, Arial, sans-serif;
   --mono: ui-monospace, "Cascadia Mono", "Cascadia Code", "SF Mono", "JetBrains Mono", Consolas,
     "Liberation Mono", monospace;
 
-  --sidebar-w: 220px;
+  --sidebar-w: 224px;
   --sidebar-w-collapsed: 64px;
-  --header-h: 64px;
+  --header-h: 50px;
 }
 
 html[data-theme="dark"] {
@@ -140,10 +140,9 @@ body {
   background: var(--bg-app);
   color: var(--ink);
   font-family: var(--font);
-  font-size: 13px;
+  font-size: 13.5px;
   line-height: 1.5;
-  -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: auto;
   overflow: hidden;
 }
 
@@ -363,31 +362,23 @@ svg {
 }
 
 .nav-group {
-  margin-top: 14px;
+  margin-top: 16px;
 }
 
 .nav-group:first-child {
-  margin-top: 2px;
+  margin-top: 4px;
 }
 
 .nav-group-label {
   display: flex;
   align-items: baseline;
   gap: 5px;
-  padding: 0 8px 6px;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.055em;
-  text-transform: uppercase;
+  padding: 0 10px 6px;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
   color: var(--ink-3);
   white-space: nowrap;
-}
-
-.nav-group-label .nav-group-en {
-  font-size: 9.5px;
-  font-weight: 500;
-  letter-spacing: 0.04em;
-  opacity: 0.72;
 }
 
 .nav-item {
@@ -397,15 +388,16 @@ svg {
   justify-content: flex-start;
   gap: 10px;
   width: 100%;
-  height: 32px;
-  padding: 0 8px;
-  border-radius: var(--r-sm);
+  height: 36px;
+  padding: 0 10px;
+  border-radius: 9px;
+  border: 1px solid transparent;
   color: var(--ink-2);
-  font-size: 12.5px;
-  font-weight: 500;
+  font-size: 13.5px;
+  font-weight: 450;
   text-align: left;
   white-space: nowrap;
-  transition: background 130ms ease, color 130ms ease;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
 }
 
 .nav-item:hover {
@@ -414,7 +406,9 @@ svg {
 }
 
 .nav-item.active {
-  background: var(--bg-active);
+  background: var(--bg-elevated);
+  border-color: var(--border);
+  box-shadow: var(--shadow-xs);
   color: var(--ink);
   font-weight: 600;
 }
@@ -565,33 +559,36 @@ svg {
   height: var(--header-h);
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   padding: 0 24px;
   border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--bg-app) 88%, transparent);
-  backdrop-filter: saturate(1.4) blur(10px);
+  background: var(--bg-app);
 }
 
-.page-title-wrap {
-  min-width: 0;
+.topbar-crumb {
   display: flex;
-  flex-direction: column;
-  gap: 1px;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 14px;
 }
 
-.page-title {
-  font-size: 14.5px;
-  font-weight: 650;
-  letter-spacing: -0.012em;
-  white-space: nowrap;
-}
-
-.page-sub {
-  font-size: 11px;
+.crumb-group {
   color: var(--ink-3);
+  font-weight: 450;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+}
+
+.crumb-sep {
+  color: var(--border-strong);
+  font-weight: 400;
+}
+
+.crumb-current {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
 }
 
 .topbar-spacer {
@@ -601,7 +598,54 @@ svg {
 .topbar-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
+}
+
+.topbar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 450;
+  color: var(--ink-2);
+  background: transparent;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.topbar-btn:hover {
+  background: var(--bg-hover);
+  color: var(--ink);
+}
+
+.topbar-btn.icon-only {
+  width: 30px;
+  padding: 0;
+}
+
+.topbar-btn.active {
+  background: var(--bg-active);
+  color: var(--ink);
+  font-weight: 550;
+}
+
+.topbar-btn.has-update {
+  color: var(--brand);
+  background: var(--brand-soft);
+  font-weight: 550;
+}
+
+.gateway-label {
+  font-size: 12.5px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.app.sidebar-collapsed .gateway-label {
+  display: none;
 }
 
 .content {
@@ -1083,17 +1127,34 @@ svg {
 .tag {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  height: 20px;
-  padding: 0 7px;
+  gap: 5px;
+  min-height: 22px;
+  padding: 2px 8px;
   border-radius: var(--r-pill);
-  font-size: 10.5px;
-  font-weight: 600;
-  line-height: 1;
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 1.2;
   white-space: nowrap;
   color: var(--ink-2);
   background: var(--bg-subtle);
   border: 1px solid var(--border);
+}
+
+.tag .chip-btn {
+  width: auto;
+  min-width: 0;
+  height: auto;
+  padding: 1px 6px;
+  margin-left: 2px;
+  border-radius: var(--r-pill);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: inherit;
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.tag .chip-btn:hover {
+  background: rgba(0, 0, 0, 0.12);
 }
 
 .tag.green {
@@ -1980,10 +2041,14 @@ svg {
 }
 
 .chip-btn {
-  width: 22px;
+  min-width: 22px;
+  width: auto;
   height: 22px;
-  display: grid;
-  place-items: center;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
   border-radius: var(--r-xs);
   color: var(--ink-3);
   font-size: 12px;
@@ -2366,13 +2431,14 @@ svg {
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
-  font-size: 10.5px;
+  font-size: 12.5px;
   color: var(--ink-2);
 }
 
 .quota-win-head .quota-val {
-  font-family: var(--mono);
-  font-size: 10.5px;
+  font-family: var(--font);
+  font-variant-numeric: tabular-nums;
+  font-size: 12.5px;
   color: var(--ink-3);
 }
 
@@ -5086,4 +5152,262 @@ svg {
 
 .cli-account-login-slot {
   padding: 0 12px 12px;
+}
+
+/* ==========================================================================
+   Magpie-Style Unified Providers List (4K ClearType Nordic Minimalism)
+   ========================================================================== */
+.mg-providers-shell {
+  max-width: 860px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.mg-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.mg-search-wrap {
+  width: 240px;
+  max-width: 100%;
+}
+
+.mg-search-input {
+  width: 100%;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--ink);
+  font-size: 13px;
+  outline: none;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.mg-search-input::placeholder {
+  color: var(--ink-3);
+}
+
+.mg-search-input:focus {
+  border-color: var(--border-strong);
+  box-shadow: 0 0 0 3px rgba(24, 24, 27, 0.05);
+}
+
+.mg-ghost-act {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 450;
+  color: var(--ink-2);
+  background: transparent;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.mg-ghost-act:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--ink);
+}
+
+.mg-ghost-act:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.mg-group-card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: var(--shadow-xs);
+}
+
+.mg-row-wrap + .mg-row-wrap {
+  border-top: 1px solid var(--border);
+}
+
+.mg-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 66px;
+  padding: 12px 18px;
+  cursor: pointer;
+  transition: background 110ms ease;
+}
+
+.mg-row:hover {
+  background: var(--bg-subtle);
+}
+
+.mg-row-icon {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  display: grid;
+  place-items: center;
+}
+
+.mg-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.mg-row-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.mg-row-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  line-height: 1.3;
+}
+
+.mg-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 5px;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--ink-2);
+  background: var(--bg-subtle);
+  flex-shrink: 0;
+}
+
+.mg-pill.blue {
+  color: var(--brand);
+  background: var(--brand-soft);
+}
+
+.mg-row-sub {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--ink-3);
+  line-height: 1.35;
+}
+
+.mg-row-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.mg-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  color: var(--ink-3);
+  max-width: 180px;
+}
+
+.mg-status.ok {
+  color: var(--ink-2);
+}
+
+.mg-icon-act {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  color: var(--ink-3);
+  transition: background 110ms ease, color 110ms ease;
+}
+
+.mg-icon-act:hover {
+  background: var(--bg-hover);
+  color: var(--ink);
+}
+
+.mg-icon-act.danger:hover {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.mg-chevron {
+  display: inline-flex;
+  align-items: center;
+  color: var(--ink-3);
+  opacity: 0.65;
+}
+
+.mg-row:hover .mg-chevron {
+  opacity: 1;
+  color: var(--ink-2);
+}
+
+.mg-row-extra {
+  padding: 2px 18px 14px 62px;
+}
+
+.mg-cooldown-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mg-add-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 4px 6px;
+}
+
+.mg-add-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 7px;
+  font-size: 13.5px;
+  font-weight: 450;
+  color: var(--ink-2);
+  background: transparent;
+  transition: background 110ms ease, color 110ms ease;
+}
+
+.mg-add-link:hover {
+  background: var(--bg-hover);
+  color: var(--ink);
+}
+
+.mg-add-hint {
+  margin-left: auto;
+  font-size: 12.5px;
+  color: var(--ink-3);
+}
+
+html[data-theme="dark"] .mg-search-input:focus {
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.06);
+}
+
+html[data-theme="dark"] .tag .chip-btn {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+html[data-theme="dark"] .tag .chip-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
 }

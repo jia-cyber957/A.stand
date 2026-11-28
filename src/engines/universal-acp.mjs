@@ -42,6 +42,13 @@ function oneLine(text, max = 140) {
   const clean = String(text || "").replace(/\s+/g, " ").trim();
   return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
+function nonEmptyDetail(val) {
+  if (val == null) return "";
+  if (typeof val === "string") return val.trim().slice(0, 2000);
+  if (Array.isArray(val)) return val.length ? JSON.stringify(val).slice(0, 2000) : "";
+  if (typeof val === "object") return Object.keys(val).length ? JSON.stringify(val).slice(0, 2000) : "";
+  return String(val).slice(0, 2000);
+}
 export function launchForShell(command, args, useShell) {
   if (!useShell || process.platform !== "win32") return { command, args, windowsVerbatimArguments: false };
   const quote = (value) => `"${String(value).replace(/"/g, '""')}"`;
@@ -428,14 +435,14 @@ export class UniversalAcpEngine {
         const kind = update.kind || "cmd";
         toolMeta.set(callId, { title, kind });
         actions.push(title);
-        onActivity?.({ id: callId, type: "cmd_start", kind, title, status: "running", summary: title, detail: JSON.stringify(update.rawInput || {}).slice(0, 2000) });
+        onActivity?.({ id: callId, type: "cmd_start", kind, title, status: "running", summary: title, detail: nonEmptyDetail(update.rawInput) });
       } else if (update.sessionUpdate === "tool_call_update" && ["completed", "failed"].includes(String(update.status || ""))) {
         const failed = update.status === "failed";
         const callId = update.toolCallId || update.callId || update.id || `tool_${startedAt}`;
         const prev = toolMeta.get(callId);
         const title = String(update.title || update.name || prev?.title || "tool call").trim() || "tool call";
         const kind = update.kind || prev?.kind || "cmd";
-        onActivity?.({ id: callId, type: failed ? "cmd_err" : "cmd_done", kind, title, status: failed ? "error" : "done", summary: `${failed ? "✗" : "✓"} ${title}`, detail: JSON.stringify(update.rawOutput || update.content || {}).slice(0, 2000) });
+        onActivity?.({ id: callId, type: failed ? "cmd_err" : "cmd_done", kind, title, status: failed ? "error" : "done", summary: `${failed ? "✗" : "✓"} ${title}`, detail: nonEmptyDetail(update.rawOutput ?? update.content) });
       } else if (update.sessionUpdate === "usage_update") {
         if (typeof update.size === "number") contextWindow = update.size;
         if (typeof update.used === "number") contextUsed = update.used;

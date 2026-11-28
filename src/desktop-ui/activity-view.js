@@ -598,7 +598,8 @@ export function createActivityView(host) {
                 const label = raw.title || raw.summary || cls;
                 const dur = raw.durationSec != null ? fmtDuration(Number(raw.durationSec) * 1000) : "";
                 const badExit = raw.exitCode != null && raw.exitCode !== 0;
-                const detail = normText(raw.detail || "").trim();
+                const rawDetail = normText(raw.detail || "").trim();
+                const detail = rawDetail === "{}" || rawDetail === "[]" || rawDetail === '""' ? "" : rawDetail;
                 const iconName = cls === "edit" ? "edit" : cls === "cmd" ? "terminal" : "search";
                 return `<div class="act-step-row ${badExit ? "fail" : ""}">
                   <button class="act-step-row-btn" data-action="act-toggle-step" data-key="${esc(stepKey)}" ${detail ? "" : "disabled"}>
