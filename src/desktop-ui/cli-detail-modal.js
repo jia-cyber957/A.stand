@@ -226,11 +226,15 @@ export function createCliDetailModal(host) {
           : prof.label || prof.id;
         const isLoggingThis = isDef && loggingIn;
         const showLoginBtn = !isLoggingThis && (canInAppLogin || (eid === "codex" && !isDef));
+        const isLocalConfigOnly = isDef && eid === "opencode" && liveAcc?.loginMethod === "local config";
         const statusText = isLoggingThis
           ? L("登录中…", "Signing in…")
+          : isLocalConfigOnly
+          ? L("本地配置可用", "Local config ready")
           : loggedIn
           ? L("已登录", "Signed in")
           : L("待登录", "Sign in needed");
+        const planTag = isDef && eid === "codex" ? (st.codexRateLimits?.planType || liveAcc?.planType || "") : "";
         return `<div class="cli-detail-acc-row">
           <div class="cli-detail-acc-top">
             <button class="cli-acc-check ${prof.enabled ? "on" : ""}" data-action="cd-toggle-profile" data-profile="${esc(prof.id)}" ${isDef && enabledMultiCount <= 1 ? "disabled" : ""} title="${esc(L("启用/停用该账号参与轮换", "Toggle account in rotation"))}">
@@ -238,12 +242,12 @@ export function createCliDetailModal(host) {
             </button>
             <span class="cli-detail-acc-name truncate">${esc(isLoggingThis && accLabel === "未登录" ? L("等待授权中…", "Waiting for auth…") : accLabel)}</span>
             ${isDef && liveAcc?.loginMethod ? `<span class="tag plain">${esc(liveAcc.loginMethod)}</span>` : ""}
-            ${isDef && eid === "codex" && st.codexRateLimits?.planType ? `<span class="tag plain mono">${esc(String(st.codexRateLimits.planType).toUpperCase())}</span>` : ""}
+            ${planTag ? `<span class="tag plain mono">${esc(String(planTag).toUpperCase())}</span>` : ""}
             ${!isDef ? `<span class="tag plain">${esc(L("隔离目录", "Isolated"))}</span>` : ""}
             <span class="spacer"></span>
             <span class="status-pill ${isLoggingThis ? "warn" : loggedIn ? "on" : "warn"}"><span class="dot"></span>${esc(statusText)}</span>
             ${showLoginBtn
-              ? `<button class="btn xs ${loggedIn ? "" : "primary"}" data-action="cli-login-start" data-engine="${esc(eid)}" data-profile="${esc(prof.id)}">${iconSvg("key")} ${esc(loggedIn ? L("切换/重登", "Re-sign in") : L("登录", "Sign in"))}</button>`
+              ? `<button class="btn xs ${loggedIn && !isLocalConfigOnly ? "" : "primary"}" data-action="cli-login-start" data-engine="${esc(eid)}" data-profile="${esc(prof.id)}">${iconSvg("key")} ${esc(loggedIn && !isLocalConfigOnly ? L("切换/重登", "Re-sign in") : L("登录", "Sign in"))}</button>`
               : ""}
             ${!isDef
               ? `<button class="btn xs danger" data-action="cd-del-profile" data-profile="${esc(prof.id)}" title="${esc(L("删除该隔离账号", "Delete isolated account"))}">${iconSvg("trash")}</button>`

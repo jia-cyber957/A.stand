@@ -3631,6 +3631,61 @@ svg {
   flex-shrink: 0;
 }
 
+.act-engine-ico,
+.act-engine-ico-lg {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.act-engine-ico {
+  width: 20px;
+  height: 20px;
+}
+
+.act-engine-ico-lg {
+  width: 24px;
+  height: 24px;
+}
+
+.act-role-meta {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--ink-2);
+  flex-shrink: 0;
+}
+
+.act-role-meta.hephaestus {
+  color: var(--violet);
+}
+
+.act-role-meta.oracle {
+  color: var(--blue);
+}
+
+.act-upstream-ico-only {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+  opacity: 0.88;
+}
+
+.act-upstream-ico-only.inline {
+  margin-left: 0;
+  width: 19px;
+  height: 19px;
+}
+
 .act-item-title {
   flex: 1;
   min-width: 0;

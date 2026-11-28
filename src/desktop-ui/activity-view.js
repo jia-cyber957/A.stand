@@ -96,7 +96,19 @@ function buildStreamBlocks(activities) {
     flushGroup();
     if (cls === "thought") {
       const text = normText(raw.detail || raw.summary || raw.title || "").trim();
-      if (text) blocks.push({ type: "thought", key: `th_${raw.id || seq++}`, text, title: raw.title || raw.summary || "" });
+      if (text) {
+        const prev = blocks[blocks.length - 1];
+        // Collapse duplicate streaming -> finalized thought pairs emitted by ACP engines.
+        if (prev && prev.type === "thought") {
+          const a = prev.text.replace(/^思考(?:\s*\([^)]*\))?\s*[:：]\s*/, "").trim();
+          const b = text.replace(/^思考(?:\s*\([^)]*\))?\s*[:：]\s*/, "").trim();
+          if (a === b || b.startsWith(a) || a.startsWith(b)) {
+            if (b.length >= a.length) prev.text = text;
+            continue;
+          }
+        }
+        blocks.push({ type: "thought", key: `th_${raw.id || seq++}`, text, title: raw.title || raw.summary || "" });
+      }
     } else if (cls === "prose") {
       const text = normText(raw.detail || raw.title || raw.summary || "").trim();
       if (text) blocks.push({ type: "prose", key: `pr_${raw.id || seq++}`, text });
@@ -226,6 +238,8 @@ export function createActivityView(host) {
     api,
     iconSvg,
     clientIconSvg,
+    engineIconSvg,
+    engineLabel,
     normalizeClientIconKey,
     scheduleRender,
     showToast,
@@ -475,11 +489,19 @@ export function createActivityView(host) {
     </div>`;
   }
 
+  function resolveJobEngine(job) {
+    if (!job) return { id: "api", label: "CLI" };
+    const id = String(job.engine || "").trim() || "api";
+    const label = typeof engineLabel === "function" ? engineLabel(id) : id;
+    return { id, label };
+  }
+
   function renderRailItem(job) {
     const running = job.status === "running";
     const selected = job.jobId === view.selectedJobId;
     const role = job.role === "hephaestus" ? "hephaestus" : "oracle";
     const upstream = resolveUpstream(job);
+    const eng = resolveJobEngine(job);
     const st = statusTag(job.status);
 
     const statusBadge = running
@@ -492,20 +514,19 @@ export function createActivityView(host) {
 
     return `<button class="act-item ${selected ? "selected" : ""} ${running ? "running" : ""}" data-action="act-select" data-job="${esc(job.jobId)}" aria-current="${selected ? "true" : "false"}">
       <div class="act-item-top">
-        <span class="job-role ${role} act-role-sm">${esc(roleName(role))}</span>
+        <span class="act-engine-ico" title="${esc(eng.label)}">${typeof engineIconSvg === "function" ? engineIconSvg(eng.id, 20) : ""}</span>
         <span class="act-item-title truncate">${esc(job.title || job.jobId)}</span>
         ${statusBadge}
       </div>
       <div class="act-item-meta">
-        ${upstream.label
-          ? `<span class="act-source-chip">
-              <span class="act-source-ico">${clientIconSvg(upstream.iconKey, 12)}</span>
-              <span class="truncate">${esc(upstream.label)}</span>
-            </span>`
-          : ""}
+        <span class="act-role-meta ${role}">${esc(roleName(role))}</span>
+        <span class="sep">·</span>
         <span class="mono nums">${esc(fmtElapsedSec(job.elapsedSec))}</span>
         <span class="sep">·</span>
         <span class="truncate">${esc(fmtRelative(job.startedAt))}</span>
+        ${upstream.label
+          ? `<span class="act-upstream-ico-only" title="${esc(L(`来自 ${upstream.label}`, `From ${upstream.label}`))}">${clientIconSvg(upstream.iconKey, 13)}</span>`
+          : ""}
       </div>
     </button>`;
   }
@@ -616,24 +637,23 @@ export function createActivityView(host) {
     const workspaceName = basenameOf(job?.cwd);
     const hitRate = job?.hitRate;
 
+    const eng = resolveJobEngine(job || summary);
     const head = `<header class="act-head">
       <div class="act-head-main">
         <div class="act-head-title-row">
-          <span class="job-role ${role}">${esc(roleName(role))}</span>
+          <span class="act-engine-ico-lg" title="${esc(eng.label)}">${typeof engineIconSvg === "function" ? engineIconSvg(eng.id, 24) : ""}</span>
           <h2 class="act-head-title truncate">${esc(job?.title || view.selectedJobId)}</h2>
-          ${upstream.label
-            ? `<span class="act-upstream-pill">
-                <span class="act-source-ico">${clientIconSvg(upstream.iconKey, 13)}</span>
-                <span>${esc(L(`来自 ${upstream.label}`, `From ${upstream.label}`))}</span>
-              </span>`
-            : ""}
         </div>
         <div class="act-head-meta">
-          ${modelName ? `<span class="mono truncate" title="${esc(modelName)}">${esc(modelName)}</span>` : ""}
+          <span class="act-role-meta ${role}">${esc(roleName(role))}</span>
+          ${modelName ? `<span class="sep">·</span><span class="mono truncate" title="${esc(modelName)}">${esc(modelName)}</span>` : ""}
           ${hitRate != null ? `<span class="sep">·</span><span class="act-cache-pill nums">${esc(L("缓存", "Cache"))} ${esc(fmtPct(hitRate, 1))}</span>` : ""}
           ${job?.elapsedSec != null ? `<span class="sep">·</span><span class="mono nums">${esc(fmtElapsedSec(job.elapsedSec))}</span>` : ""}
           ${running && job?.silentSec != null ? `<span class="sep">·</span><span>${esc(L("静默", "Silent"))} ${esc(fmtElapsedSec(job.silentSec))}</span>` : ""}
           ${workspaceName ? `<span class="sep">·</span><span class="mono" title="${esc(job.cwd || "")}">${esc(workspaceName)}</span>` : ""}
+          ${upstream.label
+            ? `<span class="sep">·</span><span class="act-upstream-ico-only inline" title="${esc(L(`来自 ${upstream.label}`, `From ${upstream.label}`))}">${clientIconSvg(upstream.iconKey, 13)}</span>`
+            : ""}
         </div>
       </div>
       <div class="act-head-actions">
@@ -723,7 +743,8 @@ export function createActivityView(host) {
       const finalHtml = showFinal
         ? `<div class="act-final">
             <div class="act-final-head">
-              <span class="job-role ${role} act-role-sm">${esc(roleName(role))}</span>
+              <span class="act-engine-ico" title="${esc(eng.label)}">${typeof engineIconSvg === "function" ? engineIconSvg(eng.id, 16) : ""}</span>
+              <span class="act-role-meta ${role}">${esc(roleName(role))}</span>
               <span>${esc(L("最终回复", "Final response"))}</span>
             </div>
             <div class="act-prose">${renderMarkdown(esc, finalBody)}</div>

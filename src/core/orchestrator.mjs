@@ -178,7 +178,7 @@ const CHANNEL_BAD_REQUEST_RE =
 const CHANNEL_TIMEOUT_RE =
   /\btime(?:d)?\s*out\b|timeout|exceeded .*deadline|silent for|stalled|no activity|超时|静默|卡死/i;
 const CHANNEL_SERVER_RE =
-  /(?:http|status|code|server|upstream|response)\D{0,16}5\d\d|5\d\d\s+(?:internal server error|bad gateway|service unavailable|gateway timeout)|internal server error|bad gateway|service unavailable|gateway timeout|econnreset|econnrefused|etimedout|epipe|socket hang up|connection (?:reset|closed|refused|aborted|terminated|timed out)|network error|fetch failed|disconnected|process (?:exited|terminated)|app-server (?:exited|terminated)|stdin closed|connection lost|连接(?:中断|重置|断开|失败)/i;
+  /(?:http|status|code|server|upstream|response)\D{0,16}5\d\d|5\d\d\s+(?:internal server error|bad gateway|service unavailable|gateway timeout)|internal server error|bad gateway|service unavailable|gateway timeout|econnreset|econnrefused|etimedout|epipe|socket hang up|connection (?:error|reset|closed|refused|aborted|terminated|timed out)|network error|fetch failed|disconnected|process (?:exited|terminated)|app-server (?:exited|terminated)|stdin closed|connection lost|连接(?:中断|重置|断开|失败)/i;
 const CHANNEL_AUTH_RE =
   /\b401\b|unauthori[sz]ed|invalid[ _-]?(?:api[ _-]?key|token|credential)|authentication (?:failed|required)|login (?:expired|required)|not logged in|session expired|未登录|登录(?:已)?(?:失效|过期)/i;
 
@@ -3580,6 +3580,24 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
     const dshEngine = this.engines["deepseek-harness"];
     const dshReady = engines["deepseek-harness"]?.status === "ready";
     const dshSyncEnabled = dshReady && (forceDetect || fetchRateLimits);
+    const codexQuotaCachePath = this.store?.dataDir ? path.join(this.store.dataDir, "codex-quota-cache.json") : "";
+    const readCachedCodexQuota = () => {
+      if (!codexQuotaCachePath) return null;
+      try {
+        if (!fs.existsSync(codexQuotaCachePath)) return null;
+        const parsed = JSON.parse(fs.readFileSync(codexQuotaCachePath, "utf8"));
+        return parsed && typeof parsed === "object" ? { ...parsed, cached: true } : null;
+      } catch {
+        return null;
+      }
+    };
+    const writeCachedCodexQuota = (rl) => {
+      if (!codexQuotaCachePath || !rl) return;
+      try {
+        fs.writeFileSync(codexQuotaCachePath, JSON.stringify(rl, null, 2), "utf8");
+      } catch {}
+    };
+
     let codexRateLimits = this.engines.codex.latestRateLimits;
     if (engines.codex?.status === "ready" && fetchRateLimits) {
       await Promise.allSettled([
@@ -3588,15 +3606,45 @@ Doorbell (zero-token background wakeup): ${this.#doorbellCommand(job.jobId)}${no
         ...(dshSyncEnabled ? [dshEngine.listAccountModels(forceDetect)] : []),
       ]);
       codexRateLimits = this.engines.codex.latestRateLimits;
+      if (codexRateLimits) writeCachedCodexQuota(codexRateLimits);
     } else if (dshSyncEnabled) {
       await Promise.allSettled([dshEngine.listAccountModels(forceDetect)]);
-    } else if (dshReady && dshEngine.modelsFetchedAt === 0 && !this.cliModelProbes.has("deepseek-harness")) {
-      const p = Promise.resolve()
-        .then(() => (this.shuttingDown ? null : dshEngine.listAccountModels(false)))
-        .then(() => this.#emitStateChange("cli_models_ready", { engineId: "deepseek-harness" }))
-        .catch(() => {})
-        .finally(() => this.cliModelProbes.delete("deepseek-harness"));
-      this.cliModelProbes.set("deepseek-harness", p);
+    } else {
+      if (
+        engines.codex?.status === "ready" &&
+        this.engines.codex.rateLimitsFetchedAt === 0 &&
+        !this.cliModelProbes.has("codex-quota")
+      ) {
+        const cp = Promise.resolve()
+          .then(async () => {
+            if (this.shuttingDown) return;
+            const prev = JSON.stringify(this.engines.codex.latestRateLimits || null);
+            await Promise.allSettled([
+              this.engines.codex.readRateLimits(false),
+              this.engines.codex.listModels(false),
+            ]);
+            if (this.engines.codex.latestRateLimits) {
+              writeCachedCodexQuota(this.engines.codex.latestRateLimits);
+              if (JSON.stringify(this.engines.codex.latestRateLimits) !== prev) {
+                this.#emitStateChange("cli_models_ready", { engineId: "codex" });
+              }
+            }
+          })
+          .catch(() => {})
+          .finally(() => this.cliModelProbes.delete("codex-quota"));
+        this.cliModelProbes.set("codex-quota", cp);
+      }
+      if (dshReady && dshEngine.modelsFetchedAt === 0 && !this.cliModelProbes.has("deepseek-harness")) {
+        const p = Promise.resolve()
+          .then(() => (this.shuttingDown ? null : dshEngine.listAccountModels(false)))
+          .then(() => this.#emitStateChange("cli_models_ready", { engineId: "deepseek-harness" }))
+          .catch(() => {})
+          .finally(() => this.cliModelProbes.delete("deepseek-harness"));
+        this.cliModelProbes.set("deepseek-harness", p);
+      }
+    }
+    if (!codexRateLimits && engines.codex?.status === "ready") {
+      codexRateLimits = readCachedCodexQuota();
     }
 
     const codexModels =

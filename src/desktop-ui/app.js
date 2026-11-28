@@ -53,7 +53,7 @@ const API_BASE = (() => {
 
 const PAGES = ["clients", "activity", "roles", "extensions", "providers", "observability", "settings"];
 
-const ENGINE_ORDER = ["codex", "deepseek-harness", "opencode", "doubao", "minimax", "qoder-cn", "qoder", "junie", "kiro", "codearts", "claude-code", "antigravity"];
+const ENGINE_ORDER = ["codex", "deepseek-harness", "doubao", "minimax", "qoder-cn", "qoder", "codebuddy", "opencode", "junie", "kiro", "codearts", "claude-code", "antigravity"];
 
 const ENGINE_FALLBACK_LABELS = {
   codex: { zh: "OpenAI · Codex CLI", en: "OpenAI · Codex CLI", tag: "Codex" },
@@ -1396,6 +1396,8 @@ function getActivityView() {
       api,
       iconSvg,
       clientIconSvg,
+      engineIconSvg,
+      engineLabel,
       normalizeClientIconKey,
       scheduleRender,
       showToast,
@@ -2267,13 +2269,14 @@ function renderCliAccountCards(eid) {
       ? (state?.dshModels || []).filter((m) => m && (m.authType === "account" || m.providerId === "deepseek-account"))
       : [];
   const planBadge =
-    eid === "codex" && rl?.planType
-      ? String(rl.planType).toUpperCase()
+    eid === "codex" && (rl?.planType || acc?.planType)
+      ? String(rl?.planType || acc?.planType).toUpperCase()
       : eid === "deepseek-harness" && loggedIn
       ? isEn() ? "Official" : "官方"
       : acc?.loginMethod === "minimax_oauth" && loggedIn
       ? "OAuth"
       : "";
+  const isLocalConfigOnly = eid === "opencode" && acc?.loginMethod === "local config";
   const rawProfiles = Array.isArray(state?.cliAccountProfiles?.[eid]) && state.cliAccountProfiles[eid].length > 0
     ? state.cliAccountProfiles[eid]
     : [{ id: "default", label: "", enabled: true, isDefault: true }];
@@ -2302,6 +2305,8 @@ function renderCliAccountCards(eid) {
           ? isEn() ? "Waiting for sign-in confirmation…" : "登录中 · 等待授权确认…"
           : probing
           ? isEn() ? "Checking sign-in…" : "正在检测账号状态…"
+          : isLocalConfigOnly
+          ? `${isEn() ? "Local config ready" : "本地配置可用"}${subCount > 0 ? ` · ${isEn() ? `${subCount} models` : `${subCount} 个模型`}` : ""}${isEn() ? " (not signed in)" : "（未登云端账号）"}`
           : cardLoggedIn
           ? `${isEn() ? "Ready" : "正常可用"}${subCount > 0 ? ` · ${isEn() ? `${subCount} models` : `${subCount} 个模型`}` : ""}`
           : isEn() ? "Not signed in — click Sign in" : "待登录 · 点击右侧登录"
@@ -2331,7 +2336,11 @@ function renderCliAccountCards(eid) {
               : `<button class="btn xs ghost" data-action="cd-open" data-engine="${esc(eid)}" title="${esc(isEn() ? "Open CLI details" : "查看详情")}">${iconSvg("chevronRight", 13)}</button>`}
           </div>
         </div>
-        ${isDef && showQuota ? `<div class="cli-account-extra">${renderQuotaBars()}</div>` : ""}
+        ${isDef && showQuota
+          ? `<div class="cli-account-extra">${renderQuotaBars()}${rl?.cached ? `<div class="field-hint" style="margin-top:4px;font-size:10.5px">${esc(isEn() ? "Showing cached quota — click refresh when online." : "显示上次缓存额度 · 连通 chatgpt.com 后点右上角刷新")}</div>` : ""}</div>`
+          : isDef && eid === "codex" && cardLoggedIn
+          ? `<div class="cli-account-extra"><div class="field-hint" style="font-size:11px">${esc(isEn() ? "5h/7d quota unavailable (cannot reach chatgpt.com — click refresh when online)." : "暂未同步 5h/7d 额度（需可访问 chatgpt.com 后点右上角刷新）")}</div></div>`
+          : ""}
         ${isDef && dshAccountModels.length
           ? `<div class="chip-row" style="padding:0 12px 10px 48px">${dshAccountModels
               .map((m) => `<span class="model-chip">${esc(m.displayName || m.name || m.modelName || m.id)}</span>`)
@@ -2445,6 +2454,18 @@ function renderProvidersPage() {
   );
   const channels = [...customChannels.map((c) => ({ ...c, source: c.source || "custom" })), ...extraApiChannels];
 
+  const accountSortedIds = [...displayedIds].sort((a, b) => {
+    const rank = (eid) => {
+      const s = engineLoginSummary(eid);
+      if (s.loggedIn && !(eid === "opencode" && s.acc?.loginMethod === "local config")) return 0; // Signed-in cloud accounts first
+      if (s.loggedIn) return 1; // Local-config-ready (e.g. OpenCode) second
+      return 2; // Not signed in at bottom
+    };
+    const diff = rank(a) - rank(b);
+    if (diff !== 0) return diff;
+    return displayedIds.indexOf(a) - displayedIds.indexOf(b);
+  });
+
   return `<div class="content-inner">
     <div class="section-head">
       <span class="section-title">${esc(t("cliEngines"))}</span>
@@ -2469,10 +2490,10 @@ function renderProvidersPage() {
       <div class="providers-col">
         <div class="section-head">
           <span class="section-title">${esc(isEn() ? "Accounts & Quotas" : "账号与额度")}</span>
-          <span class="section-sub nums">${displayedIds.reduce((acc, eid) => acc + Math.max(1, (state?.cliAccountProfiles?.[eid] || []).length), 0)}</span>
+          <span class="section-sub nums">${accountSortedIds.reduce((acc, eid) => acc + Math.max(1, (state?.cliAccountProfiles?.[eid] || []).length), 0)}</span>
         </div>
         <div class="card-list">
-          ${displayedIds.map(renderCliAccountCards).join("")}
+          ${accountSortedIds.map(renderCliAccountCards).join("")}
         </div>
       </div>
 

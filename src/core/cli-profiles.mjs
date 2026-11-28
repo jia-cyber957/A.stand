@@ -423,23 +423,45 @@ export function parseKiroWhoami(text) {
   };
 }
 
+function parseCodexAuthIdentity(authPath) {
+  const out = { username: "", email: "", planType: "", hasAuth: false };
+  try {
+    if (!authPath || !fs.existsSync(authPath)) return out;
+    const stat = fs.statSync(authPath);
+    if (stat.size <= 20) return out;
+    out.hasAuth = true;
+    const parsed = JSON.parse(fs.readFileSync(authPath, "utf8"));
+    const idToken = parsed?.tokens?.id_token;
+    if (typeof idToken === "string" && idToken.split(".").length === 3) {
+      const payload = JSON.parse(Buffer.from(idToken.split(".")[1], "base64url").toString("utf8"));
+      if (typeof payload?.email === "string" && payload.email.trim()) out.email = payload.email.trim().slice(0, 160);
+      const rawName = payload?.name || payload?.preferred_username || payload?.nickname || "";
+      if (typeof rawName === "string" && rawName.trim()) out.username = rawName.trim().slice(0, 120);
+      const authClaim = payload?.["https://api.openai.com/auth"];
+      if (typeof authClaim?.chatgpt_plan_type === "string" && authClaim.chatgpt_plan_type.trim()) {
+        out.planType = authClaim.chatgpt_plan_type.trim().slice(0, 40);
+      }
+    }
+  } catch {}
+  return out;
+}
+
 function probeCodexConfig(profileDir) {
   if (!profileDir) {
     const summary = readCodexConfigSummary();
+    const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+    const ident = parseCodexAuthIdentity(path.join(codexHome, "auth.json"));
     return {
-      username: "",
-      email: "",
+      username: ident.username,
+      email: ident.email,
+      planType: ident.planType,
       loginMethod: "codex",
-      loggedIn: Boolean(summary.hasAuth),
+      loggedIn: Boolean(summary.hasAuth || ident.hasAuth),
       detail: summary.defaultModel ? `model: ${summary.defaultModel}` : "",
     };
   }
-  let hasAuth = false;
+  const ident = parseCodexAuthIdentity(path.join(profileDir, "auth.json"));
   let defaultModel = "";
-  try {
-    const authPath = path.join(profileDir, "auth.json");
-    hasAuth = fs.existsSync(authPath) && fs.statSync(authPath).size > 20;
-  } catch {}
   try {
     const configPath = path.join(profileDir, "config.toml");
     if (fs.existsSync(configPath)) {
@@ -449,10 +471,11 @@ function probeCodexConfig(profileDir) {
     }
   } catch {}
   return {
-    username: "",
-    email: "",
+    username: ident.username,
+    email: ident.email,
+    planType: ident.planType,
     loginMethod: "codex",
-    loggedIn: hasAuth,
+    loggedIn: ident.hasAuth,
     detail: defaultModel ? `model: ${defaultModel}` : "",
   };
 }
