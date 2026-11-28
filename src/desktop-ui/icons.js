@@ -334,15 +334,12 @@ export const CLIENT_ICON_KEYS = [
 const ENGINE_ICONS = {
   codex: `
     <svg viewBox="0 0 28 28" width="24" height="24" aria-hidden="true" focusable="false">
-      <defs>
-        <linearGradient id="astand-eng-codex" x1="4" y1="2" x2="24" y2="26" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stop-color="#6366F1" />
-          <stop offset="100%" stop-color="#4F46E5" />
-        </linearGradient>
-      </defs>
-      <path d="M14 2.2 24 8v12l-10 5.8L4 20V8l10-5.8Z" fill="url(#astand-eng-codex)" />
-      <path d="m9.5 11.2 3.2 2.8-3.2 2.8" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-      <path d="M14.5 17h4.2" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" />
+      <rect x="1.5" y="1.5" width="25" height="25" rx="6.5" fill="#10A37F" />
+      <g transform="translate(14 14) scale(1.5) translate(-12 -12)" fill="none" stroke="#FFFFFF" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 6.1a3.2 3.2 0 0 1 3.1 2.3l2.2 1.3a3.2 3.2 0 0 1 .4 5.2l-.1 2.5a3.2 3.2 0 0 1-4.7 2.2L12 19a3.2 3.2 0 0 1-4.9-1.5l-1.9-1.1a3.2 3.2 0 0 1-.4-5.2l.1-2.5a3.2 3.2 0 0 1 4.7-2.2L12 6.1Z" />
+        <polygon points="12,9.2 14.4,10.6 14.4,13.4 12,14.8 9.6,13.4 9.6,10.6" />
+        <path d="M12 6.1v3.1M17.1 9.7l-2.7 1.5M16.9 15.7l-2.5-1.4M12 17.9v-3.1M6.9 14.3l2.7-1.5M7.1 8.3l2.5 1.4" />
+      </g>
     </svg>`,
   "deepseek-harness": `
     <svg viewBox="0 0 28 28" width="24" height="24" aria-hidden="true" focusable="false">

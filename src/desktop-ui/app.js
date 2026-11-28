@@ -2264,10 +2264,6 @@ function renderCliAccountCards(eid) {
   const loginBarHtml = eng.installed ? getCliCatalogModal().renderLoginBar(eid) : "";
   const cooled = engineCooldownModels(eid);
   const cliShort = shortEngineLabel(eid);
-  const dshAccountModels =
-    eid === "deepseek-harness"
-      ? (state?.dshModels || []).filter((m) => m && (m.authType === "account" || m.providerId === "deepseek-account"))
-      : [];
   const planBadge =
     eid === "codex" && (rl?.planType || acc?.planType)
       ? String(rl?.planType || acc?.planType).toUpperCase()
@@ -2340,11 +2336,6 @@ function renderCliAccountCards(eid) {
           ? `<div class="cli-account-extra">${renderQuotaBars()}${rl?.cached ? `<div class="field-hint" style="margin-top:4px;font-size:10.5px">${esc(isEn() ? "Showing cached quota — click refresh when online." : "显示上次缓存额度 · 连通 chatgpt.com 后点右上角刷新")}</div>` : ""}</div>`
           : isDef && eid === "codex" && cardLoggedIn
           ? `<div class="cli-account-extra"><div class="field-hint" style="font-size:11px">${esc(isEn() ? "5h/7d quota unavailable (cannot reach chatgpt.com — click refresh when online)." : "暂未同步 5h/7d 额度（需可访问 chatgpt.com 后点右上角刷新）")}</div></div>`
-          : ""}
-        ${isDef && dshAccountModels.length
-          ? `<div class="chip-row" style="padding:0 12px 10px 48px">${dshAccountModels
-              .map((m) => `<span class="model-chip">${esc(m.displayName || m.name || m.modelName || m.id)}</span>`)
-              .join("")}</div>`
           : ""}
         ${isDef && cooled.length
           ? `<div class="row wrap" style="gap:6px;padding:0 12px 10px 48px">${cooled

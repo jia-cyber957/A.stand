@@ -10,6 +10,24 @@ const DEFAULT_IDLE_TIMEOUT_MS = 1_800_000, DEFAULT_ABSOLUTE_TIMEOUT_MS = 7_200_0
 const READ_ONLY_TOOL_RE = /^(read|view|open|search|grep|glob|find|list|ls|stat|inspect|cat|head|tail|describe)\b/i;
 const WRITE_TOOL_RE = /\b(write|edit|delete|remove|create|move|rename|patch|apply|shell|command|exec|execute|run|terminal|spawn|bash|sh|powershell|cmd|mkdir|rm|cp|mv|chmod)\b/i;
 const RATE_LIMIT_RE = /\b429\b|rate[\s_-]?limit|too many requests|quota|credits?\b|insufficient|balance/i;
+const CN_ACP_ENGINE_IDS = new Set(["doubao", "qoder-cn", "minimax"]);
+const PROXY_ENV_KEYS = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"];
+const LOOPBACK_PROXY_RE = /^(?:https?|socks\d?):\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\/?$/i;
+/**
+ * CN ACP CLIs route through a local proxy when one is exported; if that proxy is dead
+ * (e.g. a stopped 127.0.0.1:10808), every request hangs. Drop dead loopback proxies for
+ * domestic engines (Doubao always, mirroring the login path in cli-login.mjs).
+ */
+export function buildAcpEnv(engineId) {
+  const env = utf8Env();
+  if (!CN_ACP_ENGINE_IDS.has(engineId)) return env;
+  for (const key of PROXY_ENV_KEYS) {
+    const value = env[key];
+    if (!value) continue;
+    if (engineId === "doubao" || LOOPBACK_PROXY_RE.test(String(value).trim())) env[key] = "";
+  }
+  return env;
+}
 const round1 = (n) => Math.round(n * 10) / 10;
 const asNumber = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
 function oneLine(text, max = 140) {
@@ -147,7 +165,7 @@ export class UniversalAcpEngine {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
       ...(launched.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
-      env: utf8Env(),
+      env: buildAcpEnv(this.id),
     });
     const state = { proc, initialized: false, agentInfo: null, nextId: 1, pending: new Map(), listeners: new Map(), sessionRoles: new Map(), stderrRing: [] };
     const sendRaw = (obj) => {
@@ -192,6 +210,10 @@ export class UniversalAcpEngine {
       let msg;
       try { msg = JSON.parse(trimmed); } catch { return; }
       if (msg.id !== undefined && msg.method === "session/request_permission") { this.#answerPermission(state, msg); return; }
+      if (msg.id !== undefined && msg.method) {
+        try { sendRaw({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "Method not supported" } }); } catch {}
+        return;
+      }
       if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
         const pending = state.pending.get(msg.id);
         if (!pending) return;
@@ -253,12 +275,16 @@ export class UniversalAcpEngine {
     } catch {}
   }
   async #configureSession(state, sessionId, { role, model, effort }) {
+    const mode = role === "oracle" ? this.descriptor.readOnlyMode || "plan" : this.descriptor.writeMode || "build";
+    if (mode) {
+      try { await state.request("session/set_mode", { sessionId, modeId: mode }, 10_000); } catch {}
+    }
     const attempts = [];
     if (model?.modelName) attempts.push(["model", model.modelName]);
     const effortValue = ["off", "low", "medium", "high"].includes(effort) ? effort : "medium";
-    attempts.push(["effort", effortValue], ["thought_level", effortValue], ["reasoning_effort", effortValue]);
-    const mode = role === "oracle" ? this.descriptor.readOnlyMode || "plan" : this.descriptor.writeMode || "build";
+    attempts.push(["effort", effortValue], ["thought_level", effortValue], ["reasoning_effort", effortValue], ["thinkingEffort", effortValue]);
     if (mode) attempts.push(["mode", mode]);
+    if (role === "hephaestus") attempts.push(["permissionMode", "bypassPermissions"]);
     for (const [configId, value] of attempts) {
       try { await state.request("session/set_config_option", { sessionId, configId, value }, 10_000); } catch {}
     }

@@ -33,7 +33,7 @@ export const EXTENSIBLE_CLI_PRESETS = Object.freeze([
     id: "minimax", labelZh: "MiniMax Code", labelEn: "MiniMax Code", shortTag: "MM",
     protocol: "acp", command: "mcode", args: ["acp"], windowsPaths: [],
     installCmd: "npm install -g @minimax-ai/code@latest --allow-scripts=@minimax-ai/code,better-sqlite3", loginCmd: "mcode login", downloadUrl: "https://www.minimax.io",
-    readOnlyMode: "plan", writeMode: "build", capabilities: ACP_CAPS,
+    readOnlyMode: "plan", writeMode: "default", capabilities: ACP_CAPS,
   },
   {
     id: "kimi", labelZh: "Kimi Code CLI", labelEn: "Kimi Code CLI", shortTag: "KM",
@@ -92,7 +92,7 @@ export const EXTENSIBLE_CLI_PRESETS = Object.freeze([
     protocol: "acp", command: "doubao", args: ["acp", "serve"],
     windowsPaths: ["%LOCALAPPDATA%\\doubao_cli\\app\\current\\doubao.exe"],
     installCmd: "npm install -g @bytedance/doubao-cli --foreground-scripts", loginCmd: "doubao login --qr=png", downloadUrl: "https://www.doubao.com",
-    readOnlyMode: "plan", writeMode: "auto", capabilities: ACP_CAPS,
+    readOnlyMode: "plan", writeMode: "bypass_permissions", capabilities: ACP_CAPS,
   },
 ]);
 
