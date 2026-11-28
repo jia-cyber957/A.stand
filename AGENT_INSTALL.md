@@ -1,20 +1,31 @@
-# AI Agent Installation, Setup & Model Advisor Guide
+# A.stand v2 — AI Agent Installation & Onboarding Playbook
 
-> **Audience**: This document is written specifically for **AI Agents** (e.g. Antigravity, Claude Code, Codex CLI) when a user shares this repository URL and asks you to install, configure, or troubleshoot **A.stand** (or asks which external engines/models to choose).
+> **Audience:** AI agents (Antigravity, Claude Code, Cursor, Codex, Windsurf, or any MCP-capable coding agent) asked by a user to install, connect, configure, or troubleshoot **A.stand v2**.
 >
-> **Golden Rule**: NEVER silently install global packages, upgrade system Node.js, or modify external CLI configs (`~/.codex/config.toml`, `~/.dsh/*`, `~/.claude/*`, `~/.gemini/antigravity-cli/*`) without clearly explaining the options and getting the user's confirmation first.
-
-**Project facts you can rely on**
-- License: **Apache License 2.0** (`LICENSE`, `"license": "Apache-2.0"` in `package.json`).
-- A.stand itself runs on **Node.js >= 20**; DeepSeek Harness (`dsh`) needs **Node.js >= 24.9.0**.
-- Supported engines: **OpenAI Codex CLI**, **DeepSeek Harness (`dsh` / ACP)** for DeepSeek, Gemini 4 and any OpenAI-compatible API/proxy, **Anthropic Claude Code CLI**, and **Google Antigravity CLI (`agy` / Gemini 4)**.
-- Architecture, sandbox layers and Git worktree behavior: [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md). Security guarantees: [`SECURITY.md`](./SECURITY.md).
+> **Golden Rule:** Never silently install global packages, upgrade system Node.js, mutate external CLI configuration, invent tokens, or enable autonomous delegation without explaining the option and getting the user's confirmation first.
+>
+> **中文提示：** 本手册是给 AI Agent 执行的可运行剧本。先只读探测环境，再构建/启动，接入 MCP，落位规则与 Skill，最后让用户确认供应商与队列。任何全局安装、升级 Node、改写用户配置的动作都必须先征得用户同意。
 
 ---
 
-## Step 1: Environment Pre-Check (Read-Only)
+## Project facts you can rely on
 
-Run read-only checks first to see what the user already has:
+- **Product:** A.stand v2 — one resident desktop console plus a local HTTP daemon that brokers persistent, isolated subagents for any MCP host.
+- **Daemon endpoint:** `http://127.0.0.1:3426` (loopback only; default port `3426`).
+- **MCP endpoint:** `http://127.0.0.1:3426/mcp` (Streamable HTTP, per-upstream bearer token).
+- **stdio fallback:** `dist/stdio-bridge.mjs` (a client-side proxy; it never stops the daemon).
+- **MCP tools (exactly 4):** `agent_relay_ask`, `agent_relay_poll`, `agent_relay_review`, `agent_relay_session`.
+- **Roles:** `oracle` (read-only advisor/reviewer, parallel-capable) and `hephaestus` (workspace-write engineer, write-mutex by default).
+- **Supported CLIs:** Codex CLI, DeepSeek Harness (`dsh`), OpenCode, Doubao CLI, MiniMax Code, Qoder, Qoder Global, CodeBuddy CLI, JetBrains Junie, AWS Kiro CLI, Huawei Cloud CodeArts, Kimi Code, Qwen Code, Gemini CLI, Claude Code, Antigravity CLI, Cursor CLI, plus custom ACP/headless CLIs and OpenAI-compatible API channels.
+- **Runtime:** Node.js `>= 20`; Node.js `>= 24.9.0` when using DeepSeek Harness (`dsh`).
+- **License:** Apache License 2.0.
+- **Security invariants:** loopback-only bind; secrets in private `secrets.json` (`0600`); no external CLI config mutation; Oracle read-only; Hephaestus workspace-write by default; master hard switch default OFF.
+
+---
+
+## Step 1: Read-only environment probe
+
+Do not write anything yet. Collect facts and report them to the user.
 
 ```bash
 node -v
@@ -22,142 +33,309 @@ npm -v
 git --version
 ```
 
-Check which external harnesses are already installed (any missing ones are OK — the plugin installs cleanly first and engines can be added anytime):
+Check whether an A.stand daemon is already running:
 
 ```bash
-codex --version      # OpenAI Codex CLI (optional)
-dsh --version        # DeepSeek Harness for API-key & proxy models (optional; requires Node >= 24.9.0)
-claude --version     # Anthropic Claude Code CLI (optional)
-agy --version        # Google Antigravity CLI — Gemini 4 via `agy` (optional)
+curl -s http://127.0.0.1:3426/api/health
 ```
 
-> **Important Node.js check for `dsh`**:
-> - A.stand itself runs on **Node.js >= 20**.
-> - However, **DeepSeek Harness (`dsh`)** strictly requires **Node.js >= 24.9.0** (on Node 20/22, `dsh --version` exits 0 silently without printing anything!).
-> - If the user wants API-key / OpenAI-compatible proxy models via `dsh` and `node -v` is `< 24.9.0`, present two clear choices:
->   1. **Upgrade system Node.js to Node 24 LTS** (Recommended — `dsh` works everywhere in terminal too).
->   2. **Keep system Node untouched** and place a portable Node 24 runtime at `<PLUGIN_DATA>/runtime/node24` (or set `AGENT_RELAY_DSH_NODE`).
+- HTTP 200 with `{"ok":true,...}` means a daemon is alive.
+- Also check `%USERPROFILE%\.astand\daemon.json` (Windows) or `~/.astand/daemon.json` (macOS/Linux) for `port`, `mcpUrl`, `uiToken`, and `pid`.
+- A healthy existing daemon on the same data directory must be **reused**, not killed or duplicated.
+
+Detect installed CLIs (missing ones are fine; do not install anything yet):
+
+```bash
+codex --version
+claude --version
+dsh --version
+agy --version
+opencode --version
+qoderclicn --version
+qodercli --version
+mcode --version
+kimi --version
+junie --version
+kiro-cli --version
+codearts --version
+codebuddy --version
+qwen --version
+gemini --version
+cursor-agent --version
+doubao --version
+```
+
+**Important `dsh` check:** DeepSeek Harness requires Node.js `>= 24.9.0`. On Node 20/22, `dsh --version` may exit 0 while printing nothing. If the user wants API-key / proxy models through `dsh` and Node is too old, present two choices and wait:
+
+1. Upgrade system Node.js to Node 24 LTS (recommended).
+2. Keep system Node untouched and point A.stand at a portable Node 24 runtime (for example via `AGENT_RELAY_DSH_NODE`).
+
+**Report format (keep it short):** Node version, npm version, whether A.stand is already running, and which CLIs are present/missing.
 
 ---
 
-## Step 2: Clone, Build & Install into Antigravity
+## Step 2: Clone, build, and launch the resident daemon
 
-Ask the user where they'd like the repo cloned (or clone into their chosen projects directory), then run:
+Ask the user where to clone the repository. Then use **one** of the launch modes below.
+
+### Mode A — Source daemon (developer-friendly)
 
 ```bash
-git clone https://github.com/jia-cyber957/A.stand.git A.stand
+git clone https://github.com/jia-cyber957/A.stand.git
 cd A.stand
 npm install
+npm run build
+node dist/daemon.mjs
+```
+
+- `npm run build` produces `dist/daemon.mjs`, `dist/stdio-bridge.mjs`, `dist/wait-job.mjs`, `dist/desktop.html`, and the legacy `dist/server.mjs`.
+- The daemon serves the console at `http://127.0.0.1:3426`.
+- In pure daemon mode, the browser URL needs the UI token: `http://127.0.0.1:3426/?uiToken=<UI_TOKEN>`, where `<UI_TOKEN>` is read from `~/.astand/daemon.json`.
+- Run the daemon in the background or in a separate terminal. Do **not** leave a foreground dev server attached to the agent session.
+
+### Mode B — Portable Windows desktop bundle (recommended for humans)
+
+```bash
+npm run package:desktop
+# Output: dist-desktop/A.stand/a-stand.exe
+```
+
+`a-stand.exe` is a Tauri 2 tray application. Closing the window hides it; quitting from the tray menu stops the daemon. It opens the console automatically.
+
+### Mode C — Legacy Antigravity plugin (optional)
+
+Only if the user explicitly wants the old plugin path:
+
+```bash
 npm run install:antigravity
 ```
 
-This builds `dist/server.mjs`, `dist/console.html`, and `dist/wait-job.mjs`, and deploys the plugin cleanly into:
-- Windows: `%USERPROFILE%\.gemini\config\plugins\agent-relay\`
-- macOS / Linux: `~/.gemini/config/plugins/agent-relay/`
+v2 does not require this. Any MCP host can connect directly to the local daemon.
 
-Verify the installation:
+### After launch
 
 ```bash
-npm run check:contracts
+curl -s http://127.0.0.1:3426/api/health
 ```
 
-Tell the user:
-1. **Restart Antigravity once** so the MCP server registers cleanly.
-2. Open **A.stand** under **Plugins** in the left sidebar, or from the conversation’s upper-right **⋮** menu under **Plugins**. See the [two entry points with screenshots](./README.md#open-the-astand-panel).
-3. Keep the top-right **Master Switch** OFF until at least one engine/model is ready, then turn it **ON** to enable autonomous delegation.
+Do not proceed until the health probe returns `{"ok":true,...}`. If the port is occupied by an unhealthy or unrelated process, stop and report the conflict; do not kill processes blindly.
 
 ---
 
-## Step 3: Interactive External Engine Setup (Ask User First!)
+## Step 3: Connect the host MCP client
 
-After the plugin is installed, ask the user which external AI engine(s) they want to connect, then guide or run ONLY the ones they pick:
+**Never invent or reuse a token.** The token is generated by A.stand per upstream client.
 
-### Option A: OpenAI Codex CLI (ChatGPT Plus / Pro / Team Subscription)
-- **Best for**: Highest coding quality, deep refactoring, mid-turn steering (`steer`), live 5h/7d quota tracking.
-- **Install & login**:
-  ```bash
-  npm install -g @openai/codex
-  codex login
-  ```
-- **In A.stand**: Open **Models** tab → click **Re-scan**. Live Codex models (e.g. `gpt-5` / `gpt-6` series) auto-populate via `model/list`. Zero changes made to `~/.codex/config.toml`.
+1. Open the console (`http://127.0.0.1:3426`).
+2. Go to **Upstream Clients** (`已接上游`).
+3. Click **Connect upstream** (`+ 接入新上游`).
+4. Optionally enter a nickname; leave it blank to auto-detect on first handshake.
+5. Click **Generate token & setup prompt**.
+6. Click **Copy prompt** (`复制 Prompt`).
 
-### Option B: DeepSeek Harness (`dsh`) — DeepSeek, Gemini 4 & Any OpenAI-Compatible API / Proxy
-- **Best for**: Saving main-model quota dramatically, connecting **DeepSeek API**, **Gemini 4** through any OpenAI-compatible gateway, OpenRouter, or self-hosted OpenAI-compatible proxies with **95%–99.8% Prompt Cache** hit rates. This is the native path for Gemini 4 through a Gemini API channel.
-- **Prerequisite**: Node.js `>= 24.9.0`.
-- **Install** (MUST include `@latest` because official releases use prerelease tags — omitting `@latest` fails with `npm ERR! ETARGET`!):
-  ```bash
-  npm install -g @deepseek-ai/dsh@latest
-  dsh --version
-  ```
-- **Connect your API / Proxy in A.stand**:
-  1. Open **Models** tab → click **`+ Add API Channel`**.
-  2. Enter Provider / Channel Name, Base URL (e.g. `https://api.deepseek.com/v1`, a Gemini API–compatible OpenAI endpoint, or your own OpenAI-compatible gateway URL), and API Key (stored strictly in private `secrets.json`). Changing the Base URL to a different origin forces re-entering the key.
-  3. Click **Fetch Models** (`GET /models`) to batch-import models (or type model IDs manually) → Save.
-  4. In **Team** tab, pick the imported model under **DeepSeek Harness** for `Oracle` and/or `Hephaestus`.
+Send that prompt to the host AI being connected. It performs all three wiring steps at once: MCP server entry, delegation rules, and the bundled Skill.
 
-### Option C: Anthropic Claude Code CLI
-- **Best for**: Complex reasoning, architecture review, and code generation using a Claude subscription.
-- **Install & login**:
-  ```bash
-  npm install -g @anthropic-ai/claude-code
-  claude
-  ```
-- **In A.stand**: Open **Models** tab → click **Re-scan**.
+### Manual wiring — Streamable HTTP
 
-### Option D: Google Antigravity CLI (`agy`) — Gemini 4
-- **Best for**: Delegating to **Gemini 4** through the `agy` headless CLI when no API key is available.
-- **Maturity**: **Experimental / basic**. `agy` delegation returns plain text output — no structured X-ray timeline and no upstream Prompt Cache counters yet.
-- If `agy` is already installed and signed in on PATH, A.stand detects it automatically on **Re-scan**.
-- For full Gemini 4 support (X-ray timeline + real Prompt Cache), prefer **Option B** with a Gemini API channel.
+```json
+{
+  "mcpServers": {
+    "a-stand": {
+      "type": "streamableHttp",
+      "url": "http://127.0.0.1:3426/mcp",
+      "headers": {
+        "Authorization": "Bearer <YOUR_TOKEN>",
+        "X-Astand-Token": "<YOUR_TOKEN>"
+      }
+    }
+  }
+}
+```
 
-**Engine maturity at a glance**: OpenAI Codex CLI (full native) · DeepSeek Harness / ACP (full native) · Claude Code CLI (standard) · Antigravity CLI `agy` (experimental / basic). See the matrix in [`README.md`](./README.md#engine-support-matrix).
+### Manual wiring — stdio bridge
+
+Use this when the host cannot speak local HTTP MCP, or when localhost triggers an OAuth prompt:
+
+```bash
+node dist/stdio-bridge.mjs --url http://127.0.0.1:3426/mcp --token <YOUR_TOKEN>
+```
+
+```json
+{
+  "mcpServers": {
+    "a-stand": {
+      "command": "node",
+      "args": [
+        "dist/stdio-bridge.mjs",
+        "--url",
+        "http://127.0.0.1:3426/mcp",
+        "--token",
+        "<YOUR_TOKEN>"
+      ]
+    }
+  }
+}
+```
+
+### Connection rules
+
+- Keep the daemon running; the stdio bridge is only a proxy and exits cleanly when its stdin closes.
+- Every upstream has its own token, its own client slot, and its own MCP session attribution. Never share tokens between hosts.
+- After writing the config, most hosts need an MCP refresh, a client restart, or one more message before the tools appear.
+- Once the tools are visible, call `agent_relay_session(action="status")` once to complete the handshake. A reply containing `enabled` and `limits` means success.
+- If the host still shows no tools, report the exact client name and version. Do not loop retries.
 
 ---
 
-## Step 4: Model Selection & Pairing Advisor (Answer User Questions With This!)
+## Step 4: Install the host-level delegation gate and Skill cleanly
 
-When a user asks *"I don't know which models to pick for Oracle vs Hephaestus — what do you recommend?"*, give clear, practical presets tailored to their budget and available accounts:
+The setup prompt already contains these instructions. Follow it rather than improvising.
 
-| Preset | `Oracle` (Read-Only Advisor & Reviewer) | `Hephaestus` (Workspace-Write Engineer) | Why It Works |
+### 4.1 Delegation gate — `plugin/rules/AGENTS.md`
+
+Read `plugin/rules/AGENTS.md` and merge it into the host's global/user rules file. Wrap it with explicit markers so it can be removed cleanly:
+
+```text
+<!-- a-stand:start -->
+...contents of plugin/rules/AGENTS.md...
+<!-- a-stand:end -->
+```
+
+This gate is host-agnostic. It covers:
+
+- Lead Agent as digital twin / tech lead and protection of the expensive main context.
+- Claude Code + OMO-style context-protection boundaries.
+- Converting user screenshots into exact visual specs before delegating UI work.
+- Clean `sessionId` discipline: omit for new tasks, reuse only for the exact same task.
+- No substitute subagents: do not route A.stand work to host-native generic subagents.
+- Browser restraint: only for major visual/interaction issues.
+
+If the user already has a rules file, **append** the marked block; never overwrite unrelated rules.
+
+### 4.2 Orchestration Skill — `plugin/skills/agent-relay/SKILL.md`
+
+Install it where the host loads local Skills, for example:
+
+```text
+<HOST_SKILLS_DIR>/a-stand/SKILL.md
+```
+
+The folder name may be `a-stand` or `agent-relay` depending on the host. The Skill is an on-demand playbook for:
+
+- Parallel `oracle` slots.
+- True parallel launch: `waitSec: 0` + one `agent_relay_poll(jobIds=[...])`.
+- Zero-token async doorbell `wait-job.mjs`.
+- Git worktree parallel writers.
+- Crash recovery and quota exhaustion handling.
+
+### 4.3 Containment rules
+
+- **Never duplicate unrelated host skills into subagents.** Business/tool Skills stay on the Lead Agent.
+- Do not copy the user's other Skills into the `a-stand` Skill folder.
+- Do not inject host-only tools or credentials into subagent briefs.
+- If the host has no rules or Skills mechanism, skip gracefully and rely on the MCP tool descriptions plus the setup prompt.
+- To remove later, use the console's **Copy AI disconnect prompt** (`一键复制 AI 剥离 Prompt`). It removes only the `a-stand` MCP entry, the marked rules block, and the Skill folder.
+
+---
+
+## Step 5: Guide the user through Providers, login, whitelist, and role pairing
+
+**Consent first.** Never run a global package install, upgrade Node, or alter an external CLI config unless the user explicitly approves it. Prefer A.stand's in-app install and login flows, which use the official CLIs in isolated profiles.
+
+### 5.1 Providers page (`模型供应商`)
+
+Walk the user through the 3-zone page:
+
+1. **Top: CLI engines.**
+   - Detect, install, or update CLIs in-app with live progress.
+   - `Test` checks connectivity; `Details` opens account, quota, model whitelist, and multi-account controls.
+   - `Refresh detection` rescans the machine.
+2. **Bottom-left: accounts & quotas.**
+   - OAuth or QR sign-in runs through the official CLI.
+   - CodeBuddy and MiniMax expose **Standard (`标准版`) / Global (`国际版`)** region selection.
+   - Accounts use isolated profile directories (`CODEX_HOME`, `DSH_HOME`, `XDG_*`, and similar). Multi-account pools auto-rotate on 429 / 5xx / 401.
+   - Codex shows real 5-hour / 7-day quota windows. Channels without a balance API are labeled unavailable; never fabricate quota bars.
+3. **Bottom-right: API channels.**
+   - Add Base URL + API key, then `Fetch Models` (`GET /models`) to batch-import.
+   - Keys are stored only in private `secrets.json` (`0600`).
+   - Changing to a different origin requires re-entering the key.
+   - `utf8EnvChecked` drops dead loopback proxies (for example an inactive `127.0.0.1:10808` after Clash/TUN is stopped) while keeping live proxies.
+
+### 5.2 Model whitelist
+
+In a CLI's details, enable only the models the user wants. An empty whitelist means all discovered models are enabled. Do not silently narrow the whitelist.
+
+### 5.3 Role pairing presets
+
+When the user asks which models to use, offer these clear presets:
+
+| Preset | Oracle (`白泽`, read-only) | Hephaestus (`祝融`, workspace-write) | Why |
 |---|---|---|---|
-| **Maximum Quota Saver** *(API / Proxy / DeepSeek / Gemini 4)* | Fast long-context model via `dsh` (e.g. `deepseek-chat` / proxy flash-long) | Same long-context model via `dsh`, fallback `② Codex` | 95%–99% Prompt Cache makes multi-step tool loops dirt cheap; Lead Agent burns near-zero tokens |
-| **Balanced Quality & Cost** *(Recommended)* | Fast/cheap model via `dsh` (parallel read-only audits) or `Codex (medium)` | `Codex` (`medium`/`high`) with `dsh` API fallback | Fast parallel codebase research + top-tier coding precision + automatic quota failover |
-| **Maximum Code Quality** *(Subscription Heavy)* | `Claude Code` or `Codex (high)` | `Codex (high)` or `Claude Code` | Cross-model adversarial review (different model families catch each other's blind spots) |
+| **Maximum quota saver** | Long-context `dsh` / API model | Same `dsh` / API model, Codex as fallback ② | 95%–99.8% cache makes tool loops cheap; Lead burns near-zero tokens |
+| **Balanced quality & cost** (recommended) | Fast/cheap `dsh`, OpenCode, or Qoder slot | Codex (`medium`/`high`) with `dsh` fallback | Parallel research plus top-tier coding precision and automatic failover |
+| **Maximum cross-model quality** | Claude Code or Codex (`high`) | Codex (`high`) or Claude Code | Different model families catch each other's blind spots |
 
-### Recommended Settings Guide (Explain When Asked)
-- **Smart Model Selection (`智能选型`)** *(per-role, default OFF / ordered queue)*:
-  - Keep OFF to strictly follow each role's priority order (`① -> ②`).
-  - Turn ON so the Lead Agent can pick a configured model from that role's queue per task based on complexity, while still honoring cooldowns and fallbacks.
-- **Async Background Mode (`后台异步模式 / 边干边聊`)** *(default OFF)*:
-  - Keep OFF if you prefer classic "ask → wait → get answer".
-  - Turn ON if you want 1-second non-blocking dispatch + zero-token doorbell (`wait-job.mjs`) with recurring duration check-ins (`Off / 15 / 30 / 60m` or custom) so you can keep chatting with the Lead Agent while `Hephaestus` runs long tasks (0 Lead polling tokens!).
-- **Stall Gatekeeper AI (`卡顿守门员 AI`)** *(paired under the silence interval, default OFF)*:
-  - Keep OFF for zero extra API calls (the timeline + silence timeout doorbell already wakes the Lead directly).
-  - Turn ON with a fast API model if you run slow builds/downloads and want a concise localized `CONTINUE` (up to 3 deferrals) vs `ALERT` judgment expandable in the timeline before waking the Lead Agent.
-- **Role Custom Rules (`角色常驻守则`)** *(pre-filled by default)*:
-  - Ships with editable Turn-1 rules for `Oracle` and `Hephaestus` (never re-injected on follow-up turns, keeping Prompt Cache intact). Clear and save a role's box to disable rules for that role.
-- **Allow Hephaestus Full Access** *(default OFF)*:
-  - Keep OFF by default (`workspace-write` sandbox).
-  - Turn ON only for trusted workspaces where `Hephaestus` needs to run build tools (`esbuild`, Docker, headless browsers) that touch paths outside the workspace.
+### 5.4 Queue behavior to explain
+
+- **`ordered` (default):** strictly follows the configured priority queue.
+- **`smart`:** the Lead may choose a model from that role's queue by task complexity; cooldowns and fallbacks still apply.
+- **Failover:** 429 / 5xx / 401 → cooldown, next entry, auto-restore at `resetsAt`.
+- **Exhaustion:** `[ALL_ENGINES_EXHAUSTED]` returns a zero-AI, zero-network local handoff brief (goal, completed steps, `git status --short`, output tail).
+- **Master switch:** defaults OFF. Keep it OFF until verification passes, then ask the user before enabling autonomous delegation.
 
 ---
 
-## Step 5: Common Troubleshooting Cheat Sheet
+## Step 6: Verification checklist
 
-| Symptom | Root Cause | Exact Fix |
+Run these checks before declaring success. Use bounded timeouts for long commands; never leave a foreground server or watcher running.
+
+- [ ] `curl -s http://127.0.0.1:3426/api/health` returns `{"ok":true,...}`.
+- [ ] The upstream client shows as connected in **Upstream Clients** (green / `已连接`).
+- [ ] `agent_relay_session(action="status")` returns `enabled` and `limits`.
+- [ ] A read-only Oracle smoke test succeeds:
+
+  ```text
+  agent_relay_ask(
+    role="oracle",
+    cwd="<ABSOLUTE_WORKSPACE>",
+    prompt="Read-only smoke test: list the top-level files and summarize this project in 5 bullets. Do not modify anything.",
+    waitSec=120
+  )
+  ```
+
+- [ ] `git status --short` in the workspace is unchanged by the Oracle smoke test.
+- [ ] Optional: `npm run test:v2` passes (10 checks). Use a timeout of at least 5 minutes.
+- [ ] Optional legacy check: `npm run check:contracts`.
+- [ ] Only after the user approves, turn the master switch ON in **Roles & Queues** (`角色与队列`).
+
+If any check fails, report the exact command, output, and the smallest next action. Do not guess, and do not weaken tests or assertions to force a pass.
+
+---
+
+## Troubleshooting cheat sheet
+
+| Symptom | Root cause | Exact fix |
 |---|---|---|
-| `npm install -g @deepseek-ai/dsh` fails with `ETARGET` | Package publishes prerelease tags | Run `npm install -g @deepseek-ai/dsh@latest` |
-| `dsh --version` prints nothing and exits 0 | Node.js `< 24.9.0` | Upgrade to Node 24 LTS (or install portable Node 24 into `<PLUGIN_DATA>/runtime/node24`) |
-| Side panel doesn't show newly built features | Resident MCP server caches `dist/server.mjs` | Close/reopen panel refreshes UI (`console.html`); **restart Antigravity** refreshes backend (`server.mjs`) |
-| `hephaestus` fails `esbuild` / browser E2E with `EPERM` | `workspace-write` sandbox blocks parent-dir / pipe spawn | Run build/E2E on host, or enable **Allow Hephaestus Full Access** in Settings for trusted workspaces |
-| Antigravity closed while subagent was running | Local MCP child process stops with host | Reopen Antigravity and say "continue" in that thread — the Lead runs one scoped `recover` lookup to collect unread results or resume via `resumeJobId` with the original session, model, and worktree (Team tab also shows the `⚠ 意外中断` banner) |
-| API key rejected after editing a channel | Base URL changed to a different origin | Re-enter the key — A.stand never replays a saved key against a new endpoint |
-| Want to completely uninstall | Clean removal | Run `npm run uninstall:antigravity` (zero external CLI configs touched) |
+| MCP returns 401 | Wrong token, revoked token, or paused client slot | Regenerate the token in Upstream Clients and resend the setup prompt |
+| Host shows no `agent_relay_*` tools | Config written but MCP not reloaded | Refresh MCP, restart the client, or send one more message |
+| Port 3426 already in use | Another daemon is running | Check `~/.astand/daemon.json`; reuse the healthy daemon; do not kill blindly |
+| `dsh --version` prints nothing, exit 0 | Node.js < 24.9.0 | Upgrade to Node 24 LTS, or use a portable Node 24 runtime |
+| Codex quota unavailable | `chatgpt.com` unreachable | Restore network access, then click refresh; do not fabricate values |
+| CLI hangs on outbound requests | Dead loopback proxy left by a stopped TUN/VPN | A.stand strips it automatically via `utf8EnvChecked`; verify a live proxy if the issue persists |
+| `EPERM` during build/browser tests | `workspace-write` sandbox blocks parent-dir or pipe spawn | Run the build on the host, or ask the user to enable Hephaestus full access |
+| Tools work, then stop after a network change | Stale proxy environment in an idle child | A.stand recycles idle processes via `proxyFingerprint`; retry the delegation |
+| Want to unbind | Cleanup | Use the console's AI disconnect prompt; never hand-delete unrelated config |
+| daemon duplicated after restart | The user started another instance | Let the single-instance guard reuse the live daemon; do not start a second one |
 
 ---
 
-## Step 6: Licensing & Support
+## Final report to the user
 
-- A.stand is released under the **Apache License 2.0**. You may use, modify, and redistribute it (including commercially) as long as you keep the license and attribution notices.
-- Security guarantees (zero-mutation, API key isolation, sandbox layers) and private vulnerability reporting are documented in [`SECURITY.md`](./SECURITY.md). Do not open a public issue for a security problem.
-- Deeper technical detail for debugging or extending the project lives in [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md).
+Return a compact handoff:
+
+1. **Summary** — installed/launched, upstream connected, providers configured.
+2. **Files touched** — list only the files you actually changed (host MCP config, rules block, Skill folder).
+3. **Verification** — health check, handshake, Oracle smoke test, optional test results.
+4. **Remaining risks** — unlogged CLIs, unavailable quotas, pending user choices, master-switch state.
+
+Never include raw API keys, bearer tokens, private LAN addresses, or full local user paths in the report.
