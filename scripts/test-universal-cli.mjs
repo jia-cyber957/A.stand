@@ -56,6 +56,10 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     loaded = true;
     return send({ jsonrpc: "2.0", id: msg.id, result: {} });
   }
+  if (msg.method === "session/set_mode") {
+    mode = msg.params.modeId || "";
+    return send({ jsonrpc: "2.0", id: msg.id, result: {} });
+  }
   if (msg.method === "session/set_config_option") {
     if (msg.params.configId === "mode") mode = msg.params.value;
     return send({ jsonrpc: "2.0", id: msg.id, result: {} });
@@ -137,11 +141,14 @@ fs.writeFileSync(mockHeadlessPath, MOCK_HEADLESS, "utf8");
 
 async function main() {
   await test("registry sanitizes ids, rejects builtins, lists presets + customs", async () => {
-    assert.equal(EXTENSIBLE_CLI_PRESETS.length, 10);
+    assert.equal(EXTENSIBLE_CLI_PRESETS.length, 13);
     assert.equal(EXTENSIBLE_CLI_PRESETS.find((p) => p.id === "opencode")?.protocol, "acp");
     assert.equal(EXTENSIBLE_CLI_PRESETS.find((p) => p.id === "doubao")?.protocol, "acp");
     assert.equal(EXTENSIBLE_CLI_PRESETS.find((p) => p.id === "qoder")?.protocol, "acp");
     assert.equal(EXTENSIBLE_CLI_PRESETS.find((p) => p.id === "qoder-cn")?.protocol, "acp");
+    assert.equal(EXTENSIBLE_CLI_PRESETS.find((p) => p.id === "junie")?.protocol, "acp");
+    assert.equal(EXTENSIBLE_CLI_PRESETS.find((p) => p.id === "kiro")?.protocol, "acp");
+    assert.equal(EXTENSIBLE_CLI_PRESETS.find((p) => p.id === "codearts")?.protocol, "headless");
     const bad = sanitizeCustomCliEngine({ id: "codex", name: "x", command: "x", protocol: "acp" });
     assert.equal(bad.ok, false);
     const injected = sanitizeCustomCliEngine({ id: "my-cli", name: "Mine", command: "node; rm -rf /", protocol: "acp" });
