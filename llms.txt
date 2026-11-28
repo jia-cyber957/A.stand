@@ -61,7 +61,7 @@
 
 - `plugin/rules/AGENTS.md` — always-loaded delegation gate: context protection, Claude Code + OMO boundaries, visual-spec handoff, clean `sessionId` discipline, no substitute subagents, browser restraint.
 - `plugin/skills/agent-relay/SKILL.md` — on-demand orchestration playbook: parallel Oracle slots, zero-token async doorbell `wait-job.mjs`, Git worktree writers, crash recovery.
-- In-app “Skills & Extensions” (技能与扩展) — Turn-1 subagent guardrails injected once per new session (Prompt Cache safe), importable `SKILL.md` files/folders, and subagent MCP registry.
+- In-app “Skills & Extensions” (技能与扩展) — assign local `SKILL.md` files/folders, prompt templates, and non-secret subagent MCP metadata independently per role (`oracle`, `hephaestus`, or both), compiled once on Turn 1 (`≤ 2000` chars/item, `≤ 6000` chars/role, auto-fallback to on-demand path index) to protect Prompt Cache; ships with 2 optional built-in guardrails.
 
 ## Docs
 

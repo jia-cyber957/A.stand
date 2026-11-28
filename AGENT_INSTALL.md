@@ -283,6 +283,15 @@ When the user asks which models to use, offer these clear presets:
 - **Exhaustion:** `[ALL_ENGINES_EXHAUSTED]` returns a zero-AI, zero-network local handoff brief (goal, completed steps, `git status --short`, output tail).
 - **Master switch:** defaults OFF. Keep it OFF until verification passes, then ask the user before enabling autonomous delegation.
 
+### 5.5 Assigning Skills & MCP to subagents (`技能与扩展`)
+
+Explain to the user that A.stand lets them assign dedicated Skills, subagent MCP metadata, and prompt templates **independently per role** (`oracle`, `hephaestus`, or both) inside **Skills & Extensions** (`技能与扩展`):
+
+- Import local `SKILL.md` files or folders, or create custom rules/templates in the console.
+- Delivery is Prompt-Cache-safe: compiled **once on Turn 1 of a new session** (`≤ 2,000` chars per item, `≤ 6,000` chars total per role), with oversized items automatically falling back to an on-demand path index.
+- Two built-in guardrails ship enabled by default (“single-file redline & modularization” and “test anti-cheat”) and can be edited or disabled anytime.
+- MCP entries store non-secret metadata only; credentials are never stored in `extensions.json`.
+
 ---
 
 ## Step 6: Verification checklist

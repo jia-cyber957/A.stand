@@ -36,6 +36,7 @@ A.stand v2 is **one resident desktop console plus a local HTTP daemon** (loopbac
 - **Keeps the Lead context clean**: a subagent may read dozens of files and accumulate 200K+ tokens of tool output inside its own process; the Lead Agent receives only a concise **1–3K summary**, so the main conversation stays crisp and fast.
 - **Real cache, never estimated**: follow-ups on the same task reuse the explicit `sessionId` across restarts; measured **95%–99.8% Prompt Cache** hit rates come from genuine upstream billing counters (Codex, DeepSeek, Anthropic, `dsh` projection cache and compressed session logs).
 - **Pool and rotate quotas**: free tiers, bundled subscription credits, and multiple accounts can share one priority queue. On 429 / 5xx / 401, A.stand cools the channel down, fails over, and restores the primary when its reset window passes.
+- **Assign Skills & MCP per subagent role**: import local `SKILL.md` files, prompt templates, or non-secret subagent MCP entries in **Skills & Extensions** and mount them independently to **Oracle** (read-only), **Hephaestus** (write), or both — delivered on Turn 1 or via on-demand path index with zero Prompt Cache penalty.
 - **Zero mutation of external CLI configs**: A.stand itself never edits `~/.codex/config.toml`, `~/.dsh/`, `~/.claude/`, `~/.gemini/antigravity-cli/`, or similar config files. It drives each CLI with ephemeral launch arguments, isolated profiles, and per-process environment variables.
 
 ---
@@ -222,10 +223,14 @@ The three layers divide the work as follows:
 2. **`plugin/skills/agent-relay/SKILL.md`: the on-demand playbook.**
    The host reads this Skill only when needed. It covers parallel `oracle` slots, `waitSec: 0` true-parallel launches collected with one `agent_relay_poll(jobIds=[...])`, the zero-token async doorbell `wait-job.mjs`, Git worktree parallel writers, 2-strike debugging escalation, crash recovery, and quota exhaustion handling. It does not occupy every turn's context.
 
-3. **In-app “Skills & Extensions” (`技能与扩展`): Turn-1 subagent guardrails.**
-   A.stand manages skills, subagent MCP entries, and templates here. Two guardrails ship enabled by default: “single-file redline & modularization” and “test anti-cheat”. They are injected **once on Turn 1 of a new session**, byte-stable on later turns, so Prompt Cache is not hurt; clear or disable them to opt out. You can also import local `SKILL.md` files or folders and choose “inject on Turn 1” or “read path on demand”.
+3. **In-app “Skills & Extensions” (`技能与扩展`): assign dedicated Skills, MCP entries, and templates to subagents per role.**
+   Open **Skills & Extensions** in the left sidebar to equip subagents with their own reusable capabilities without bloating your Lead host's context:
+   - **Per-role assignment:** Mount each Skill, subagent MCP entry, or template specifically to **Oracle**, **Hephaestus**, or **both** (for example, code-review/research Skills for Oracle; coding-standards/testing/framework Skills for Hephaestus), with one-click enable/disable.
+   - **Import local `SKILL.md`:** Import existing `SKILL.md` files or Skill folders directly from disk, or author custom Skills and templates inside the console.
+   - **Prompt-Cache-safe delivery:** Assigned Skills are compiled **once on Turn 1 of a new session** so later turns stay byte-stable. Choose **Turn-1 inline injection** (≤ 2,000 chars per item, ≤ 6,000 chars per role) or **on-demand path index** (oversized Skills automatically fall back to a compact path reference so subagents read them only when needed).
+   - **Built-in guardrails:** Ships with two optional guardrails (“single-file redline & modularization” and “test anti-cheat”) enabled by default; MCP entries store metadata only and strip secret fields automatically.
 
-> Host business Skills stay on the Lead Agent side and are never auto-dumped into subagents. When a delegated job genuinely needs a specific Skill, pass its path or distilled relevant clauses explicitly in the brief and state which wrap-up actions remain with the Lead Agent.
+> Host business Skills stay on the Lead Agent side and are never auto-dumped into subagents. For reusable subagent capabilities, assign them per role in **Skills & Extensions**; for one-off tasks, pass the Skill path or distilled clauses explicitly in the delegation brief.
 
 ---
 
