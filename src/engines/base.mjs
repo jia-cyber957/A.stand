@@ -1,3 +1,4 @@
+import net from "node:net";
 import os from "node:os";
 
 export function proseTitle(text, max = 140) {
@@ -66,4 +67,69 @@ export function utf8Env(extra = {}) {
     LANG: process.env.LANG || "C.UTF-8",
     ...extra,
   };
+}
+
+const PROXY_ENV_KEYS = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"];
+const LOOPBACK_PROXY_RE = /^(?:https?|socks\d?):\/\/(127\.0\.0\.1|localhost):(\d+)\/?$/;
+const PROXY_PROBE_TIMEOUT_MS = 150;
+const PROXY_PROBE_TTL_MS = 15_000;
+const proxyReachability = new Map(); // `${host}:${port}` -> { ok, at }
+
+function probeLoopback(host, port) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let socket = null;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      try {
+        socket?.destroy();
+      } catch {}
+      resolve(ok);
+    };
+    try {
+      socket = net.createConnection({ host, port });
+    } catch {
+      finish(false);
+      return;
+    }
+    socket.setTimeout(PROXY_PROBE_TIMEOUT_MS);
+    socket.once("connect", () => finish(true));
+    socket.once("timeout", () => finish(false));
+    socket.once("error", () => finish(false));
+  });
+}
+
+async function isLoopbackReachable(host, port) {
+  const key = `${host}:${port}`;
+  const cached = proxyReachability.get(key);
+  const now = Date.now();
+  if (cached && now - cached.at < PROXY_PROBE_TTL_MS) return cached.ok;
+  const ok = await probeLoopback(host, port);
+  proxyReachability.set(key, { ok, at: now });
+  return ok;
+}
+
+/**
+ * Builds the UTF-8 env but drops dead loopback proxies (e.g. an inactive
+ * 127.0.0.1:10808 left over from a stopped TUN/VPN tool) that would otherwise
+ * blackhole every outbound request. Live loopback proxies and non-loopback
+ * proxies are preserved. Reachability is cached per host:port for 15s.
+ */
+export async function utf8EnvChecked(extra = {}) {
+  const env = utf8Env(extra);
+  const probes = [];
+  for (const key of PROXY_ENV_KEYS) {
+    const value = env[key];
+    if (!value) continue;
+    const match = LOOPBACK_PROXY_RE.exec(String(value).trim());
+    if (!match) continue;
+    probes.push(
+      isLoopbackReachable(match[1], Number(match[2])).then((ok) => {
+        if (!ok) env[key] = "";
+      })
+    );
+  }
+  if (probes.length) await Promise.all(probes);
+  return env;
 }

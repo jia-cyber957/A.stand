@@ -25,7 +25,7 @@ const NPM_PRESETS = Object.freeze({
 const UPDATE_NPM_PRESETS = Object.freeze([
   { id: "doubao", label: "Doubao CLI", pkg: "@bytedance/doubao-cli" },
   { id: "minimax", label: "MiniMax Code", pkg: "@minimax-ai/code" },
-  { id: "qoder-cn", label: "Qoder CN", pkg: "@qodercn-ai/qoderclicn" },
+  { id: "qoder-cn", label: "Qoder", pkg: "@qodercn-ai/qoderclicn" },
   { id: "qoder", label: "Qoder Global", pkg: "@qoder-ai/qodercli" },
 ]);
 

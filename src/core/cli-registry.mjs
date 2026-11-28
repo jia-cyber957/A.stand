@@ -18,7 +18,7 @@ export const EXTENSIBLE_CLI_PRESETS = Object.freeze([
     readOnlyMode: "plan", writeMode: "build", capabilities: ACP_CAPS,
   },
   {
-    id: "qoder-cn", labelZh: "Qoder 中国版", labelEn: "Qoder CN", shortTag: "QC",
+    id: "qoder-cn", labelZh: "Qoder", labelEn: "Qoder", shortTag: "QC",
     protocol: "acp", command: "qoderclicn", args: ["--acp"], windowsPaths: [],
     installCmd: "npm install -g @qodercn-ai/qoderclicn --allow-scripts=@qodercn-ai/qoderclicn,sharp", loginCmd: "qoderclicn login", downloadUrl: "https://qoder.cn",
     readOnlyMode: "default", writeMode: "acceptEdits", capabilities: ACP_CAPS,

@@ -834,7 +834,7 @@ function shortEngineLabel(eid) {
     opencode: "OpenCode",
     doubao: isEn() ? "Doubao CLI" : "豆包 CLI",
     minimax: "MiniMax",
-    "qoder-cn": isEn() ? "Qoder CN" : "Qoder 中国版",
+    "qoder-cn": "Qoder",
     qoder: isEn() ? "Qoder Global" : "Qoder 国际版",
   };
   return map[eid] || engineLabel(eid);

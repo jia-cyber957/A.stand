@@ -281,7 +281,7 @@ export function createCliDetailModal(host) {
               <input class="input" data-cd-field="profileLabel" data-focus-key="cd-prof-label" placeholder="${esc(L("输入账号备注（如：国际版 / 备用号 2）", "Account label (e.g. Global / Backup #2)"))}" value="${esc(view.profileLabelDraft)}" maxlength="40" />
               ${DUAL_REGION_ENGINES.has(eid)
                 ? `<div class="seg" role="tablist" style="flex-shrink:0">
-                    <button class="seg-btn ${view.profileRegionDraft !== "global" ? "active" : ""}" data-action="cd-profile-region" data-region="cn">${esc(L("国内版", "CN"))}</button>
+                    <button class="seg-btn ${view.profileRegionDraft !== "global" ? "active" : ""}" data-action="cd-profile-region" data-region="cn">${esc(L("标准版", "Standard"))}</button>
                     <button class="seg-btn ${view.profileRegionDraft === "global" ? "active" : ""}" data-action="cd-profile-region" data-region="global">${esc(L("国际版", "Global"))}</button>
                   </div>`
                 : ""}

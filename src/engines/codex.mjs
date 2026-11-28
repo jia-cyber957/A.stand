@@ -3,7 +3,7 @@ import readline from "node:readline";
 import { CODEX_BROKEN_GUI_PLUGINS, CODEX_OFFICE_PLUGINS, ROLE_SPECS } from "../core/constants.mjs";
 import { resolveCodexBinary } from "../core/paths.mjs";
 import { normalizeUsage } from "../core/telemetry.mjs";
-import { proseTitle, safeKill, UpstreamProtocolError, utf8Env } from "./base.mjs";
+import { proseTitle, safeKill, UpstreamProtocolError, utf8EnvChecked } from "./base.mjs";
 
 function parseRateLimitSnapshot(snap) {
   if (!snap || typeof snap !== "object") return null;
@@ -254,7 +254,7 @@ export class CodexEngine {
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
         shell: bin.useShell,
-        env: utf8Env(),
+        env: await utf8EnvChecked(),
       });
 
       this.proc.on("exit", (code, signal) => {

@@ -3,7 +3,7 @@ import readline from "node:readline";
 import { ROLE_SPECS } from "../core/constants.mjs";
 import { resolveCliPresetBinary } from "../core/paths.mjs";
 import { normalizeUsage } from "../core/telemetry.mjs";
-import { safeKill, utf8Env } from "./base.mjs";
+import { safeKill, utf8EnvChecked } from "./base.mjs";
 
 const MODELS_TTL_MS = 300_000, MODELS_EMPTY_RETRY_MS = 15_000, MODELS_TIMEOUT_MS = 25_000, HEALTH_TIMEOUT_MS = 15_000;
 const DEFAULT_IDLE_TIMEOUT_MS = 1_800_000, DEFAULT_ABSOLUTE_TIMEOUT_MS = 7_200_000;
@@ -16,10 +16,11 @@ const LOOPBACK_PROXY_RE = /^(?:https?|socks\d?):\/\/(?:127\.0\.0\.1|localhost)(?
 /**
  * CN ACP CLIs route through a local proxy when one is exported; if that proxy is dead
  * (e.g. a stopped 127.0.0.1:10808), every request hangs. Drop dead loopback proxies for
- * domestic engines (Doubao always, mirroring the login path in cli-login.mjs).
+ * all engines (via utf8EnvChecked) and unconditionally for domestic engines (Doubao
+ * always, mirroring the login path in cli-login.mjs).
  */
-export function buildAcpEnv(engineId) {
-  const env = utf8Env();
+export async function buildAcpEnv(engineId) {
+  const env = await utf8EnvChecked();
   if (!CN_ACP_ENGINE_IDS.has(engineId)) return env;
   for (const key of PROXY_ENV_KEYS) {
     const value = env[key];
@@ -165,7 +166,7 @@ export class UniversalAcpEngine {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
       ...(launched.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
-      env: buildAcpEnv(this.id),
+      env: await buildAcpEnv(this.id),
     });
     const state = { proc, initialized: false, agentInfo: null, nextId: 1, pending: new Map(), listeners: new Map(), sessionRoles: new Map(), stderrRing: [] };
     const sendRaw = (obj) => {
@@ -324,6 +325,9 @@ export class UniversalAcpEngine {
 
     let text = "", rawUsage = null, contextWindow = null, contextUsed = null, lastEmit = 0;
     const actions = [];
+    const toolMeta = new Map(); // toolCallId -> { title, kind }
+    const thoughtBuffers = new Map(); // messageId -> accumulated text
+    let lastThoughtEmit = 0;
     let idleTimer = null, absoluteTimer = null, failTimeout = null;
     const timeoutPromise = new Promise((_, reject) => { failTimeout = reject; });
     const expire = (reason) => {
@@ -352,15 +356,31 @@ export class UniversalAcpEngine {
           onActivity?.({ id: `msg_${startedAt}_${update.messageId || "anon"}`, type: "output", kind: "output", title: oneLine(text), status: "running", summary: oneLine(text), detail: text.slice(0, 4000) });
         }
       } else if (update.sessionUpdate === "agent_thought_chunk") {
-        const thought = String(update.content?.text || "");
-        if (thought) onActivity?.({ id: `thought_${update.messageId || startedAt}`, type: "thought", kind: "thought", title: "", status: "running", summary: `思考: ${oneLine(thought, 120)}`, detail: thought.slice(0, 4000) });
+        const chunk = String(update.content?.text || "");
+        if (chunk) {
+          const mid = update.messageId || `thought_${startedAt}`;
+          const acc = (thoughtBuffers.get(mid) || "") + chunk;
+          thoughtBuffers.set(mid, acc);
+          const now = Date.now();
+          if (now - lastThoughtEmit >= 700) {
+            lastThoughtEmit = now;
+            onActivity?.({ id: `thought_${mid}`, type: "thought", kind: "thought", title: "", status: "running", summary: `思考: ${oneLine(acc, 120)}`, detail: acc.slice(0, 4000) });
+          }
+        }
       } else if (update.sessionUpdate === "tool_call") {
-        const title = String(update.title || update.name || "tool call");
+        const callId = update.toolCallId || update.callId || update.id || `tool_${startedAt}_${toolMeta.size}`;
+        const title = String(update.title || update.name || "").trim() || "tool call";
+        const kind = update.kind || "cmd";
+        toolMeta.set(callId, { title, kind });
         actions.push(title);
-        onActivity?.({ id: update.toolCallId || `tool_${startedAt}`, type: "cmd_start", kind: update.kind || "cmd", title, status: "running", summary: title, detail: JSON.stringify(update.rawInput || {}).slice(0, 2000) });
+        onActivity?.({ id: callId, type: "cmd_start", kind, title, status: "running", summary: title, detail: JSON.stringify(update.rawInput || {}).slice(0, 2000) });
       } else if (update.sessionUpdate === "tool_call_update" && ["completed", "failed"].includes(String(update.status || ""))) {
         const failed = update.status === "failed";
-        onActivity?.({ id: update.toolCallId || `tool_${startedAt}`, type: failed ? "cmd_err" : "cmd_done", kind: update.kind || "cmd", title: String(update.title || "tool call"), status: failed ? "error" : "done", summary: `${failed ? "✗" : "✓"} ${update.title || "tool call"}`, detail: JSON.stringify(update.rawOutput || update.content || {}).slice(0, 2000) });
+        const callId = update.toolCallId || update.callId || update.id || `tool_${startedAt}`;
+        const prev = toolMeta.get(callId);
+        const title = String(update.title || update.name || prev?.title || "tool call").trim() || "tool call";
+        const kind = update.kind || prev?.kind || "cmd";
+        onActivity?.({ id: callId, type: failed ? "cmd_err" : "cmd_done", kind, title, status: failed ? "error" : "done", summary: `${failed ? "✗" : "✓"} ${title}`, detail: JSON.stringify(update.rawOutput || update.content || {}).slice(0, 2000) });
       } else if (update.sessionUpdate === "usage_update") {
         if (typeof update.size === "number") contextWindow = update.size;
         if (typeof update.used === "number") contextUsed = update.used;
@@ -468,7 +488,7 @@ export class UniversalAcpEngine {
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
         ...(launched.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
-        env: utf8Env(),
+        env: await buildAcpEnv(this.id),
       });
       const agentInfo = await new Promise((resolve, reject) => {
         timer = setTimeout(() => reject(new Error(`[${this.id}] ACP initialize timeout`)), HEALTH_TIMEOUT_MS);

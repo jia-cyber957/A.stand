@@ -26,6 +26,7 @@ import {
 } from "../src/core/cli-profiles.mjs";
 import { buildLocalHandoffBrief, classifyChannelFailure } from "../src/core/orchestrator.mjs";
 import { RelayStore } from "../src/core/store.mjs";
+import { utf8EnvChecked } from "../src/engines/base.mjs";
 
 const results = [];
 const WATCHDOG_MS = 28_000;
@@ -169,6 +170,17 @@ async function main() {
     assert.equal(classifyChannelFailure({ message: "turn timed out after 500ms" }), null);
     assert.equal(classifyChannelFailure({ message: "silent for 300s", isPromptTimeout: true }), null);
     assert.equal(classifyChannelFailure({ message: "interrupted by user" }), null);
+  });
+
+  await test("utf8EnvChecked strips dead loopback proxies but preserves live/non-loopback ones", async () => {
+    const env = await utf8EnvChecked({
+      ALL_PROXY: "http://127.0.0.1:1",
+      HTTPS_PROXY: "http://203.0.113.1:3128",
+      HTTP_PROXY: "http://proxy.example.com:8080",
+    });
+    assert.equal(env.ALL_PROXY, "", "dead loopback proxy must be stripped");
+    assert.equal(env.HTTPS_PROXY, "http://203.0.113.1:3128", "non-loopback proxy must be preserved");
+    assert.equal(env.HTTP_PROXY, "http://proxy.example.com:8080", "non-loopback host proxy must be preserved");
   });
 
   await test("profile isolation matrix, safe paths and launch overlays", () => {

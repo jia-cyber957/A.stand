@@ -59,11 +59,11 @@ export function createCliCatalogModal(host) {
 
   const DUAL_REGION_CLI_META = {
     codebuddy: {
-      cn: ["国内版（微信 · codebuddy.cn）", "China (WeChat · codebuddy.cn)"],
+      cn: ["标准版（微信 · codebuddy.cn）", "Standard (WeChat · codebuddy.cn)"],
       global: ["国际版（Google/GitHub · codebuddy.ai）", "Global (Google/GitHub · codebuddy.ai)"],
     },
     minimax: {
-      cn: ["国内版（中国站 · CN）", "China (CN)"],
+      cn: ["标准版（标准站 · CN）", "Standard (CN)"],
       global: ["国际版（海外站 · Global）", "Global"],
     },
   };
@@ -171,7 +171,7 @@ export function createCliCatalogModal(host) {
         <div class="cli-login-head">
           <div class="cli-login-head-text">
             <div class="cli-login-title">${esc(L(`选择 ${label} 登录版本`, `Choose ${label} login region`))}</div>
-            <div class="cli-login-hint">${esc(L("同一 CLI 支持国内版与国际版账号，也可通过多账号同时保留两套登录态。", "Supports both China & Global accounts; you can also keep both via multi-account."))}</div>
+            <div class="cli-login-hint">${esc(L("同一 CLI 支持标准版与国际版账号，也可通过多账号同时保留两套登录态。", "Supports both Standard & Global accounts; you can also keep both via multi-account."))}</div>
           </div>
           <button class="btn xs ghost" data-action="cli-login-region-cancel">${esc(L("取消", "Cancel"))}</button>
         </div>
@@ -218,7 +218,7 @@ export function createCliCatalogModal(host) {
       const pidAttr = session?.profileId ? ` data-profile="${esc(session.profileId)}"` : "";
       const regionToggle = dualMeta
         ? `<div class="cli-login-regions">
-            <button class="btn xs ${session?.region !== "global" ? "primary" : ""}" data-action="cli-login-start" data-engine="${esc(eid)}" data-region="cn"${pidAttr}>${esc(L("国内版", "CN"))}</button>
+            <button class="btn xs ${session?.region !== "global" ? "primary" : ""}" data-action="cli-login-start" data-engine="${esc(eid)}" data-region="cn"${pidAttr}>${esc(L("标准版", "Standard"))}</button>
             <button class="btn xs ${session?.region === "global" ? "primary" : ""}" data-action="cli-login-start" data-engine="${esc(eid)}" data-region="global"${pidAttr}>${esc(L("国际版", "Global"))}</button>
           </div>`
         : "";
