@@ -2443,11 +2443,16 @@ svg {
 }
 
 .channel-card {
-  border-radius: var(--r-lg);
+  border-radius: 12px;
   border: 1px solid var(--border);
   background: var(--bg-elevated);
   box-shadow: var(--shadow-xs);
   overflow: hidden;
+  transition: border-color 120ms ease;
+}
+
+.channel-card:hover {
+  border-color: var(--border-strong);
 }
 
 .channel-head {
@@ -2485,13 +2490,14 @@ svg {
   align-items: center;
   gap: 7px;
   min-width: 0;
-  font-size: 12.5px;
+  font-size: 13.5px;
   font-weight: 600;
+  color: var(--ink);
 }
 
 .channel-url {
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: 12.5px;
   color: var(--ink-3);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2515,13 +2521,13 @@ svg {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  height: 22px;
-  padding: 0 7px;
+  height: 24px;
+  padding: 0 8px;
   border-radius: var(--r-xs);
   border: 1px solid var(--border);
   background: var(--bg-subtle);
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--ink-2);
   max-width: 100%;
 }
@@ -4990,7 +4996,7 @@ svg {
 
 .cli-engine-tile {
   border: 1px solid var(--border);
-  border-radius: var(--r-lg);
+  border-radius: 12px;
   background: var(--bg-elevated);
   padding: 11px 12px;
   display: flex;
@@ -5022,8 +5028,8 @@ svg {
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 12.5px;
-  font-weight: 630;
+  font-size: 13.5px;
+  font-weight: 600;
   color: var(--ink);
   min-width: 0;
 }
@@ -5032,7 +5038,7 @@ svg {
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 11px;
+  font-size: 12.5px;
   color: var(--ink-3);
   margin-top: 2px;
   min-width: 0;
@@ -5040,7 +5046,7 @@ svg {
 }
 
 .cli-engine-tile-test {
-  font-size: 11px;
+  font-size: 12px;
   padding-top: 2px;
 }
 
@@ -5049,7 +5055,7 @@ svg {
   align-items: center;
   gap: 6px;
   padding-top: 6px;
-  border-top: 1px dashed var(--border);
+  border-top: 1px solid var(--border);
 }
 
 .dot-inline {
@@ -5095,7 +5101,7 @@ svg {
 
 .cli-account-card {
   border: 1px solid var(--border);
-  border-radius: var(--r-lg);
+  border-radius: 12px;
   background: var(--bg-elevated);
   box-shadow: var(--shadow-xs);
   transition: border-color 120ms ease;
@@ -5124,8 +5130,8 @@ svg {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12.5px;
-  font-weight: 630;
+  font-size: 13.5px;
+  font-weight: 600;
   color: var(--ink);
   min-width: 0;
 }
@@ -5134,8 +5140,9 @@ svg {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 11.5px;
-  color: var(--ink-2);
+  font-family: var(--font);
+  font-size: 12.5px;
+  color: var(--ink-3);
   min-width: 0;
 }
 
@@ -5147,261 +5154,11 @@ svg {
 }
 
 .cli-account-extra {
-  padding: 0 12px 11px 54px;
+  padding: 4px 14px 12px 54px;
 }
 
 .cli-account-login-slot {
   padding: 0 12px 12px;
-}
-
-/* ==========================================================================
-   Magpie-Style Unified Providers List (4K ClearType Nordic Minimalism)
-   ========================================================================== */
-.mg-providers-shell {
-  max-width: 860px;
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.mg-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 10px;
-}
-
-.mg-search-wrap {
-  width: 240px;
-  max-width: 100%;
-}
-
-.mg-search-input {
-  width: 100%;
-  height: 34px;
-  padding: 0 12px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--bg-elevated);
-  color: var(--ink);
-  font-size: 13px;
-  outline: none;
-  transition: border-color 120ms ease, box-shadow 120ms ease;
-}
-
-.mg-search-input::placeholder {
-  color: var(--ink-3);
-}
-
-.mg-search-input:focus {
-  border-color: var(--border-strong);
-  box-shadow: 0 0 0 3px rgba(24, 24, 27, 0.05);
-}
-
-.mg-ghost-act {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 34px;
-  padding: 0 10px;
-  border-radius: 8px;
-  font-size: 13px;
-  font-weight: 450;
-  color: var(--ink-2);
-  background: transparent;
-  transition: background 120ms ease, color 120ms ease;
-}
-
-.mg-ghost-act:hover:not(:disabled) {
-  background: var(--bg-hover);
-  color: var(--ink);
-}
-
-.mg-ghost-act:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.mg-group-card {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  overflow: hidden;
-  box-shadow: var(--shadow-xs);
-}
-
-.mg-row-wrap + .mg-row-wrap {
-  border-top: 1px solid var(--border);
-}
-
-.mg-row {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  min-height: 66px;
-  padding: 12px 18px;
-  cursor: pointer;
-  transition: background 110ms ease;
-}
-
-.mg-row:hover {
-  background: var(--bg-subtle);
-}
-
-.mg-row-icon {
-  width: 30px;
-  height: 30px;
-  flex: 0 0 30px;
-  display: grid;
-  place-items: center;
-}
-
-.mg-row-main {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.mg-row-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.mg-row-name {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--ink);
-  line-height: 1.3;
-}
-
-.mg-pill {
-  display: inline-flex;
-  align-items: center;
-  height: 20px;
-  padding: 0 7px;
-  border-radius: 5px;
-  font-size: 11.5px;
-  font-weight: 500;
-  line-height: 1;
-  color: var(--ink-2);
-  background: var(--bg-subtle);
-  flex-shrink: 0;
-}
-
-.mg-pill.blue {
-  color: var(--brand);
-  background: var(--brand-soft);
-}
-
-.mg-row-sub {
-  font-size: 13px;
-  font-weight: 400;
-  color: var(--ink-3);
-  line-height: 1.35;
-}
-
-.mg-row-right {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-shrink: 0;
-}
-
-.mg-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 13px;
-  color: var(--ink-3);
-  max-width: 180px;
-}
-
-.mg-status.ok {
-  color: var(--ink-2);
-}
-
-.mg-icon-act {
-  width: 28px;
-  height: 28px;
-  display: grid;
-  place-items: center;
-  border-radius: 7px;
-  color: var(--ink-3);
-  transition: background 110ms ease, color 110ms ease;
-}
-
-.mg-icon-act:hover {
-  background: var(--bg-hover);
-  color: var(--ink);
-}
-
-.mg-icon-act.danger:hover {
-  background: var(--red-soft);
-  color: var(--red);
-}
-
-.mg-chevron {
-  display: inline-flex;
-  align-items: center;
-  color: var(--ink-3);
-  opacity: 0.65;
-}
-
-.mg-row:hover .mg-chevron {
-  opacity: 1;
-  color: var(--ink-2);
-}
-
-.mg-row-extra {
-  padding: 2px 18px 14px 62px;
-}
-
-.mg-cooldown-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.mg-add-bar {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 16px;
-  padding: 4px 6px;
-}
-
-.mg-add-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 32px;
-  padding: 0 8px;
-  border-radius: 7px;
-  font-size: 13.5px;
-  font-weight: 450;
-  color: var(--ink-2);
-  background: transparent;
-  transition: background 110ms ease, color 110ms ease;
-}
-
-.mg-add-link:hover {
-  background: var(--bg-hover);
-  color: var(--ink);
-}
-
-.mg-add-hint {
-  margin-left: auto;
-  font-size: 12.5px;
-  color: var(--ink-3);
-}
-
-html[data-theme="dark"] .mg-search-input:focus {
-  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.06);
 }
 
 html[data-theme="dark"] .tag .chip-btn {
